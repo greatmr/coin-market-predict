@@ -1,0 +1,68 @@
+{
+  "generatedAt": "2026-11-03T14:42:08.158Z",
+  "isFixture": true,
+  "rows": [
+    {
+      "cmcId": 1,
+      "symbol": "BTC",
+      "name": "Bitcoin",
+      "observationTimeUtc": "2026-11-03T14:24:27.843Z",
+      "quoteAgeMinutes": 18,
+      "volume24hUsd": "29790407133.14",
+      "marketCapUsd": "1676015754513.78",
+      "currentRatio": "0.01777454",
+      "baselineMean": "0.01599429",
+      "baselineCoverage": "184/184d (100.0%, full)",
+      "baselineWindow": "2026-05-03..2026-11-02",
+      "baselineCalculatedAt": "2026-11-03T14:24:51.837Z",
+      "ratioToBaseline": "1.1113x",
+      "recentWindow": "72/72h valid",
+      "dataStatus": [
+        "ok"
+      ]
+    },
+    {
+      "cmcId": 1027,
+      "symbol": "ETH",
+      "name": "Ethereum",
+      "observationTimeUtc": "2026-11-03T14:24:27.843Z",
+      "quoteAgeMinutes": 18,
+      "volume24hUsd": "9576910033.48",
+      "marketCapUsd": "268520516461.84",
+      "currentRatio": "0.03566547",
+      "baselineMean": "0.03160398",
+      "baselineCoverage": "184/184d (100.0%, full)",
+      "baselineWindow": "2026-05-03..2026-11-02",
+      "baselineCalculatedAt": "2026-11-03T14:24:51.837Z",
+      "ratioToBaseline": "1.1285x",
+      "recentWindow": "72/72h valid",
+      "dataStatus": [
+        "ok"
+      ]
+    },
+    {
+      "cmcId": 2,
+      "symbol": "LTC",
+      "name": "Litecoin",
+      "observationTimeUtc": "2026-11-03T14:24:27.843Z",
+      "quoteAgeMinutes": 18,
+      "volume24hUsd": "201294277.64",
+      "marketCapUsd": "4319264331.22",
+      "currentRatio": "0.04660383",
+      "baselineMean": "0.03585882",
+      "baselineCoverage": "184/184d (100.0%, full)",
+      "baselineWindow": "2026-05-03..2026-11-02",
+      "baselineCalculatedAt": "2026-11-03T14:24:51.837Z",
+      "ratioToBaseline": "1.2996x",
+      "recentWindow": "72/72h valid",
+      "dataStatus": [
+        "ok"
+      ]
+    }
+  ],
+  "notes": [
+    "Hourly values use ROLLING 24h volume at each observation time; they are not volume traded within the hour.",
+    "Baseline uses completed daily records only (never hourly snapshots).",
+    "ratioToBaseline is descriptive; no thresholds or recommendations are applied."
+  ]
+}

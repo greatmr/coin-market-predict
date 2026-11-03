@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Coins Predicts</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">Coins Predicts <span class="sub">signal research — hypotheses, not advice</span></div>
+    <div id="badges"></div>
+  </header>
+  <div id="banner" class="banner" hidden></div>
+  <main>
+    <section>
+      <div class="section-head">
+        <h2>Ranked signals</h2>
+        <div class="filters">
+          <label>Status
+            <select id="f-status">
+              <option value="">all</option>
+              <option value="candidate">candidate</option>
+              <option value="watch">watch</option>
+              <option value="insufficient_data">insufficient data</option>
+              <option value="no_signal">no signal</option>
+            </select>
+          </label>
+          <label>Class
+            <select id="f-class">
+              <option value="">all</option>
+              <option value="advance_candidate">advance</option>
+              <option value="move_underway">move underway</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div id="signals"></div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Screening (all eligible, deterministic)</h2>
+        <label>Classification
+          <select id="f-screen">
+            <option value="">all eligible</option>
+            <option value="advance_candidate">advance_candidate</option>
+            <option value="move_underway">move_underway</option>
+            <option value="gradual_trend">gradual_trend</option>
+            <option value="market_wide">market_wide</option>
+            <option value="overextended">overextended</option>
+            <option value="none">none</option>
+          </select>
+        </label>
+      </div>
+      <div id="screening"></div>
+    </section>
+
+    <section id="detail-section" hidden>
+      <div class="section-head"><h2 id="detail-title">Asset</h2><button id="detail-close" type="button">close</button></div>
+      <div id="detail"></div>
+    </section>
+
+    <div class="grid">
+      <section>
+        <h2>Collection health</h2>
+        <div id="health"></div>
+      </section>
+      <section>
+        <h2>Paper trading</h2>
+        <div id="paper"></div>
+      </section>
+    </div>
+
+    <section>
+      <div class="section-head"><h2>Volume / Market Cap vs six-month baseline</h2><span class="muted" id="vmc-meta"></span></div>
+      <p class="muted">Current ratio = rolling 24h volume ÷ market cap at the observation time (not volume within the hour). Baseline = mean of completed daily ratios. Cur/Base is descriptive only.</p>
+      <div id="vmc"></div>
+    </section>
+
+    <section>
+      <h2>Runs</h2>
+      <div id="runs"></div>
+    </section>
+
+    <section>
+      <h2>Backtest</h2>
+      <div id="backtest"></div>
+    </section>
+  </main>
+  <footer id="footer"></footer>
+  <script src="app.js"></script>
+</body>
+</html>

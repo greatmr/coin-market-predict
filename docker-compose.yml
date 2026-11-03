@@ -1,0 +1,66 @@
+# Coins Predicts local stack.
+#   Database only (host-based NestJS):   docker compose up -d postgres
+#   Full stack in containers:            docker compose --profile app up -d --build
+# History lives in the named volume `coins_pgdata`. Never remove it as a troubleshooting step;
+# see README "Backup and restore".
+name: coins-predicts
+
+services:
+  postgres:
+    image: postgres:17.6-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-coins}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-coins_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-coins}
+    ports:
+      # Bound to localhost only. Change deliberately if remote access is required.
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - coins_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  app:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-coins}:${POSTGRES_PASSWORD:-coins_dev_password}@postgres:5432/${POSTGRES_DB:-coins}?schema=public
+      HOST: 0.0.0.0
+      PORT: 3000
+      RUN_MIGRATIONS: "true"
+      # Secrets are mounted at runtime, never baked into the image.
+      CLAUDE_CODE_OAUTH_TOKEN_FILE: /run/secrets/claude_code_oauth_token
+      TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
+    secrets:
+      - claude_code_oauth_token
+      - telegram_bot_token
+    ports:
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
+    volumes:
+      - coins_agent_state:/app/var
+
+secrets:
+  # Create these files locally (they are git- and docker-ignored). Empty files are allowed:
+  # the app then reports the integration as "not configured".
+  claude_code_oauth_token:
+    file: ./secrets/claude_code_oauth_token
+  telegram_bot_token:
+    file: ./secrets/telegram_bot_token
+
+volumes:
+  coins_pgdata:
+  coins_agent_state:

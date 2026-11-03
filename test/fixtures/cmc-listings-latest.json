@@ -1,0 +1,25 @@
+{
+  "status": { "timestamp": "2026-11-03T12:05:00.000Z", "error_code": 0, "error_message": null, "elapsed": 12, "credit_count": 1, "total_count": 8049 },
+  "data": [
+    {
+      "id": 1, "name": "Bitcoin", "symbol": "BTC", "slug": "bitcoin", "num_market_pairs": 11000,
+      "tags": ["mineable", "pow"], "max_supply": 21000000, "circulating_supply": 19800000, "total_supply": 19800000,
+      "platform": null, "cmc_rank": 1, "last_updated": "2026-11-03T12:04:00.000Z",
+      "quote": { "USD": { "price": 100000.5, "volume_24h": 30000000000, "percent_change_1h": 0.1, "percent_change_24h": 1.2, "percent_change_7d": 3.4, "market_cap": 1980009900000, "fully_diluted_market_cap": 2100010500000, "last_updated": "2026-11-03T12:04:00.000Z" } }
+    },
+    {
+      "id": 825, "name": "Tether USDt", "symbol": "USDT", "slug": "tether", "tags": ["stablecoin", "asset-backed-stablecoin"],
+      "max_supply": null, "circulating_supply": 150000000000, "total_supply": 151000000000,
+      "platform": { "id": 1027, "name": "Ethereum", "symbol": "ETH", "slug": "ethereum", "token_address": "0xdac17f958d2ee523a2206206994597c13d831ec7" },
+      "last_updated": "2026-11-03T12:04:00.000Z",
+      "quote": { "USD": { "price": 1.0001, "volume_24h": 60000000000, "percent_change_1h": 0.0, "percent_change_24h": 0.01, "percent_change_7d": 0.0, "market_cap": 150015000000, "fully_diluted_market_cap": 151015100000, "last_updated": "2026-11-03T12:04:00.000Z" } }
+    },
+    {
+      "id": 99999, "name": "No Cap Token", "symbol": "NOCAP", "slug": "no-cap-token", "tags": [],
+      "max_supply": 1000000000, "circulating_supply": 0, "total_supply": 1000000000, "platform": null,
+      "last_updated": "2026-11-03T12:04:00.000Z",
+      "quote": { "USD": { "price": 0.5, "volume_24h": 1200000, "percent_change_1h": 2.0, "percent_change_24h": 5.0, "percent_change_7d": null, "market_cap": 0, "fully_diluted_market_cap": 500000000, "last_updated": "2026-11-03T12:04:00.000Z" } }
+    },
+    { "id": "malformed-row", "name": null }
+  ]
+}

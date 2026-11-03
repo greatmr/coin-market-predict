@@ -1,0 +1,741 @@
+// Coins Predicts — PostgreSQL schema.
+// Conventions (see .claude/rules/data-semantics.md):
+//  * All timestamps are UTC (timestamptz).
+//  * Financial values use Decimal; unavailable values stay NULL with a reason in `nullReasons`.
+//  * Observations are keyed by provider + provider asset id + slot + quote currency so data
+//    from different providers, quotes, or volume windows is never merged.
+
+generator client {
+  provider               = "prisma-client"
+  output                 = "../src/generated/prisma"
+  moduleFormat           = "esm"
+  importFileExtension    = "js"
+  generatedFileExtension = "ts"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Sources and asset identity
+// ---------------------------------------------------------------------------
+
+model Provider {
+  id             String   @id // e.g. "fixture", "coingecko"
+  name           String
+  accessMethod   String // official_api | fixture | public_dataset
+  isLive         Boolean // false for fixtures; dashboards and reports must label non-live data
+  baseUrl        String?
+  termsUrl       String?
+  attribution    String?
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+
+  identities     AssetIdentity[]
+  snapshots      MarketSnapshot[]
+  discoveryRuns  DiscoveryRun[]
+  health         SourceHealth?
+}
+
+/// Canonical asset. Identity is never derived from the symbol alone.
+model Asset {
+  id               String    @id @default(uuid()) @db.Uuid
+  name             String
+  symbol           String
+  /// Classification from discovery: regular | stablecoin | wrapped | bridged | staked | unknown
+  assetClass       String    @default("unknown")
+  classSource      String? // provider_category | heuristic_name | heuristic_price | manual
+  underlyingAsset  String? // e.g. "bitcoin" for wrapped BTC exposure
+  isBenchmark      Boolean   @default(false) // BTC/ETH reference assets
+  firstSeenAt      DateTime  @db.Timestamptz(3)
+  lastSeenAt       DateTime  @db.Timestamptz(3)
+  delistedAt       DateTime? @db.Timestamptz(3)
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime  @updatedAt @db.Timestamptz(3)
+
+  identities       AssetIdentity[]
+  contracts        AssetContract[]
+  snapshots        MarketSnapshot[]
+  features         FeatureValue[]
+  screening        ScreeningResult[]
+  signals          Signal[]
+
+  @@index([symbol])
+  @@index([assetClass])
+}
+
+/// Mapping of a provider's asset id to the canonical asset.
+model AssetIdentity {
+  id              String    @id @default(uuid()) @db.Uuid
+  assetId         String    @db.Uuid
+  providerId      String
+  providerAssetId String
+  sourceUrl       String?
+  firstSeenAt     DateTime  @db.Timestamptz(3)
+  lastSeenAt      DateTime  @db.Timestamptz(3)
+  /// Set when the provider no longer lists the asset during a complete discovery sweep.
+  delistedAt      DateTime? @db.Timestamptz(3)
+
+  asset           Asset     @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  provider        Provider  @relation(fields: [providerId], references: [id], onDelete: Restrict)
+
+  @@unique([providerId, providerAssetId])
+  @@index([assetId])
+}
+
+/// Chain + contract address. EVM addresses are stored lower-cased.
+model AssetContract {
+  id              String   @id @default(uuid()) @db.Uuid
+  assetId         String   @db.Uuid
+  chain           String
+  contractAddress String
+  providerId      String
+  decimals        Int?
+  createdAt       DateTime @default(now()) @db.Timestamptz(3)
+
+  asset           Asset    @relation(fields: [assetId], references: [id], onDelete: Restrict)
+
+  @@unique([chain, contractAddress])
+  @@index([assetId])
+}
+
+model DiscoveryRun {
+  id               String    @id @default(uuid()) @db.Uuid
+  providerId       String
+  startedAt        DateTime  @db.Timestamptz(3)
+  finishedAt       DateTime? @db.Timestamptz(3)
+  status           String // running | succeeded | partial | failed
+  pagesFetched     Int       @default(0)
+  assetsSeen       Int       @default(0)
+  newAssets        Int       @default(0)
+  delistedAssets   Int       @default(0)
+  /// Total the source reports it lists, when the source exposes it. NULL means unknown.
+  sourceTotal      Int?
+  /// True only when the sweep fetched every page the source offers.
+  coverageComplete Boolean   @default(false)
+  requestsUsed     Int       @default(0)
+  error            String?
+  notes            Json?
+
+  provider         Provider  @relation(fields: [providerId], references: [id], onDelete: Restrict)
+
+  @@index([providerId, startedAt])
+}
+
+/// Circuit-breaker and request-budget state per provider (survives restarts).
+model SourceHealth {
+  providerId          String    @id
+  state               String    @default("closed") // closed | open | half_open | suspended
+  consecutiveFailures Int       @default(0)
+  consecutiveDenials  Int       @default(0)
+  openedAt            DateTime? @db.Timestamptz(3)
+  retryAfterUntil     DateTime? @db.Timestamptz(3)
+  suspendedReason     String?
+  lastSuccessAt       DateTime? @db.Timestamptz(3)
+  lastFailureAt       DateTime? @db.Timestamptz(3)
+  lastStatusCode      Int?
+  budgetPeriodStart   DateTime? @db.Timestamptz(3)
+  budgetUsed          Int       @default(0)
+  updatedAt           DateTime  @updatedAt @db.Timestamptz(3)
+
+  provider            Provider  @relation(fields: [providerId], references: [id], onDelete: Restrict)
+}
+
+// ---------------------------------------------------------------------------
+// Observations
+// ---------------------------------------------------------------------------
+
+model MarketSnapshot {
+  id                   BigInt    @id @default(autoincrement())
+  assetId              String    @db.Uuid
+  providerId           String
+  providerAssetId      String
+  /// Hourly bucket this observation belongs to (UTC, minute = 0).
+  slotTime             DateTime  @db.Timestamptz(3)
+  collectedAt          DateTime  @db.Timestamptz(3)
+  /// Provider-reported observation time (e.g. CoinGecko `last_updated`). NULL if not supplied.
+  observedAt           DateTime? @db.Timestamptz(3)
+  sourceUrl            String
+  quoteCurrency        String    @default("USD")
+
+  price                Decimal?  @db.Decimal(38, 18)
+  /// Circulating market cap. Never fully diluted valuation.
+  marketCap            Decimal?  @db.Decimal(38, 4)
+  /// provider_reported | calculated_from_circulating_supply | unavailable
+  marketCapProvenance  String
+  fullyDilutedValuation Decimal? @db.Decimal(38, 4)
+  circulatingSupply    Decimal?  @db.Decimal(38, 8)
+  /// provider_reported | unavailable
+  supplyProvenance     String
+  /// Rolling 24h trading volume as reported by the provider at observedAt.
+  volumeRolling24h     Decimal?  @db.Decimal(38, 4)
+  /// Actual volume traded inside this hour (only from sources with hourly bars). Never derived
+  /// by subtracting overlapping 24h totals.
+  volumeHourly         Decimal?  @db.Decimal(38, 4)
+  volumeHourlySource   String?
+  /// Provider-reported percentage changes (labeled provider fields, not computed by us).
+  providerChangePct1h  Decimal?  @db.Decimal(20, 8)
+  providerChangePct24h Decimal?  @db.Decimal(20, 8)
+  providerChangePct7d  Decimal?  @db.Decimal(20, 8)
+  /// Liquidity fields (NULL unless a source provides them).
+  bidAskSpreadPct      Decimal?  @db.Decimal(20, 8)
+  depthPlus2PctUsd     Decimal?  @db.Decimal(38, 4)
+  depthMinus2PctUsd    Decimal?  @db.Decimal(38, 4)
+  liquiditySource      String?
+
+  /// Data-quality flags, e.g. ["stale_observation", "missing_market_cap"].
+  qualityFlags         String[]
+  /// Fraction of core fields present (0..1).
+  completeness         Decimal   @db.Decimal(5, 4)
+  /// Seconds between observedAt and collectedAt; NULL when observedAt is unknown.
+  freshnessSeconds     Int?
+  isStale              Boolean   @default(false)
+  /// field -> reason for each NULL value.
+  nullReasons          Json
+  pipelineRunId        String?   @db.Uuid
+  createdAt            DateTime  @default(now()) @db.Timestamptz(3)
+
+  asset                Asset     @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  provider             Provider  @relation(fields: [providerId], references: [id], onDelete: Restrict)
+
+  @@unique([providerId, providerAssetId, slotTime, quoteCurrency])
+  @@index([assetId, slotTime])
+  @@index([slotTime])
+}
+
+// ---------------------------------------------------------------------------
+// Runs
+// ---------------------------------------------------------------------------
+
+model PipelineRun {
+  id            String    @id @default(uuid()) @db.Uuid
+  kind          String // hourly | manual | demo
+  slotTime      DateTime  @db.Timestamptz(3)
+  providerId    String
+  status        String // running | succeeded | partial | failed | skipped
+  currentStage  String?
+  attempt       Int       @default(1)
+  startedAt     DateTime  @db.Timestamptz(3)
+  finishedAt    DateTime? @db.Timestamptz(3)
+  /// Coverage summary: assets expected/collected/missing/stale and completeness label.
+  coverage      Json?
+  /// Latencies, missing-field counts, error counts.
+  metrics       Json?
+  modelCostUsd  Decimal   @default(0) @db.Decimal(14, 6)
+  error         String?
+  isLiveData    Boolean
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime  @updatedAt @db.Timestamptz(3)
+
+  stages        PipelineStage[]
+  screening     ScreeningResult[]
+  signals       Signal[]
+  agentRuns     AgentExecution[]
+  deliveries    TelegramDelivery[]
+
+  @@unique([kind, slotTime, providerId])
+  @@index([startedAt])
+}
+
+model PipelineStage {
+  id          String    @id @default(uuid()) @db.Uuid
+  runId       String    @db.Uuid
+  stage       String // discover | collect | features | screen | analyze | publish | notify
+  status      String // running | succeeded | failed | skipped
+  startedAt   DateTime  @db.Timestamptz(3)
+  finishedAt  DateTime? @db.Timestamptz(3)
+  attempts    Int       @default(1)
+  detail      Json?
+  error       String?
+
+  run         PipelineRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, stage])
+}
+
+/// Small key/value store for durable application state (e.g. the fixture anchor slot).
+model AppState {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+}
+
+/// Database-backed lease: prevents overlapping runs across application instances.
+model JobLease {
+  name        String   @id
+  holder      String
+  acquiredAt  DateTime @db.Timestamptz(3)
+  heartbeatAt DateTime @db.Timestamptz(3)
+  expiresAt   DateTime @db.Timestamptz(3)
+}
+
+// ---------------------------------------------------------------------------
+// Versioned definitions
+// ---------------------------------------------------------------------------
+
+model FeatureSetVersion {
+  version     String   @id // e.g. "fs-1"
+  definitions Json // name -> {description, minSnapshots, requiredFields, kind}
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+}
+
+model StrategyVersion {
+  version          String   @id // e.g. "surge-screen-1"
+  description      String
+  params           Json
+  /// Versioned research target: return threshold, horizon, benchmark, adverse-excursion limit.
+  researchTarget   Json
+  featureSetVersion String
+  createdAt        DateTime @default(now()) @db.Timestamptz(3)
+}
+
+model FeatureValue {
+  id                BigInt   @id @default(autoincrement())
+  assetId           String   @db.Uuid
+  providerId        String
+  slotTime          DateTime @db.Timestamptz(3)
+  featureSetVersion String
+  /// name -> number | null
+  values            Json
+  /// name -> reason for each disabled/unavailable feature
+  unavailable       Json
+  /// Consecutive hourly snapshots available ending at slotTime.
+  historyDepth      Int
+  /// warming_up | limited | full
+  warmupState       String
+  createdAt         DateTime @default(now()) @db.Timestamptz(3)
+
+  asset             Asset    @relation(fields: [assetId], references: [id], onDelete: Restrict)
+
+  @@unique([assetId, providerId, slotTime, featureSetVersion])
+  @@index([slotTime])
+}
+
+// ---------------------------------------------------------------------------
+// Screening, signals, agents
+// ---------------------------------------------------------------------------
+
+model ScreeningResult {
+  id                BigInt   @id @default(autoincrement())
+  runId             String   @db.Uuid
+  assetId           String   @db.Uuid
+  slotTime          DateTime @db.Timestamptz(3)
+  strategyVersion   String
+  eligible          Boolean
+  exclusionReasons  String[]
+  /// advance_candidate | move_underway | gradual_trend | market_wide | overextended | none
+  classification    String
+  /// Deterministic heuristic score 0..100. NOT a probability.
+  heuristicScore    Decimal  @db.Decimal(7, 3)
+  components        Json
+  riskFlags         String[]
+  rank              Int?
+  shortlisted       Boolean  @default(false)
+
+  run               PipelineRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  asset             Asset       @relation(fields: [assetId], references: [id], onDelete: Restrict)
+
+  @@unique([runId, assetId, strategyVersion])
+  @@index([slotTime, shortlisted])
+}
+
+model Signal {
+  id                    String    @id @default(uuid()) @db.Uuid
+  runId                 String    @db.Uuid
+  assetId               String    @db.Uuid
+  slotTime              DateTime  @db.Timestamptz(3)
+  strategyVersion       String
+  /// candidate | watch | insufficient_data | no_signal
+  status                String
+  /// advance | move_underway | none
+  signalType            String
+  horizonHours          Int
+  heuristicScore        Decimal   @db.Decimal(7, 3)
+  agentScore            Decimal?  @db.Decimal(7, 3)
+  /// Only populated by a calibrated model. Agents never supply this.
+  calibratedProbability Decimal?  @db.Decimal(7, 6)
+  evidence              Json
+  counterevidence       Json
+  dataQuality           Json
+  entryTrigger          String
+  invalidation          String
+  exitConditions        Json
+  /// Deterministic paper-trading scenario computed by code (prices, fees, slippage).
+  scenario              Json
+  expiresAt             DateTime  @db.Timestamptz(3)
+  rationale             String
+  riskFlags             String[]
+  /// agent | deterministic (agent unavailable) | external_mcp
+  origin                String
+  reviewOutcome         String? // agree | downgrade | reject | not_reviewed
+  evidenceHash          String
+  isLiveData            Boolean
+  publishedAt           DateTime? @db.Timestamptz(3)
+  createdAt             DateTime  @default(now()) @db.Timestamptz(3)
+
+  run                   PipelineRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  asset                 Asset       @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  paperPosition         PaperPosition?
+  outcomes              SignalOutcome[]
+
+  @@unique([runId, assetId, strategyVersion])
+  @@index([slotTime, status])
+  @@index([evidenceHash])
+}
+
+model AgentExecution {
+  id               String    @id @default(uuid()) @db.Uuid
+  runId            String?   @db.Uuid
+  role             String // market_analyst | risk_reviewer | coordinator
+  model            String
+  provider         String // claude_agent_sdk | fixture
+  evidenceHash     String
+  status           String // succeeded | failed | cached | skipped_budget | skipped_unavailable
+  escalated        Boolean   @default(false)
+  startedAt        DateTime  @db.Timestamptz(3)
+  finishedAt       DateTime? @db.Timestamptz(3)
+  durationMs       Int?
+  numTurns         Int?
+  inputTokens      Int?
+  outputTokens     Int?
+  cacheReadTokens  Int?
+  cacheWriteTokens Int?
+  costUsd          Decimal   @default(0) @db.Decimal(14, 6)
+  errorKind        String?
+  errorMessage     String?
+  output           Json?
+  toolCalls        Json?
+  sessionId        String?
+
+  run              PipelineRun? @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([role, evidenceHash, status])
+  @@index([startedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Delivery
+// ---------------------------------------------------------------------------
+
+model TelegramDelivery {
+  id                String    @id @default(uuid()) @db.Uuid
+  runId             String    @db.Uuid
+  /// Hash of the report content; with partIndex and chatId it suppresses duplicates.
+  reportHash        String
+  partIndex         Int
+  partCount         Int
+  chatId            String
+  mode              String // live | dry_run
+  status            String // pending | sent | failed | dry_run
+  attempts          Int       @default(0)
+  nextAttemptAt     DateTime? @db.Timestamptz(3)
+  lastError         String?
+  telegramMessageId String?
+  text              String
+  createdAt         DateTime  @default(now()) @db.Timestamptz(3)
+  sentAt            DateTime? @db.Timestamptz(3)
+
+  run               PipelineRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([reportHash, partIndex, chatId])
+  @@index([status, nextAttemptAt])
+}
+
+// ---------------------------------------------------------------------------
+// Paper trading and evaluation (no real orders, ever)
+// ---------------------------------------------------------------------------
+
+model PaperPosition {
+  id               String    @id @default(uuid()) @db.Uuid
+  signalId         String    @unique @db.Uuid
+  assetId          String    @db.Uuid
+  strategyVersion  String
+  /// pending_entry | open | closed | expired
+  status           String
+  referencePrice   Decimal   @db.Decimal(38, 18)
+  entryTriggerPrice Decimal  @db.Decimal(38, 18)
+  stopPrice        Decimal   @db.Decimal(38, 18)
+  targetPrice      Decimal   @db.Decimal(38, 18)
+  trailingStopPct  Decimal?  @db.Decimal(10, 6)
+  maxHoldHours     Int
+  signalExpiresAt  DateTime  @db.Timestamptz(3)
+  feeBps           Int
+  slippageBps      Int
+  entryAt          DateTime? @db.Timestamptz(3)
+  entryPrice       Decimal?  @db.Decimal(38, 18)
+  highWaterPrice   Decimal?  @db.Decimal(38, 18)
+  exitAt           DateTime? @db.Timestamptz(3)
+  exitPrice        Decimal?  @db.Decimal(38, 18)
+  /// target | stop | trailing_stop | max_hold | expired_no_entry | delisted | data_gap
+  exitReason       String?
+  grossReturn      Decimal?  @db.Decimal(20, 10)
+  netReturn        Decimal?  @db.Decimal(20, 10)
+  maxAdverseExcursion Decimal? @db.Decimal(20, 10)
+  /// True when the hourly observations cannot establish whether stop or target came first.
+  ambiguousOrdering Boolean  @default(false)
+  notes            String[]
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime  @updatedAt @db.Timestamptz(3)
+
+  signal           Signal    @relation(fields: [signalId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+}
+
+model SignalOutcome {
+  id              String    @id @default(uuid()) @db.Uuid
+  signalId        String    @db.Uuid
+  targetVersion   String
+  /// pending | hit | miss | insufficient_data | delisted
+  status          String
+  horizonHours    Int
+  evaluatedAt     DateTime? @db.Timestamptz(3)
+  maxReturn       Decimal?  @db.Decimal(20, 10)
+  minReturn       Decimal?  @db.Decimal(20, 10)
+  finalReturn     Decimal?  @db.Decimal(20, 10)
+  benchmarkReturn Decimal?  @db.Decimal(20, 10)
+  observations    Int       @default(0)
+  notes           String[]
+
+  signal          Signal    @relation(fields: [signalId], references: [id], onDelete: Cascade)
+
+  @@unique([signalId, targetVersion])
+}
+
+model BacktestReport {
+  id              String   @id @default(uuid()) @db.Uuid
+  createdAt       DateTime @default(now()) @db.Timestamptz(3)
+  strategyVersion String
+  /// pending_insufficient_history | completed
+  status          String
+  periodStart     DateTime? @db.Timestamptz(3)
+  periodEnd       DateTime? @db.Timestamptz(3)
+  isLiveData      Boolean
+  includesFinalTest Boolean @default(false)
+  report          Json
+}
+
+// ---------------------------------------------------------------------------
+// Volume / Market Cap baseline collection (CoinMarketCap brief, docs/volume-mcap.md)
+// Daily history (baseline input) and hourly rolling-24h quote snapshots are separate tables
+// and are never mixed. All money values are USD; all times UTC.
+// ---------------------------------------------------------------------------
+
+/// CoinMarketCap asset, keyed by the stable numeric CMC id. Symbol/name are metadata only.
+model VmcAsset {
+  cmcId              Int       @id
+  symbol             String
+  name               String
+  slug               String?
+  isActive           Boolean?
+  firstHistoricalAt  DateTime? @db.Timestamptz(3)
+  lastHistoricalAt   DateTime? @db.Timestamptz(3)
+  hourlyBackfilledAt DateTime? @db.Timestamptz(3)
+  metadataSource     String
+  createdAt          DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime  @updatedAt @db.Timestamptz(3)
+
+  metadataChanges    VmcAssetMetadataChange[]
+
+  @@index([symbol])
+}
+
+model VmcAssetMetadataChange {
+  id         BigInt   @id @default(autoincrement())
+  cmcId      Int
+  field      String
+  oldValue   String?
+  newValue   String?
+  observedAt DateTime @db.Timestamptz(3)
+  runId      String?  @db.Uuid
+
+  asset      VmcAsset @relation(fields: [cmcId], references: [cmcId], onDelete: Restrict)
+
+  @@index([cmcId, observedAt])
+}
+
+model VmcRun {
+  id           String    @id @default(uuid()) @db.Uuid
+  /// sync_assets | daily_history | baseline | hourly_backfill | hourly | probe
+  job          String
+  /// running | succeeded | partial | failed | skipped
+  status       String
+  isFixture    Boolean
+  scheduledFor DateTime? @db.Timestamptz(3)
+  startedAt    DateTime  @db.Timestamptz(3)
+  finishedAt   DateTime? @db.Timestamptz(3)
+  /// Non-secret effective configuration for the run.
+  config       Json
+  creditsUsed  Int       @default(0)
+  summary      Json?
+  error        String?
+
+  assetResults VmcAssetResult[]
+  responses    VmcRawResponse[]
+
+  @@index([job, startedAt])
+}
+
+model VmcAssetResult {
+  id     BigInt  @id @default(autoincrement())
+  runId  String  @db.Uuid
+  cmcId  Int
+  /// ok | partial | failed | skipped
+  status String
+  detail Json
+  error  String?
+
+  run    VmcRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, cmcId])
+}
+
+/// Raw source payloads for audit. Parameters are sanitized; the API key is sent as a header
+/// and never stored.
+model VmcRawResponse {
+  id          String   @id @default(uuid()) @db.Uuid
+  runId       String   @db.Uuid
+  endpoint    String
+  params      Json
+  httpStatus  Int?
+  errorCode   Int?
+  creditCount Int?
+  retrievedAt DateTime @db.Timestamptz(3)
+  bodySha256  String
+  /// Exact response text (numbers keep their original precision).
+  body        String
+  isFixture   Boolean
+
+  run         VmcRun   @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([endpoint, retrievedAt])
+}
+
+/// Completed-day observation used for the baseline. Every change is a new revision.
+model VmcDailyObservation {
+  id              BigInt    @id @default(autoincrement())
+  cmcId           Int
+  dateUtc         DateTime  @db.Date
+  /// eod_quote | ohlcv
+  convention      String
+  /// Quote timestamp (eod_quote) or quote.USD.timestamp (ohlcv).
+  sourceTimestamp DateTime? @db.Timestamptz(3)
+  periodStart     DateTime? @db.Timestamptz(3)
+  periodEnd       DateTime? @db.Timestamptz(3)
+  volumeUsd       Decimal?  @db.Decimal(38, 8)
+  marketCapUsd    Decimal?  @db.Decimal(38, 8)
+  /// volumeUsd / marketCapUsd, 18 dp, ROUND_HALF_EVEN. NULL when invalid.
+  ratio           Decimal?  @db.Decimal(38, 18)
+  valid           Boolean
+  invalidReasons  String[]
+  revision        Int
+  /// first | source_revision
+  revisionReason  String
+  contentHash     String
+  sourceFields    Json
+  rawResponseId   String    @db.Uuid
+  runId           String    @db.Uuid
+  retrievedAt     DateTime  @db.Timestamptz(3)
+
+  @@unique([cmcId, dateUtc, convention, revision])
+  @@index([cmcId, convention, dateUtc])
+}
+
+/// Pointer to the effective revision: the database guarantees one per asset/day/convention.
+model VmcDailyCurrent {
+  cmcId         Int
+  dateUtc       DateTime @db.Date
+  convention    String
+  observationId BigInt   @unique
+  updatedAt     DateTime @updatedAt @db.Timestamptz(3)
+
+  @@id([cmcId, dateUtc, convention])
+}
+
+/// Hourly quote snapshot of ROLLING 24h volume and market cap (not volume traded in the hour).
+model VmcHourlySnapshot {
+  id             BigInt    @id @default(autoincrement())
+  cmcId          Int
+  /// UTC hour containing the source observation time (bucketing policy).
+  hourBucket     DateTime  @db.Timestamptz(3)
+  /// Hour the collection job was scheduled for (null for historical backfill).
+  scheduledHour  DateTime? @db.Timestamptz(3)
+  observedAt     DateTime? @db.Timestamptz(3)
+  collectedAt    DateTime  @db.Timestamptz(3)
+  volume24hUsd   Decimal?  @db.Decimal(38, 8)
+  marketCapUsd   Decimal?  @db.Decimal(38, 8)
+  ratio          Decimal?  @db.Decimal(38, 18)
+  /// live_quote | historical_backfill
+  origin         String
+  endpoint       String
+  params         Json
+  valid          Boolean
+  invalidReasons String[]
+  isStale        Boolean   @default(false)
+  revision       Int
+  /// first | source_revision | newer_observation_in_hour
+  revisionReason String
+  contentHash    String
+  sourceFields   Json
+  rawResponseId  String    @db.Uuid
+  runId          String    @db.Uuid
+
+  @@unique([cmcId, hourBucket, revision])
+  @@index([cmcId, hourBucket])
+}
+
+model VmcHourlyCurrent {
+  cmcId      Int
+  hourBucket DateTime @db.Timestamptz(3)
+  snapshotId BigInt   @unique
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+
+  @@id([cmcId, hourBucket])
+}
+
+/// Versioned six-month baseline: arithmetic mean of valid daily ratios.
+model VmcBaseline {
+  id             String   @id @default(uuid()) @db.Uuid
+  cmcId          Int
+  version        Int
+  formulaVersion String
+  convention     String
+  windowStart    DateTime @db.Date
+  windowEnd      DateTime @db.Date
+  expectedDays   Int
+  returnedDays   Int
+  validDays      Int
+  invalidDays    Int
+  missingDays    Int
+  /// validDays / expectedDays
+  coverage       Decimal  @db.Decimal(9, 6)
+  /// full | partial | unavailable
+  status         String
+  statusReasons  String[]
+  ratioSum       Decimal? @db.Decimal(48, 18)
+  meanRatio      Decimal? @db.Decimal(38, 18)
+  firstValidDate DateTime? @db.Date
+  lastValidDate  DateTime? @db.Date
+  inputsHash     String
+  calculatedAt   DateTime @db.Timestamptz(3)
+  runId          String   @db.Uuid
+
+  members        VmcBaselineMember[]
+
+  @@unique([cmcId, version])
+  @@index([cmcId, calculatedAt])
+}
+
+model VmcBaselineMember {
+  baselineId    String      @db.Uuid
+  observationId BigInt
+  dateUtc       DateTime    @db.Date
+  ratio         Decimal?    @db.Decimal(38, 18)
+  included      Boolean
+  reason        String?
+
+  baseline      VmcBaseline @relation(fields: [baselineId], references: [id], onDelete: Cascade)
+
+  @@id([baselineId, observationId])
+}

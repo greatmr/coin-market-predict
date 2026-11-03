@@ -1,0 +1,14 @@
+[
+  {
+    "id": "bitcoin", "symbol": "btc", "name": "Bitcoin", "image": "https://example.invalid/btc.png",
+    "current_price": 100000, "market_cap": 1980000000000, "market_cap_rank": 1, "fully_diluted_valuation": 2100000000000,
+    "total_volume": 30000000000, "high_24h": 101000, "low_24h": 98000, "price_change_24h": 1200, "price_change_percentage_24h": 1.2,
+    "circulating_supply": 19800000, "total_supply": 21000000, "max_supply": 21000000, "last_updated": "2026-11-03T12:03:10.000Z",
+    "price_change_percentage_1h_in_currency": 0.12, "price_change_percentage_24h_in_currency": 1.2, "price_change_percentage_7d_in_currency": 3.5
+  },
+  {
+    "id": "weird-token", "symbol": "wrd<script>", "name": "Weird\u0007 Token ‮evil", "current_price": null, "market_cap": null,
+    "fully_diluted_valuation": 1000000, "total_volume": 5000, "circulating_supply": null, "last_updated": null
+  },
+  { "id": 12345, "symbol": "bad" }
+]

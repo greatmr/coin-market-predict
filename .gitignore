@@ -1,0 +1,19 @@
+node_modules/
+dist/
+coverage/
+src/generated/
+
+# Local runtime state (agent config dir, caches, backups)
+var/
+backups/
+
+# Secrets: never commit
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+
+.DS_Store
+*.log

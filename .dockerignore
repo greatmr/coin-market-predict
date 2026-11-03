@@ -1,0 +1,14 @@
+node_modules
+dist
+coverage
+src/generated
+var
+backups
+.git
+.env
+.env.*
+secrets
+*.pem
+*.key
+.claude/settings.local.json
+CLAUDE.local.md
