@@ -14,3 +14,12 @@ Historical Data page (semicolon-delimited). Dates, Volume and Market Cap for 202
 obscured and are placeholders, and the 2026-11-03 row is an invented incomplete day used to test
 that the current UTC day is skipped. The exact export header was not verified against a real
 download — the parser is tolerant of `,`/`;`, quotes and header naming.
+
+## CMC website responses
+
+`cmc-web-coin.html`, `cmc-web-detail.json`, `cmc-web-history.json`, `cmc-web-chart.json`
+and `cmc-web-listing.json` are trimmed public CMC responses captured on 2026-11-03 for XRP
+(id 52) and a small listing page. The coin HTML retains the embedded JSON shape; unrelated
+page content is omitted. History keeps four completed days; chart keeps sixteen samples.
+These are parser fixtures, not a current market feed. Database website tests synthesize
+response values to test full six-month windows and 72-hour persistence without networking.

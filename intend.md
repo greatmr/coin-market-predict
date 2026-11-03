@@ -8,8 +8,8 @@ Shortlisted assets are reviewed by Claude agents; results go to a dashboard and 
 channel. Every output is a **testable research hypothesis**, evaluated by paper trading.
 
 ## Requirements
-1. **Sources**: no paid market-data subscriptions. Prefer permitted scraping or public
-   datasets; never undocumented private APIs, CAPTCHA bypass, or evasive proxies. Free
+1. **Sources**: no paid market-data subscriptions. Support the explicitly selected CMC website collector and public
+   datasets; no CAPTCHA bypass or evasive proxies. Free
    official APIs only as an explicit, opt-in alternative.
 2. **Universe**: target every token the selected source lists; paginate; canonical identity by
    provider id and chain + contract (never symbol alone); honest coverage reporting.
@@ -41,8 +41,8 @@ channel. Every output is a **testable research hypothesis**, evaluated by paper 
 - Display timezone Asia/Tehran (configurable).
 
 ## Constraints
-- Website terms of CoinMarketCap, CoinGecko, CoinPaprika and DefiLlama prohibit scraping
-  (see `docs/source-feasibility.md`). No permitted scraping route provides the required fields.
+- The CMC website collector uses page data and website JSON endpoints with no supported API
+  contract. It is explicitly selected by the operator and may break if CMC changes access.
 - Free API tiers cannot sweep every listed token every hour; coverage is partial by design.
 - The Agent SDK docs state third parties may not offer claude.ai login/rate limits to *their*
   users without approval; this project must not be offered to others on the operator's token.
@@ -65,11 +65,9 @@ channel. Every output is a **testable research hypothesis**, evaluated by paper 
 - Backtest reports "pending" when history is insufficient; never invented results.
 
 ## Unresolved decisions (owner: operator)
-1. **Live data source.** No permitted scraping route exists. Options: stay on fixtures;
-   enable CoinMarketCap Basic API (free key, commercial use permitted, recommended); or
-   CoinGecko Demo API (free key; non-commercial licence and limited storage rights — written
-   permission advisable before archiving or posting publicly). Requires an explicit choice
-   and a key.
+1. **Live data source.** Implemented choices: fixture, explicitly selected CMC website collector
+   (`DATA_SOURCE=coinmarketcap_web`, `VMC_SOURCE=cmc_web`, no key), or official keyed APIs.
+   The website page/history/chart/listing routes were verified live on 2026-11-03.
 2. **Coverage vs cadence.** Free tiers fit roughly the top 2,000–3,000 assets hourly. Choose
    hourly-partial (current default) or full-universe every few hours.
 3. **Redistribution in Telegram.** Summary signals are lower-risk than bulk data tables; confirm
@@ -78,7 +76,7 @@ channel. Every output is a **testable research hypothesis**, evaluated by paper 
    after real history accumulates and backtests exist.
 5. **Calibrated probabilities.** Not produced. Revisit only with enough labeled outcomes.
 6. **Volume / Market Cap universe and plan.** `VMC_ASSET_IDS` is empty until you choose ids
-   (examples: 1 BTC, 1027 ETH, 2 LTC). Needs a CoinMarketCap key; run `vmc:probe` to confirm the
-   plan's historical access (Basic documents daily 1 year / intraday 1 month for
+   (examples: 1 BTC, 1027 ETH, 2 LTC). Use the no-key website collector or a CoinMarketCap API key; run `vmc:probe`
+   to confirm the selected source's access (Basic documents daily 1 year / intraday 1 month for
    quotes/historical; OHLCV access on Basic is ambiguous). Display beyond dashboard/CLI/file and
    any comparison threshold are undecided (PDF p.8).

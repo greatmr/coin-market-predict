@@ -1,6 +1,6 @@
 /**
  * Source-independent adapter contract. Every adapter must:
- *  - use only permitted, documented access methods;
+ *  - label its access method explicitly;
  *  - report coverage honestly (`complete` only when every page the source offers was read);
  *  - return unavailable values as null, never estimates or substitutes.
  */
@@ -8,7 +8,7 @@
 export interface ProviderInfo {
   id: string;
   name: string;
-  accessMethod: "official_api" | "fixture" | "public_dataset";
+  accessMethod: "official_api" | "website" | "fixture" | "public_dataset";
   isLive: boolean;
   baseUrl: string | null;
   termsUrl: string | null;
@@ -93,6 +93,8 @@ export interface MarketDataSource {
   readonly info: ProviderInfo;
   discover(): Promise<DiscoveryResult>;
   collect(opts: CollectOptions): Promise<CollectResult>;
+  /** Actual historical samples only; callers retain source times and never fill gaps. */
+  history?(asset: SourceAsset, from: Date, to: Date): Promise<RawObservation[]>;
 }
 
 export const MARKET_DATA_SOURCE = Symbol("MARKET_DATA_SOURCE");

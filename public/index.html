@@ -35,15 +35,22 @@
           </label>
         </div>
       </div>
+      <div id="prediction-status" class="empty" role="status" aria-live="polite">Loading prediction status…</div>
       <div id="signals"></div>
     </section>
 
     <section>
       <div class="section-head">
-        <h2>Screening (all eligible, deterministic)</h2>
+        <h2>Coin screening</h2>
+        <label>Show
+          <select id="f-eligibility">
+            <option value="false">all coins, including warm-up</option>
+            <option value="true">eligible only</option>
+          </select>
+        </label>
         <label>Classification
           <select id="f-screen">
-            <option value="">all eligible</option>
+            <option value="">all classifications</option>
             <option value="advance_candidate">advance_candidate</option>
             <option value="move_underway">move_underway</option>
             <option value="gradual_trend">gradual_trend</option>

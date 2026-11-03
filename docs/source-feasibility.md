@@ -1,20 +1,29 @@
 # Market-data source feasibility
 
-Checked 2026-11-03 against primary documents. Plans and terms change; re-check with the
-`source-assessment` skill before enabling a live source. This is not legal advice.
+Website access verified 2026-11-03. The plan/terms comparison below is retained from the
+previous assessment; it is separate from the current collector's technical capabilities.
 
-## Conclusion
-**No permitted website-scraping route provides the required fields.** CoinMarketCap,
-CoinGecko, CoinPaprika and DefiLlama all prohibit automated collection from their websites.
-The only permitted non-API datasets (Binance Vision dumps, Kaggle) lack circulating market cap,
-supply and contracts, or are stale and individually licensed.
+## Current implementation
 
-So the project ships:
-- a **source-independent adapter interface** (`src/sources/types.ts`);
-- a **synthetic fixture source** (default, labeled `isLive=false` everywhere);
-- two **optional free official-API adapters** (CoinMarketCap Basic, CoinGecko Demo). These
-  are proposed as an *alternative* to the requested scraping approach and are never enabled
-  silently: they require `DATA_SOURCE=…` plus a free API key you obtain yourself.
+The earlier claim that CoinMarketCap could not be crawled was a source-policy conclusion,
+not a technical finding. On 2026-11-03, direct requests successfully retrieved the coin page's
+embedded Next.js data and its website listing, daily history and seven-day chart endpoints.
+The project now supports the operator-requested website collector explicitly:
+
+- `DATA_SOURCE=coinmarketcap_web`: paginated website listings into the analysis pipeline.
+- `VMC_SOURCE=cmc_web`, `VMC_DAILY_CONVENTION=ohlcv`: coin pages, daily OHLCV baseline inputs,
+  hourly chart backfill and current rolling-24h volume / market-cap snapshots.
+- `fixture` remains the offline default. The official CoinMarketCap and CoinGecko adapters
+  remain available as separate keyed sources.
+
+No browser runtime or `nest-crawler` dependency is necessary. Website endpoints are not the
+supported Pro API contract and can change. This implementation does not imply any change in
+CMC's website terms; source selection is explicit. See [the implemented routes, request
+behavior and commands](volume-mcap.md#9-no-key-website-crawler-and-manual-csv-import).
+
+The supplied historical request's `interval=3d` failed with application error `500`,
+`Unexpected value: 3d`, despite HTTP 200. `interval=1d` returned daily OHLCV data. The collector
+also filters responses to the requested UTC date window because CMC returned extra dates.
 
 ## Comparison
 
@@ -48,27 +57,26 @@ So the project ships:
 Not verified (pages rendered behind bot challenges or missing): CMC commercial API user
 agreement details, Binance main terms, CoinCap free tier.
 
-## Recommendation
-1. **Default: fixture mode** until you choose a source (unresolved decision #1 in `intend.md`).
-2. **Live option A — CoinMarketCap Basic (recommended).** Commercial rights on the free tier,
-   one call returns price/cap/volume/supply/contract. Budget: 1 credit per 200 listings; the
-   defaults (`SOURCE_MAX_MARKET_PAGES_PER_RUN=10`) cover the top ~2,000 hourly (~7,300
-   credits/month) — **partial coverage**, reported as such.
-3. **Live option B — CoinGecko Demo.** Best contract coverage across chains; but non-commercial
-   licence and the 24h cache-refresh clause conflict with a long-term archive. Obtain written
-   permission before archiving or posting publicly.
+## Selecting a source
+
+Use `coinmarketcap_web` / `cmc_web` for the requested no-key website collection, or use the
+existing official adapters with their keys. Choose monitored VMC numeric ids explicitly.
+Requests, page limits and budgets bound coverage; every collector reports partial coverage
+when it has not collected all reported assets. Market-analysis history accumulates hourly;
+the separate VMC workflow can backfill its daily baseline and recent hourly comparison.
 
 ## Access discipline (implemented in `PoliteHttpClient`)
-Sequential requests (concurrency 1), per-minute rate limit, monthly request budget persisted in
+Sequential requests (concurrency 1 per client), per-minute rate limit, monthly request budget persisted in
 PostgreSQL, exponential backoff with jitter, Retry-After (seconds or HTTP date), ETag
 conditional requests, circuit breaker (opens after repeated failures), and **suspension after
-repeated 401/403** until a human runs `npm run cli -- source:reset`. No proxy rotation, no
-identity spoofing, no CAPTCHA handling. "No bans" is not promised.
+repeated 401/403** until a human runs `npm run cli -- source:reset`. The website consumers share a client with a bounded 60-second cache and six requests/minute
+by default. Application-level errors inside HTTP 200 are also checked. No proxy rotation, no
+identity rotation, no CAPTCHA handling. "No bans" is not promised.
 
 ## Cost separation
 | Cost | Item |
 |---|---|
-| Market data | $0 (fixture, or free official API tiers; keys required) |
+| Market data | $0 (fixture, website collector without a key, or free official API tiers with keys) |
 | Model inference | Claude subscription via `CLAUDE_CODE_OAUTH_TOKEN` (usage limits apply); per-run and daily caps use the SDK's cost *estimate* (`total_cost_usd`) as a proxy |
 | Hosting | Your machine or a small VM + Docker; PostgreSQL storage grows ~1–2 GB/year at 2,000 assets/hour |
 | Telegram | Bot API is free; subject to rate limits |

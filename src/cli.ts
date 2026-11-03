@@ -28,12 +28,12 @@ const HELP = `Coins Predicts CLI
   telegram:deliver             Send pending live Telegram deliveries
   backtest [--final-test] [--min-history H]
                                Walk-forward backtest on stored history
-  source:reset                 Clear a suspended/open circuit breaker after you resolved the cause
+  source:reset [--provider ID] Clear a suspended/open circuit breaker after you resolved the cause
   agent:check                  Show agent runner availability (no model call)
 
 Volume / Market Cap baseline (docs/volume-mcap.md; needs VMC_ASSET_IDS):
-  vmc:probe                    Verify CMC key plan + endpoint access (~3 credits live)
-  vmc:sync-assets              Resolve configured CMC ids via /v1/cryptocurrency/map (0 credits)
+  vmc:probe                    Verify selected CMC source (website: no key; API: plan/endpoints)
+  vmc:sync-assets              Resolve configured CMC ids using the selected source
   vmc:daily [--full]           Backfill/refresh completed daily history
   vmc:baseline                 Recalculate six-month baselines from stored daily rows
   vmc:weekly                   vmc:daily then vmc:baseline (scheduled weekly)
@@ -175,11 +175,13 @@ async function main() {
       }
       case "source:reset": {
         const prisma = ctx.get(PrismaService);
+        const provider = arg("--provider") ?? cfg.DATA_SOURCE;
+        if (!["fixture", "coinmarketcap", "coinmarketcap_web", "coingecko"].includes(provider)) throw new Error("unknown source provider");
         await prisma.sourceHealth.updateMany({
-          where: { providerId: cfg.DATA_SOURCE },
+          where: { providerId: provider },
           data: { state: "closed", consecutiveFailures: 0, consecutiveDenials: 0, suspendedReason: null, openedAt: null, retryAfterUntil: null },
         });
-        process.stdout.write(`circuit reset for ${cfg.DATA_SOURCE}\n`);
+        process.stdout.write(`circuit reset for ${provider}\n`);
         break;
       }
       case "agent:check": {

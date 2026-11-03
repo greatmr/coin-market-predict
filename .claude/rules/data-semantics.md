@@ -21,5 +21,5 @@ paths:
 - Features: declare `minSnapshots` and fields in `features/registry.ts`; missing history →
   NULL + reason. Any formula change bumps `FEATURE_SET_VERSION`; strategy changes bump the
   strategy `version`.
-- Sources: documented, permitted access only; respect budgets, Retry-After, circuit breaker;
-  suspend on persistent denial. No scraping of sites whose terms forbid it.
+- Sources: official APIs or the explicitly configured CMC website collector; respect budgets,
+  Retry-After and circuit breakers; suspend on persistent denial. No CAPTCHA bypass or evasive proxies.

@@ -8,6 +8,7 @@ import { BENCHMARK_IDS } from "../sources/benchmarks.js";
 import type { MarketDataSource, ProviderInfo, SourceAsset } from "../sources/types.js";
 import { MARKET_DATA_SOURCE } from "../sources/types.js";
 import { classifyAsset, stricterClass } from "./classify.js";
+import { addHours, slotOf } from "../common/time.js";
 import { normalizeContract, sanitizeText, validateObservation, type SnapshotDraft } from "./validate.js";
 
 export interface CoverageReport {
@@ -192,27 +193,8 @@ export class IngestionService {
     return { created, idMap };
   }
 
-  /** Collect, validate, and persist one hourly slot. Idempotent per (provider, asset, slot, quote). */
-  async collect(slot: Date, runId: string | null, now: Date, opts: { fixtureBackfill?: boolean } = {}): Promise<CoverageReport> {
+  private async persistDrafts(drafts: SnapshotDraft[], idMap: Map<string, string>, runId: string | null): Promise<number> {
     const providerId = this.source.info.id;
-    await this.ensureProvider();
-    if (opts.fixtureBackfill && this.source.info.isLive) throw new Error("backfill is only permitted for the synthetic fixture source");
-    const result = await this.source.collect({ slot, maxPages: this.cfg.SOURCE_MAX_MARKET_PAGES_PER_RUN });
-    // Synthetic history is "collected" at the slot it represents and flagged as backfill.
-    const collectedAt = opts.fixtureBackfill ? new Date(slot.getTime() + 5 * 60_000) : now;
-
-    const drafts: SnapshotDraft[] = result.observations.map((o) => {
-      const d = validateObservation(o, { slotTime: slot, collectedAt, staleAfterMinutes: this.cfg.STALE_AFTER_MINUTES });
-      if (opts.fixtureBackfill) d.qualityFlags.push("fixture_backfill");
-      return d;
-    });
-    // Assets seen during collection but not yet discovered get canonical identities too.
-    const { created, idMap } = await this.upsertAssets(
-      providerId,
-      result.observations.map((o) => ({ providerAssetId: o.providerAssetId, name: o.name, symbol: o.symbol, sourceUrl: o.sourceUrl, platforms: [], categories: o.categories })),
-      now,
-    );
-
     const rows = drafts.map((d) => ({
       assetId: idMap.get(d.providerAssetId)!,
       providerId,
@@ -248,6 +230,75 @@ export class IngestionService {
     let inserted = 0;
     for (const c of chunks(rows)) inserted += (await this.prisma.marketSnapshot.createMany({ data: c, skipDuplicates: true })).count;
 
+    return inserted;
+  }
+
+  /** Seed genuine chart history for a bounded shortlist before the first feature calculation. */
+  async bootstrapHistory(slot: Date, runId: string, collectedAt: Date): Promise<{ inserted: number; notes: string[] }> {
+    const limit = this.cfg.SOURCE_HISTORY_BOOTSTRAP_MAX_ASSETS;
+    if (!this.source.history || !limit) return { inserted: 0, notes: [] };
+    const providerId = this.source.info.id;
+    const benchmarks = BENCHMARK_IDS[providerId];
+    const priority = [...new Set([...this.cfg.VMC_ASSET_IDS.map(String), ...(benchmarks ? [benchmarks.btc, benchmarks.eth] : [])])];
+    const current = await this.prisma.marketSnapshot.findMany({
+      where: { providerId, slotTime: slot, isStale: false, price: { gt: 0 }, marketCap: { gte: this.cfg.MIN_MARKET_CAP_USD }, volumeRolling24h: { gte: this.cfg.MIN_VOLUME_24H_USD } },
+      include: { asset: { select: { name: true, symbol: true, assetClass: true } } },
+      orderBy: [{ providerChangePct1h: { sort: "desc", nulls: "last" } }, { marketCap: "desc" }],
+    });
+    const rank = (id: string) => { const i = priority.indexOf(id); return i === -1 ? priority.length : i; };
+    const selected = current.filter((s) => !["stablecoin", "wrapped", "bridged", "staked"].includes(s.asset.assetClass)).sort((a, b) => rank(a.providerAssetId) - rank(b.providerAssetId)).slice(0, limit);
+    const notes: string[] = [];
+    let inserted = 0;
+    for (const s of selected) {
+      const needed = this.cfg.SNAPSHOT_WINDOW - 1;
+      const recent = await this.prisma.marketSnapshot.count({ where: { providerId, assetId: s.assetId, slotTime: { gte: addHours(slot, -needed), lt: slot }, isStale: false, price: { gt: 0 }, volumeRolling24h: { not: null }, marketCap: { gt: 0 } } });
+      if (recent >= needed) continue;
+      try {
+        const samples = await this.source.history({ providerAssetId: s.providerAssetId, name: s.asset.name, symbol: s.asset.symbol, sourceUrl: s.sourceUrl, platforms: [] }, addHours(slot, -72), new Date(slot.getTime() - 1));
+        const drafts = samples.flatMap((raw) => {
+          if (!raw.observedAt || raw.observedAt >= slot || raw.observedAt < addHours(slot, -72)) return [];
+          const bucket = slotOf(raw.observedAt);
+          // Evaluate historical freshness at that hour's end, while keeping actual retrieval time.
+          const d = validateObservation(raw, { slotTime: bucket, collectedAt: new Date(bucket.getTime() + 3600_000 - 1), staleAfterMinutes: this.cfg.STALE_AFTER_MINUTES });
+          if (d.price === null || d.marketCap === null || d.volumeRolling24h === null) return [];
+          d.collectedAt = collectedAt;
+          d.freshnessSeconds = Math.round((collectedAt.getTime() - raw.observedAt.getTime()) / 1000);
+          d.qualityFlags.push("historical_backfill");
+          return [d];
+        });
+        inserted += await this.persistDrafts(drafts, new Map([[s.providerAssetId, s.assetId]]), runId);
+      } catch (err) {
+        notes.push(`history bootstrap stopped for ${s.asset.symbol}: ${redact(err).slice(0, 180)}`);
+        break; // A historical endpoint failure must not discard the collected current snapshot.
+      }
+    }
+    if (inserted) notes.push(`bootstrapped ${inserted} genuine hourly observations for up to ${limit} assets; remaining coins warm up with scheduled collection`);
+    return { inserted, notes };
+  }
+
+  /** Collect, validate, and persist one hourly slot. Idempotent per (provider, asset, slot, quote). */
+  async collect(slot: Date, runId: string | null, now: Date, opts: { fixtureBackfill?: boolean } = {}): Promise<CoverageReport> {
+    const providerId = this.source.info.id;
+    await this.ensureProvider();
+    if (opts.fixtureBackfill && this.source.info.isLive) throw new Error("backfill is only permitted for the synthetic fixture source");
+    const result = await this.source.collect({ slot, maxPages: this.cfg.SOURCE_MAX_MARKET_PAGES_PER_RUN });
+    // Synthetic history is "collected" at the slot it represents and flagged as backfill.
+    const collectedAt = opts.fixtureBackfill ? new Date(slot.getTime() + 5 * 60_000) : now;
+
+    const drafts: SnapshotDraft[] = result.observations.map((o) => {
+      const d = validateObservation(o, { slotTime: slot, collectedAt, staleAfterMinutes: this.cfg.STALE_AFTER_MINUTES });
+      if (opts.fixtureBackfill) d.qualityFlags.push("fixture_backfill");
+      return d;
+    });
+    // Assets seen during collection but not yet discovered get canonical identities too.
+    const { created, idMap } = await this.upsertAssets(
+      providerId,
+      result.observations.map((o) => ({ providerAssetId: o.providerAssetId, name: o.name, symbol: o.symbol, sourceUrl: o.sourceUrl, platforms: [], categories: o.categories })),
+      now,
+    );
+
+    const inserted = await this.persistDrafts(drafts, idMap, runId);
+
     const lastDiscovery = await this.prisma.discoveryRun.findFirst({
       where: { providerId, status: { in: ["succeeded", "partial"] } },
       orderBy: { startedAt: "desc" },
@@ -266,7 +317,7 @@ export class IngestionService {
           ? "partial"
           : "unknown";
     const notes = [...result.notes];
-    if (inserted < rows.length) notes.push(`${rows.length - inserted} snapshots already stored for this slot (idempotent re-run)`);
+    if (inserted < drafts.length) notes.push(`${drafts.length - inserted} snapshots already stored for this slot (idempotent re-run)`);
     this.log.log(`collected ${collected} observations for ${slot.toISOString()} (${label}${coveragePct !== null ? `, ${coveragePct.toFixed(1)}%` : ""})`);
     return {
       providerId,

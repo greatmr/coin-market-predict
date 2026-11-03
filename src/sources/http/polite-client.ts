@@ -23,12 +23,15 @@ export interface PoliteClientOptions {
   clock?: Clock;
   sleep?: (ms: number) => Promise<void>;
   fetchImpl?: typeof fetch;
+  /** Interpret providers that report application errors inside an HTTP 200 response. */
+  responseStatus?: (response: Response, body: string) => number;
 }
 
 export class SourceUnavailableError extends Error {
   constructor(
     message: string,
     public readonly reason: "circuit_open" | "suspended" | "budget_exhausted" | "retry_after" | "denied" | "failed",
+    public readonly httpStatus: number | null = null,
   ) {
     super(message);
     this.name = "SourceUnavailableError";
@@ -37,7 +40,7 @@ export class SourceUnavailableError extends Error {
 
 interface CacheEntry {
   etag: string;
-  body: unknown;
+  body: string;
 }
 
 /**
@@ -47,8 +50,9 @@ interface CacheEntry {
  * suspends collection on persistent access denial. It never rotates identities or proxies.
  */
 export class PoliteHttpClient {
-  private readonly o: Required<Omit<PoliteClientOptions, "headers" | "fetchImpl" | "clock" | "sleep">> & {
+  private readonly o: Required<Omit<PoliteClientOptions, "headers" | "fetchImpl" | "clock" | "sleep" | "responseStatus">> & {
     headers: Record<string, string>;
+    responseStatus?: PoliteClientOptions["responseStatus"];
   };
   private readonly clock: Clock;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -78,13 +82,18 @@ export class PoliteHttpClient {
   }
 
   /** Serialized GET returning parsed JSON. Concurrency is always 1 per client. */
-  getJson<T>(url: string): Promise<T> {
-    const run = this.queue.then(() => this.doGet<T>(url));
+  async getJson<T>(url: string): Promise<T> {
+    return JSON.parse(await this.getText(url)) as T;
+  }
+
+  /** Keep the original digits for Decimal parsing and raw-response auditing. */
+  getText(url: string, onResponse?: (res: Response, body: string) => Promise<void>): Promise<string> {
+    const run = this.queue.then(() => this.doGet(url, onResponse));
     this.queue = run.catch(() => undefined);
     return run;
   }
 
-  private async doGet<T>(url: string): Promise<T> {
+  private async doGet(url: string, onResponse?: (res: Response, body: string) => Promise<void>): Promise<string> {
     let attempt = 0;
     for (;;) {
       attempt++;
@@ -95,6 +104,7 @@ export class PoliteHttpClient {
       await this.rateLimit();
 
       let res: Response;
+      let body: string;
       try {
         const headers: Record<string, string> = {
           accept: "application/json",
@@ -105,6 +115,7 @@ export class PoliteHttpClient {
         if (cached) headers["if-none-match"] = cached.etag;
         res = await this.fetchImpl(url, { headers, signal: AbortSignal.timeout(this.o.timeoutMs) });
         this.requestsMade++;
+        body = await res.text();
       } catch (err) {
         await this.recordFailure(null);
         if (attempt >= this.o.maxAttempts) {
@@ -114,44 +125,55 @@ export class PoliteHttpClient {
         continue;
       }
 
-      if (res.status === 304) {
+      await onResponse?.(res, res.status === 304 ? this.etagCache.get(url)?.body ?? body : body);
+      const status = this.o.responseStatus?.(res, body) ?? res.status;
+
+      if (status === 304) {
         const cached = this.etagCache.get(url);
         await this.recordSuccess(304);
-        if (cached) return cached.body as T;
+        if (cached) return cached.body;
       }
 
-      if (res.ok) {
-        const body = (await res.json()) as T;
+      if (status >= 200 && status < 300) {
         const etag = res.headers.get("etag");
-        if (etag) this.etagCache.set(url, { etag, body });
+        if (etag) {
+          if (this.etagCache.size >= 64) this.etagCache.delete(this.etagCache.keys().next().value!);
+          this.etagCache.set(url, { etag, body });
+        }
         await this.recordSuccess(res.status);
         return body;
       }
 
-      if (res.status === 401 || res.status === 403) {
-        const h = await this.recordDenial(res.status);
+      if (status === 401 || status === 403) {
+        const h = await this.recordDenial(status);
         throw new SourceUnavailableError(
-          `Access denied (HTTP ${res.status}). ${h.state === "suspended" ? "Collection suspended until manual reset." : "Will retry next run."}`,
+          `Access denied (HTTP ${status}). ${h.state === "suspended" ? "Collection suspended until manual reset." : "Will retry next run."}`,
           "denied",
+          status,
         );
       }
 
-      const retryable = res.status === 429 || res.status >= 500;
-      await this.recordFailure(res.status);
+      const retryable = status === 429 || status >= 500;
+      await this.recordFailure(status);
       if (!retryable) {
-        throw new SourceUnavailableError(`HTTP ${res.status} for ${redact(stripQuery(url))}`, "failed");
+        throw new SourceUnavailableError(`HTTP ${status} for ${redact(stripQuery(url))}`, "failed", status);
       }
       const retryAfterMs = parseRetryAfter(res.headers.get("retry-after"), this.clock.now());
+      if (status === 429) {
+        const h = await this.o.store.load(this.o.providerId);
+        h.retryAfterUntil = new Date(this.clock.now().getTime() + (retryAfterMs ?? 60_000));
+        await this.o.store.save(this.o.providerId, h);
+      }
       if (retryAfterMs !== null && retryAfterMs > this.o.maxInlineRetryAfterMs) {
         const h = await this.o.store.load(this.o.providerId);
         h.retryAfterUntil = new Date(this.clock.now().getTime() + retryAfterMs);
         await this.o.store.save(this.o.providerId, h);
-        throw new SourceUnavailableError(`Source asked us to wait ${Math.round(retryAfterMs / 1000)}s`, "retry_after");
+        throw new SourceUnavailableError(`Source asked us to wait ${Math.round(retryAfterMs / 1000)}s`, "retry_after", status);
       }
       if (attempt >= this.o.maxAttempts) {
-        throw new SourceUnavailableError(`HTTP ${res.status} after ${attempt} attempts`, "failed");
+        throw new SourceUnavailableError(`HTTP ${status} after ${attempt} attempts`, "failed", status);
       }
-      await this.sleep(Math.max(retryAfterMs ?? 0, this.backoff(attempt)));
+      await this.sleep(Math.max(retryAfterMs ?? (status === 429 ? 60_000 : 0), this.backoff(attempt)));
     }
   }
 

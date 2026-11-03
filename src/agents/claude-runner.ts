@@ -183,8 +183,14 @@ export class ClaudeAgentRunner implements AgentRunner {
       };
       const common = { ...acc, usage, costUsd: msg.total_cost_usd, numTurns: msg.num_turns, sessionId: msg.session_id };
       if (msg.subtype === "success") {
+        if (msg.is_error) {
+          const status = msg.api_error_status;
+          const kind: AgentErrorKind = status === 401 || status === 403 ? "authentication_failed" : status === 402 ? "billing_error" : status === 429 ? "rate_limit" : status === 404 ? "model_not_found" : status === 529 ? "overloaded" : acc.errorKind ?? "sdk_error";
+          return { ...common, errorKind: kind, errorMessage: redact(msg.result || describeError(kind)).slice(0, 500) };
+        }
         if (msg.structured_output === undefined || msg.structured_output === null) {
-          return { ...common, errorKind: "invalid_output", errorMessage: "run completed without structured output" };
+          const detail = msg.result ? `: ${redact(msg.result).slice(0, 400)}` : "";
+          return { ...common, errorKind: acc.errorKind ?? "invalid_output", errorMessage: acc.errorMessage ?? `run completed without structured output${detail}` };
         }
         const parsed = req.outputSchema.safeParse(msg.structured_output);
         if (!parsed.success) {

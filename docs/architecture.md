@@ -5,7 +5,7 @@
                  ┌─────────────── NestJS application (one process) ───────────────┐
  cron (UTC) ───▶ │ PipelineService (lease + stage records)                         │
                  │  discover ─ collect ─ validate ─ persist ─ features ─ screen     │
-                 │        │ MarketDataSource adapter (fixture | CMC | CoinGecko)    │
+                 │        │ MarketDataSource adapter (fixture | CMC API/web | CoinGecko)    │
                  │  analyze ─▶ AnalysisService ─▶ Claude Agent SDK (subprocess)     │
                  │               analyst → reviewer (→ escalation) → coordinator    │
                  │               in-process MCP "coins" (role-scoped read tools)    │
@@ -21,7 +21,7 @@
 | Module | Responsibility |
 |---|---|
 | `config/` | Zod-validated env, `*_FILE` secrets, redaction |
-| `sources/` | Adapter contract, fixture market, CMC/CoinGecko adapters, polite HTTP client, persisted source health |
+| `sources/` | Adapter contract, fixture market, CMC API/website and CoinGecko adapters, shared website queue, polite HTTP client, persisted source health |
 | `ingestion/` | Discovery (identity resolution, delisting on complete sweeps), collection, validation, coverage |
 | `features/` | Versioned feature registry + pure computation; market context |
 | `screening/` | Strategy version, eligibility, classification, heuristic score, paper scenario, evidence packs |
@@ -88,3 +88,15 @@ capped at `watch`, report says "agent analysis unavailable". `authentication_fai
   `--allow-write`). The only write tool, `publish_signal_report`, validates input and caps
   `candidate` → `watch`.
 - PostgreSQL is the single source of truth for all three.
+
+## CMC website collection
+
+`CmcWebModule` supplies one shared `CmcWebClient` to the main source adapter and VMC module.
+It reads coin pages' embedded Next.js data and the website listing/detail/history/chart JSON
+endpoints. A bounded cache reduces repeated calls; `PoliteHttpClient` provides sequential
+requests, persisted monthly budgets/cooldowns, backoff, Retry-After and denial suspension.
+HTTP-200 application errors are normalized for retry decisions while VMC raw storage keeps
+the original HTTP status and body. VMC daily data uses OHLCV; chart hourly points use rolling
+24h volume and circulating cap. Raw-response hashes and existing revision tables preserve
+provenance. Main website snapshots flow through ingestion, features, screening and agent
+read tools just like the other sources. See `docs/volume-mcap.md` for routes and setup.

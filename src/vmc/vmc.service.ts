@@ -7,6 +7,8 @@ import { APP_CONFIG, type AppConfig, describeConfig } from "../config/config.js"
 import { redact } from "../config/redact.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { LeaseService } from "../pipeline/lease.service.js";
+import { CmcWebClient, WEB_CHART, WEB_DETAIL, WEB_HISTORY, type RecordWebResponse } from "../sources/coinmarketcap-web/client.js";
+import { parseWebDaily, parseWebHourly, parseWebIdentity, parseWebLatest, websiteData } from "../sources/coinmarketcap-web/parse.js";
 import { BASELINE_FORMULA_VERSION, computeBaseline } from "./baseline.js";
 import { CmcApiError, CmcClient } from "./cmc-client.js";
 import { fixtureFetch } from "./cmc-fixture.js";
@@ -32,6 +34,7 @@ interface RunCtx {
   runId: string;
   client: CmcClient;
   now: Date;
+  record: RecordWebResponse;
   result: (cmcId: number, status: "ok" | "partial" | "failed" | "skipped", detail: Record<string, unknown>, error?: string) => Promise<void>;
 }
 
@@ -45,7 +48,7 @@ export interface JobOutcome {
 }
 
 /** Errors that apply to every asset/request in a run: stop instead of repeating them. */
-const RUN_ABORTING = new Set(["auth", "billing", "credits_exhausted", "budget", "plan_not_authorized"]);
+const RUN_ABORTING = new Set(["auth", "billing", "credits_exhausted", "budget", "plan_not_authorized", "rate_limited"]);
 const CAPABILITIES_KEY = "vmc.capabilities";
 const BACKFILL_UNAVAILABLE_KEY = "vmc.hourlyBackfillUnavailable";
 
@@ -61,6 +64,7 @@ export class VmcService {
     private readonly prisma: PrismaService,
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
     private readonly leases: LeaseService,
+    private readonly web: CmcWebClient,
   ) {}
 
   get isFixture() {
@@ -69,6 +73,17 @@ export class VmcService {
 
   get assetIds(): number[] {
     return this.cfg.VMC_ASSET_IDS;
+  }
+
+  private get isWeb() { return this.cfg.VMC_SOURCE === "cmc_web"; }
+
+  private recordRaw(runId: string): RecordWebResponse {
+    return async (r) => {
+      const row = await this.prisma.vmcRawResponse.create({
+        data: { runId, endpoint: r.endpoint, params: r.params, httpStatus: r.httpStatus, errorCode: r.errorCode, creditCount: r.creditCount, retrievedAt: r.retrievedAt, body: r.body, bodySha256: sha256(r.body), isFixture: this.isFixture },
+      });
+      return row.id;
+    };
   }
 
   private makeClient(runId: string): CmcClient {
@@ -85,12 +100,7 @@ export class VmcService {
       now: this.now,
       creditsUsedThisMonth: async () =>
         (await this.prisma.vmcRawResponse.aggregate({ where: { isFixture: this.isFixture, retrievedAt: { gte: monthStart() } }, _sum: { creditCount: true } }))._sum.creditCount ?? 0,
-      record: async (r) => {
-        const row = await this.prisma.vmcRawResponse.create({
-          data: { runId, endpoint: r.endpoint, params: r.params, httpStatus: r.httpStatus, errorCode: r.errorCode, creditCount: r.creditCount, retrievedAt: r.retrievedAt, body: r.body, bodySha256: sha256(r.body), isFixture: this.isFixture },
-        });
-        return row.id;
-      },
+      record: this.recordRaw(runId),
     });
   }
 
@@ -110,7 +120,7 @@ export class VmcService {
         isFixture: this.isFixture,
         scheduledFor: scheduledFor ?? null,
         startedAt: now,
-        config: Object.fromEntries(Object.entries(d).filter(([k]) => k.startsWith("VMC_") || k === "CMC_PLAN" || k === "CMC_API_KEY")) as never,
+        config: Object.fromEntries(Object.entries(d).filter(([k]) => k.startsWith("VMC_") || k.startsWith("CMC_WEB_") || k === "CMC_PLAN" || k === "CMC_API_KEY")) as never,
       },
     });
     const client = this.makeClient(run.id);
@@ -119,6 +129,7 @@ export class VmcService {
       runId: run.id,
       client,
       now,
+      record: this.recordRaw(run.id),
       result: async (cmcId, status, detail, error) => {
         assets[cmcId] = status;
         await this.prisma.vmcAssetResult.upsert({
@@ -170,6 +181,21 @@ export class VmcService {
   // ---------------------------------------------------------------------------------------
   probe(): Promise<JobOutcome> {
     return this.withRun("probe", async (ctx) => {
+      if (this.isWeb) {
+        const id = this.assetIds[0] ?? 1;
+        const detail = await this.web.get(WEB_DETAIL, { id, convertId: 2781 }, ctx.record);
+        const identity = parseWebIdentity(websiteData(detail.body), id);
+        const latest = await this.web.coin(id, identity.slug, ctx.record);
+        const quote = parseWebLatest(latest.body as Record<string, unknown>, id);
+        const end = Math.floor(ctx.now.getTime() / 1000);
+        const daily = await this.web.get(WEB_HISTORY, { id, convertId: 2781, timeStart: end - 7 * 86400, timeEnd: end, interval: "1d" }, ctx.record);
+        const history = parseWebDaily(daily.body, id, ctx.now);
+        const chart = await this.web.get(WEB_CHART, { id, convertId: 2781, range: "7D" }, ctx.record);
+        const hourly = parseWebHourly(chart.body, id, new Date(ctx.now.getTime() - 72 * HOUR_MS), ctx.now);
+        const caps = { checkedAt: ctx.now.toISOString(), source: "cmc_web", isFixture: false, coinPage: { available: quote.pair.valid, endpoint: latest.endpoint }, dailyHistory: { available: history.rows.some((r) => r.valid), convention: "ohlcv", returnedDays: history.rows.length }, hourlyHistory: { available: hourly.some((r) => r.valid), range: "7D", returnedHours: hourly.length }, keyRequired: false };
+        await this.prisma.appState.upsert({ where: { key: CAPABILITIES_KEY }, create: { key: CAPABILITIES_KEY, value: caps }, update: { value: caps } });
+        return caps;
+      }
       const caps: Record<string, unknown> = { checkedAt: ctx.now.toISOString(), configuredPlan: this.cfg.CMC_PLAN, isFixture: this.isFixture };
       const attempt = async (name: string, endpoint: string, params: Record<string, string | number>, credits: number) => {
         try {
@@ -204,18 +230,26 @@ export class VmcService {
     return this.withRun("sync_assets", async (ctx) => {
       const wanted = new Set(this.assetIds);
       const found = new Map<number, ReturnType<typeof parseMap>[number]>();
-      for (const status of ["active", "inactive", "untracked"]) {
-        for (let start = 1; wanted.size > found.size && start < 100_000; start += 5000) {
-          const r = await ctx.client.get("/v1/cryptocurrency/map", { listing_status: status, start, limit: 5000, sort: "id", aux: "first_historical_data,last_historical_data,is_active" }, 0);
-          const page = parseMap(r.body);
-          for (const e of page) if (wanted.has(e.cmcId)) found.set(e.cmcId, e);
-          if (page.length < 5000) break;
+      if (this.isWeb) {
+        await this.forEachAsset(ctx, this.assetIds, async (id) => {
+          const r = await this.web.get(WEB_DETAIL, { id, convertId: 2781 }, ctx.record);
+          found.set(id, parseWebIdentity(websiteData(r.body), id));
+        });
+      } else {
+        for (const status of ["active", "inactive", "untracked"]) {
+          for (let start = 1; wanted.size > found.size && start < 100_000; start += 5000) {
+            const r = await ctx.client.get("/v1/cryptocurrency/map", { listing_status: status, start, limit: 5000, sort: "id", aux: "first_historical_data,last_historical_data,is_active" }, 0);
+            const page = parseMap(r.body);
+            for (const e of page) if (wanted.has(e.cmcId)) found.set(e.cmcId, e);
+            if (page.length < 5000) break;
+          }
+          if (found.size === wanted.size) break;
         }
-        if (found.size === wanted.size) break;
       }
       for (const id of this.assetIds) {
         const e = found.get(id);
         if (!e) {
+          if (this.isWeb) continue; // forEachAsset already recorded the precise failure/skip.
           await ctx.result(id, "failed", { reason: "cmc_id_not_found_in_map" }, `CMC id ${id} not found in /v1/cryptocurrency/map`);
           continue;
         }
@@ -223,7 +257,7 @@ export class VmcService {
         const changes = prev
           ? (["symbol", "name", "slug"] as const).filter((f) => (prev[f] ?? null) !== (e[f] ?? null)).map((f) => ({ cmcId: id, field: f, oldValue: prev[f] ?? null, newValue: e[f] ?? null, observedAt: ctx.now, runId: ctx.runId }))
           : [];
-        const meta = { symbol: e.symbol, name: e.name, slug: e.slug, isActive: e.isActive, firstHistoricalAt: e.firstHistoricalAt, lastHistoricalAt: e.lastHistoricalAt, metadataSource: "/v1/cryptocurrency/map" };
+        const meta = { symbol: e.symbol, name: e.name, slug: e.slug, isActive: e.isActive, firstHistoricalAt: e.firstHistoricalAt, lastHistoricalAt: e.lastHistoricalAt, metadataSource: this.isWeb ? WEB_DETAIL : "/v1/cryptocurrency/map" };
         await this.prisma.$transaction([
           this.prisma.vmcAsset.upsert({ where: { cmcId: id }, create: { cmcId: id, ...meta }, update: meta }),
           this.prisma.vmcAssetMetadataChange.createMany({ data: changes }),
@@ -264,7 +298,15 @@ export class VmcService {
         let params: Record<string, string | number>;
         let notes: Record<string, unknown> = {};
         let rawId: string;
-        if (conv === "eod_quote") {
+        if (this.isWeb) {
+          endpoint = WEB_HISTORY;
+          params = { id, convertId: 2781, timeStart: Math.floor(parseIsoDate(from).getTime() / 1000), timeEnd: Math.floor(parseIsoDate(addDays(win.end, 1)).getTime() / 1000) - 1, interval: "1d" };
+          const r = await this.web.get(endpoint, params, ctx.record);
+          rawId = r.rawResponseId;
+          const parsed = parseWebDaily(r.body, id, ctx.now);
+          rows = parsed.rows;
+          notes = { incompletePeriodsSkipped: parsed.incompleteSkipped };
+        } else if (conv === "eod_quote") {
           endpoint = "/v3/cryptocurrency/quotes/historical";
           params = {
             id,
@@ -479,13 +521,13 @@ export class VmcService {
       const hours = this.cfg.VMC_RECENT_WINDOW_HOURS;
       const start = new Date(hourFloor(ctx.now).getTime() - (hours - 1) * HOUR_MS);
       const abort = await this.forEachAsset(ctx, todo, async (id) => {
-        const endpoint = "/v3/cryptocurrency/quotes/historical";
-        const params = { id, interval: "hourly", convert: "USD", time_start: start.toISOString(), time_end: ctx.now.toISOString() };
-        const r = await ctx.client.get(endpoint, params, Math.ceil(hours / 100));
-        const rows = parseHourlyHistorical(r.body).filter((x) => x.cmcId === id && x.hourBucket >= start);
+        const endpoint = this.isWeb ? WEB_CHART : "/v3/cryptocurrency/quotes/historical";
+        const params: Record<string, string | number> = this.isWeb ? { id, range: "7D", convertId: 2781 } : { id, interval: "hourly", convert: "USD", time_start: start.toISOString(), time_end: ctx.now.toISOString() };
+        const r = this.isWeb ? await this.web.get(endpoint, params, ctx.record) : await ctx.client.get(endpoint, params, Math.ceil(hours / 100));
+        const rows = this.isWeb ? parseWebHourly(r.body, id, start, ctx.now) : parseHourlyHistorical(r.body).filter((x) => x.cmcId === id && x.hourBucket >= start && x.observedAt <= ctx.now);
         const counts = { inserted: 0, revised: 0, unchanged: 0, olderIgnored: 0 };
         for (const row of rows) counts[await this.upsertHourly(row, { origin: "historical_backfill", endpoint, params, rawId: r.rawResponseId, scheduledHour: null, collectedAt: ctx.now }, ctx)]++;
-        await this.prisma.vmcAsset.update({ where: { cmcId: id }, data: { hourlyBackfilledAt: ctx.now } });
+        if (rows.length) await this.prisma.vmcAsset.update({ where: { cmcId: id }, data: { hourlyBackfilledAt: ctx.now } });
         await ctx.result(id, rows.length < hours ? "partial" : "ok", { endpoint, params, returnedHours: rows.length, expectedHours: hours, ...counts });
       });
       if (abort?.kind === "plan_not_authorized") {
@@ -505,6 +547,22 @@ export class VmcService {
       "hourly",
       async (ctx) => {
         const ids = await this.requireAssets(ctx);
+        if (this.isWeb) {
+          await this.forEachAsset(ctx, ids, async (id) => {
+            const asset = await this.prisma.vmcAsset.findUniqueOrThrow({ where: { cmcId: id } });
+            const r = await this.web.coin(id, asset.slug, ctx.record);
+            const q = parseWebLatest(r.body as Record<string, unknown>, id);
+            const invalid = [...q.pair.invalidReasons];
+            if (!q.observedAt) invalid.push("missing_observation_time");
+            if (q.observedAt && q.observedAt > this.now()) invalid.push("future_observation_time");
+            const row: HourlyRow = { cmcId: id, observedAt: q.observedAt ?? scheduledHour, hourBucket: hourFloor(q.observedAt ?? scheduledHour), ...q.pair, valid: invalid.length === 0, ratio: invalid.length === 0 ? q.pair.ratio : null, invalidReasons: invalid, sourceFields: q.sourceFields };
+            const result = await this.upsertHourly(row, { origin: "live_quote", endpoint: r.endpoint, params: r.params, rawId: r.rawResponseId, scheduledHour, collectedAt: this.now() }, ctx);
+            const stale = !q.observedAt || this.now().getTime() - q.observedAt.getTime() > this.cfg.VMC_STALE_AFTER_MINUTES * 60_000;
+            await ctx.result(id, row.valid && !stale ? "ok" : "partial", { result, endpoint: r.endpoint, observedAt: q.observedAt?.toISOString() ?? null, stale, invalidReasons: invalid });
+            await this.recordMetadata(id, q, ctx);
+          });
+          return { scheduledHour: scheduledHour.toISOString(), source: "cmc_web" };
+        }
         const endpoint = "/v3/cryptocurrency/quotes/latest";
         for (let i = 0; i < ids.length; i += this.cfg.VMC_LATEST_BATCH_SIZE) {
           const batch = ids.slice(i, i + this.cfg.VMC_LATEST_BATCH_SIZE);

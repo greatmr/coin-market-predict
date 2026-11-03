@@ -10,13 +10,13 @@ server, and a Telegram channel.
 
 - Purpose, requirements, open decisions: [intend.md](intend.md)
 - Architecture: [docs/architecture.md](docs/architecture.md)
-- Data sources and why there is no scraper: [docs/source-feasibility.md](docs/source-feasibility.md)
+- Data sources and website collector: [docs/source-feasibility.md](docs/source-feasibility.md)
 - Strategy, features and limitations: [docs/strategy-limitations.md](docs/strategy-limitations.md)
 
 ## What is live vs fixture
 | Component | Status |
 |---|---|
-| Market data | **Fixture (synthetic) by default.** Optional official free APIs: CoinMarketCap Basic, CoinGecko Demo (need your key; not yet exercised live) |
+| Market data | **Fixture (synthetic) by default.** Optional CMC website crawler (no key; live-tested) or official free APIs (key required) |
 | Claude agents | Real Agent SDK with `CLAUDE_CODE_OAUTH_TOKEN` (`AGENT_PROVIDER=claude`); offline `fixture` stand-in by default |
 | Telegram | Dry-run by default; live with `TELEGRAM_MODE=live` + bot token + chat id |
 | Dashboard / MCP / PostgreSQL | Live (local) |
@@ -76,6 +76,43 @@ DATA_SOURCE=coinmarketcap  CMC_API_KEY=…
 DATA_SOURCE=coingecko      COINGECKO_API_KEY=…
 npm run cli -- discover && npm run cli -- run-once
 ```
+### CoinMarketCap website collector (no API key)
+
+Set these in `.env` to feed website listings into the main analysis pipeline and monitor
+selected coins with the six-month Volume / Market Cap comparison:
+
+```dotenv
+DATA_SOURCE=coinmarketcap_web
+VMC_SOURCE=cmc_web
+VMC_DAILY_CONVENTION=ohlcv
+VMC_ASSET_IDS=1,1027,2,52
+VMC_SCHEDULER_ENABLED=true
+```
+
+```bash
+npm run build
+npm run cli -- vmc:probe
+npm run cli -- vmc:run-all
+npm run cli -- vmc:compare
+npm run cli -- discover
+npm run cli -- run-once
+npm start
+```
+
+The crawler reads structured data from coin pages and their website JSON endpoints.
+It preserves raw VMC responses, daily revisions and hourly observations, with throttling,
+request budgets, caching, backoff and persisted suspension on repeated access denials.
+Website endpoints may change. See [the collection flow](docs/volume-mcap.md#9-no-key-website-crawler-and-manual-csv-import).
+`DATA_SOURCE` and `VMC_SOURCE` are independent. The main website pipeline bootstraps real
+seven-day-chart samples for up to `SOURCE_HISTORY_BOOTSTRAP_MAX_ASSETS=8` coins before its
+first screening, prioritizing configured VMC ids, BTC/ETH benchmarks, then active coins.
+Missing hours stay missing; historical circulating supply is not copied from today's quote.
+Other coins collect consecutive snapshots hourly. Discovery uses the same per-run page cap
+as collection and its listing results are reused rather than immediately fetched again.
+The panel displays collection progress, warm-up counts and exclusion reasons. A completed
+screen with no qualifying coins is shown explicitly. Use `AGENT_PROVIDER=claude` with your
+configured token for real agent reviews; `fixture` reviews are synthetic.
+
 Live sources start in warm-up: real history accumulates one snapshot per hour (no invented
 backfill). Coverage is partial by design on free tiers and labelled as such.
 
@@ -94,6 +131,7 @@ npm test                        # unit (offline)
 npm run test:db                 # PostgreSQL tests in database coins_test (auto-created + migrated)
 npm run typecheck
 npm run lint:secrets            # scans files that would be committed
+RUN_LIVE_CMC_WEB=1 npm run test:live  # public CMC page/history/chart/listing, no key
 RUN_LIVE_AGENT=1 npm run test:live    # real Claude call (spends usage)
 RUN_LIVE_SOURCE=1 npm run test:live   # one page from CMC/CoinGecko if keys are set
 ```

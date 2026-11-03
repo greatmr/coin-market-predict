@@ -110,6 +110,9 @@ async function loadConfig() {
   if (!CFG.isLiveData) {
     $("banner").hidden = false;
     $("banner").textContent = "Fixture mode: all prices, volumes and signals on this page are SYNTHETIC test data, not real market data.";
+  } else if (CFG.agentProvider === "fixture") {
+    $("banner").hidden = false;
+    $("banner").textContent = "Market data is live, but agent reviews are synthetic fixtures. Select the Claude agent provider for real model reviews.";
   }
   $("footer").textContent = `${CFG.attribution || ""} · Research hypotheses only — not financial advice. Hourly snapshots cannot observe intrahour moves. Scores are heuristics, not probabilities. No orders are placed.`;
 }
@@ -121,6 +124,13 @@ async function loadSignals() {
   if (status) q.set("status", status);
   if (cls) q.set("classification", cls);
   const data = await api(`signals?${q}`);
+  const ready = data.readiness;
+  $("prediction-status").replaceChildren(
+    el("p", {}, ready?.message ?? "Prediction status unavailable."),
+    ...(ready && ready.screened !== undefined ? [el("p", { class: "muted" }, `${ready.screened} screened · ${ready.eligible} eligible · ${ready.warming} warming up · ${ready.shortlisted} shortlisted · ${ready.agentStatus ?? "not reviewed"}`)] : []),
+    ...(ready?.summary ? [el("p", {}, ready.summary)] : []),
+    ...(ready?.notes?.length ? [el("p", { class: "muted" }, ready.notes.join(" · "))] : []),
+  );
   const rows = data.signals.map((s) => ({
     __raw: s,
     token: el("span", {}, el("b", {}, s.asset.symbol), " ", el("span", { class: "muted" }, s.asset.name)),
@@ -145,12 +155,12 @@ async function loadSignals() {
       (s) => showDetail(s.assetId, s),
     ),
   );
-  if (!rows.length) $("signals").append(el("div", { class: "empty" }, "No qualifying signals in the latest run. That is a normal outcome."));
+  if (!rows.length) $("signals").replaceChildren(...(ready?.state === "ready" ? [el("div", { class: "empty" }, "No signals match the selected filters.")] : []));
 }
 
 async function loadScreening() {
   const cls = $("f-screen").value;
-  const q = new URLSearchParams({ eligibleOnly: "true", limit: "100" });
+  const q = new URLSearchParams({ eligibleOnly: $("f-eligibility").value, limit: "100" });
   if (cls) q.set("classification", cls);
   const data = await api(`screening?${q}`);
   const rows = data.results.map((r) => ({
@@ -160,10 +170,11 @@ async function loadScreening() {
     cls: r.classification,
     score: fmtNum(r.heuristicScore, 1),
     short: r.shortlisted ? chip("shortlisted", "good") : "",
+    eligibility: r.eligible ? chip("eligible", "good") : el("span", {}, (r.exclusionReasons || []).map((reason) => chip(reason, reason === "warming_up" ? "warn" : ""))),
     flags: el("span", {}, (r.riskFlags || []).slice(0, 4).map((f) => chip(f))),
   }));
   $("screening").replaceChildren(
-    table([{ key: "rank", label: "#", num: true }, { key: "token", label: "Token" }, { key: "cls", label: "Classification" }, { key: "score", label: "Score", num: true }, { key: "short", label: "" }, { key: "flags", label: "Risk flags" }], rows, (r) => showDetail(r.assetId)),
+    table([{ key: "rank", label: "#", num: true }, { key: "token", label: "Token" }, { key: "eligibility", label: "Readiness" }, { key: "cls", label: "Classification" }, { key: "score", label: "Score", num: true }, { key: "short", label: "" }, { key: "flags", label: "Risk flags" }], rows, (r) => showDetail(r.assetId)),
   );
 }
 
@@ -324,16 +335,20 @@ async function loadVmc() {
 
 async function refresh() {
   const tasks = [loadSignals, loadScreening, loadHealth, loadPaper, loadBacktest, loadVmc];
-  await Promise.all(tasks.map((t) => t().catch((e) => console.error(e))));
+  await Promise.all(tasks.map((t) => t().catch((e) => {
+    console.error(e);
+    if (t === loadSignals) $("prediction-status").textContent = `Could not load predictions: ${e.message}`;
+  })));
 }
 
 $("f-status").addEventListener("change", () => loadSignals());
 $("f-class").addEventListener("change", () => loadSignals());
 $("f-screen").addEventListener("change", () => loadScreening());
+$("f-eligibility").addEventListener("change", () => loadScreening());
 $("detail-close").addEventListener("click", () => ($("detail-section").hidden = true));
 
 loadConfig().then(refresh).catch((e) => {
   $("banner").hidden = false;
   $("banner").textContent = `Failed to load: ${e.message}`;
 });
-setInterval(refresh, 60_000);
+setInterval(refresh, 15_000);

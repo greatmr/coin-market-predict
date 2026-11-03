@@ -30,13 +30,18 @@ const schema = z
     DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
     DISPLAY_TIMEZONE: z.string().default("Asia/Tehran"),
 
-    DATA_SOURCE: z.enum(["fixture", "coinmarketcap", "coingecko"]).default("fixture"),
+    DATA_SOURCE: z.enum(["fixture", "coinmarketcap", "coinmarketcap_web", "coingecko"]).default("fixture"),
     CMC_API_KEY: optionalSecret,
     COINGECKO_API_KEY: optionalSecret,
     SOURCE_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(500).default(10),
     SOURCE_MONTHLY_REQUEST_BUDGET: z.coerce.number().int().min(1).default(9000),
     SOURCE_MAX_MARKET_PAGES_PER_RUN: z.coerce.number().int().min(1).max(200).default(10),
+    SOURCE_HISTORY_BOOTSTRAP_MAX_ASSETS: z.coerce.number().int().min(0).max(100).default(8),
     DISCOVERY_INTERVAL_HOURS: z.coerce.number().int().min(1).default(24),
+    CMC_WEB_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(60).default(6),
+    CMC_WEB_MONTHLY_REQUEST_BUDGET: z.coerce.number().int().min(1).default(9000),
+    CMC_WEB_MAX_RETRIES: z.coerce.number().int().min(0).max(6).default(2),
+    CMC_WEB_CACHE_SECONDS: z.coerce.number().int().min(0).max(300).default(60),
 
     SCHEDULER_ENABLED: bool.default(true),
     PIPELINE_CRON: z.string().default("7 * * * *"),
@@ -81,8 +86,8 @@ const schema = z
         for (const id of ids) if (!/^[1-9]\d{0,9}$/.test(id)) ctx.addIssue({ code: "custom", message: `VMC_ASSET_IDS: "${id}" is not a CoinMarketCap numeric id` });
         return [...new Set(ids.map(Number))];
       }),
-    /** fixture = synthetic responses shaped like the documented API (offline); cmc = live API. */
-    VMC_SOURCE: z.enum(["fixture", "cmc"]).default("fixture"),
+    /** cmc_web = coin pages + their public website data endpoints, no Pro API key. */
+    VMC_SOURCE: z.enum(["fixture", "cmc", "cmc_web"]).default("fixture"),
     /** Plan the operator says the key is on; verified at runtime with /v1/key/info + probes. */
     CMC_PLAN: z.enum(["basic", "builder", "startup", "growth", "professional", "enterprise"]).default("basic"),
     /** eod_quote = /v3 quotes/historical interval=daily; ohlcv = /v2 ohlcv/historical daily. Never mixed. */
@@ -108,6 +113,9 @@ const schema = z
     PAPER_SLIPPAGE_BPS: z.coerce.number().int().min(0).max(1000).default(30),
   })
   .superRefine((c, ctx) => {
+    if (c.VMC_SOURCE === "cmc_web" && c.VMC_DAILY_CONVENTION !== "ohlcv") {
+      ctx.addIssue({ code: "custom", path: ["VMC_DAILY_CONVENTION"], message: "VMC_SOURCE=cmc_web requires VMC_DAILY_CONVENTION=ohlcv (website daily history semantics)" });
+    }
     if (c.TELEGRAM_MODE === "live" && (!c.TELEGRAM_BOT_TOKEN || !c.TELEGRAM_CHAT_ID)) {
       ctx.addIssue({
         code: "custom",

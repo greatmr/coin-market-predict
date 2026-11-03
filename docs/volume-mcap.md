@@ -15,7 +15,7 @@ descriptive comparison. **No signals, thresholds, alerts or recommendations** (P
 | 3 Track 72 h | Backfill hourly snapshots once, then one new snapshot every hour; upsert by CMC id + UTC hour; keep the last 72 h (p.1, p.6, p.7) | `vmc:hourly-backfill`, `vmc:hourly` |
 | 4 Store & compare | Show historical mean, recent hourly ratios, latest ratio and timestamps together (p.1) | `vmc:compare`, `/api/vmc/comparison`, dashboard section |
 | Validation | Reject missing values and market cap ≤ 0; flag assets with < six months of history instead of treating a partial window as full (p.7) | `validatePair`, baseline `status = partial/unavailable` |
-| Route | Prefer official API over browser automation; daily = historical OHLCV *or* end-of-day historical quote, one convention consistently; hourly backfill = historical quotes with hourly interval subject to plan; live = latest quotes; the UI Volume/Mcap column is a cross-check only (p.8) | Official endpoints only; `VMC_DAILY_CONVENTION` |
+| Route | Prefer official API over browser automation; daily = historical OHLCV *or* end-of-day historical quote, one convention consistently; hourly backfill = historical quotes with hourly interval subject to plan; live = latest quotes; the UI Volume/Mcap column is a cross-check only (p.8) | Official API or explicitly selected website crawler; `VMC_DAILY_CONVENTION` |
 | Acceptance | Daily ratio agrees with manual calc; mean averages ratios not totals; one snapshot per asset per UTC hour; missing hours visible; historical refresh does not duplicate (p.8) | Covered by `test/unit/vmc.test.ts`, `test/db/vmc.db.test.ts` |
 
 Screenshots: p.2 main listing with the *Columns* control; p.3 Litecoin page with *See historical
@@ -156,38 +156,101 @@ RUN_LIVE_CMC=1 npm run test:live       # optional, ~2 live credits
 
 Synthetic example output: `docs/examples/vmc-comparison.synthetic.txt` / `.json`.
 
-## 9. No-key path: manual CSV import (and why there is no crawler)
+## 9. No-key website crawler and manual CSV import
 
-The website's internal `api.coinmarketcap.com/data-api/...` endpoints are undocumented, and
-CMC's terms prohibit automated crawling/scraping; calling them with copied browser headers
-(`sec-ch-ua`, `origin`, `referer`, `x-request-id`) to avoid blocking is anti-bot circumvention.
-This project does not do that. Two supported routes instead:
+Set `VMC_SOURCE=cmc_web` and `VMC_DAILY_CONVENTION=ohlcv` to use the website collector.
+This was verified against public CMC responses on 2026-11-03. No CMC Pro API key or browser
+installation is required. `nest-crawler` is unnecessary: the coin page embeds structured
+Next.js JSON, which Node's HTTP client can retrieve and parse directly.
 
-1. **Official API (recommended):** a free Basic key covers 1 year of daily and 1 month of
-   hourly quotes history — everything the brief needs. Set `CMC_API_KEY`, `VMC_SOURCE=cmc`.
-2. **Manual CSV import (no key):** on a coin's page open *See historical data* (PDF p.3),
-   choose the date range, click **Download CSV** (PDF p.4), then:
+| Step | Website route | Mapping |
+|---|---|---|
+| Sync identity | `/data-api/v3/cryptocurrency/detail?id=<id>&convertId=2781` | Numeric id, name, symbol, slug, actual history start |
+| Daily history | `/data-api/v3.1/cryptocurrency/historical?id=<id>&convertId=2781&timeStart=<seconds>&timeEnd=<seconds>&interval=1d` | `timeOpen`, `timeClose`, `quote.volume`, `quote.marketCap`; completed UTC days only |
+| Hourly backfill | `/data-api/v3/cryptocurrency/detail/chart?id=<id>&convertId=2781&range=7D` | `points[unixSeconds].v[1]` rolling 24h USD volume; `v[2]` circulating USD market cap; earliest observed sample per UTC hour |
+| Latest | `https://coinmarketcap.com/currencies/<slug>/` | `__NEXT_DATA__.props.pageProps.detailRes.detail.statistics.volume24h` and `.marketCap`, source `latestUpdateTime` |
+| Page layout fallback | Website detail route above | Used when embedded page data is unavailable or the slug returns 404; access denial stops the run |
 
-   ```bash
-   VMC_ASSET_IDS=2 VMC_DAILY_CONVENTION=ohlcv \
-     npm run cli -- vmc:import-csv --id 2 --file ~/Downloads/<file>.csv --symbol LTC --name Litecoin
-   VMC_ASSET_IDS=2 VMC_DAILY_CONVENTION=ohlcv npm run cli -- vmc:baseline
-   ```
+Data routes use `https://api.coinmarketcap.com`. These are website endpoints, not the supported
+Pro API contract. Their shape and availability may change. The earlier assessment that CMC
+could not technically be crawled was incorrect; the terms assessment did not establish a
+technical restriction. The website source is an explicit operator choice.
 
-   Rows are stored as the `ohlcv` daily convention (website table = day volume + day market
-   cap), the whole file is kept in `VmcRawResponse` (`endpoint = manual_csv_import`), the
-   current UTC day is skipped, re-imports are idempotent and changed values become revisions.
-   The CMC id is shown as "UCID" on the coin page (PDF p.3). This path only supplies daily
-   baseline inputs; hourly snapshots still need the API.
+The supplied curl's `interval=3d` returned HTTP 200 with application error `500`,
+`Unexpected value: 3d`. `interval=1d` succeeded. Historical responses also included dates
+outside the requested interval: the collector filters to the requested completed-day window.
+Chart `range=3D` was invalid; `range=7D` supplies the recent 72 hours. Gaps remain missing;
+no values are interpolated and daily OHLCV is never converted to hourly volume.
+
+All website calls share one queue per application process. Defaults: six requests/minute,
+9,000 requests/calendar month, two retries, 60-second bounded cache. HTTP and application
+rate limits honor Retry-After; cooldown/budget/circuit state persists in `SourceHealth` under
+`coinmarketcap_web`. Repeated denials suspend collection. Reset after resolving the cause:
+`npm run cli -- source:reset --provider coinmarketcap_web`. No IP rotation or browser identity
+rotation is used. No collector can guarantee that CMC will not block access.
+
+Website raw bodies, actual routes/query parameters, retrieval times and SHA-256 hashes are
+stored in `VmcRawResponse` with `isFixture=false`. The existing daily/hourly revision and
+baseline tables are reused; identical reruns do not duplicate observations. The daily
+convention must be `ohlcv` so website daily data cannot silently mix with EOD quotes.
+For a new collection, keep one source per VMC dataset; existing fixture observations are
+not automatically deleted when changing configuration.
+
+```bash
+# Add these settings to .env (choose the ids to monitor)
+VMC_SOURCE=cmc_web
+VMC_DAILY_CONVENTION=ohlcv
+VMC_ASSET_IDS=1,1027,2,52
+VMC_SCHEDULER_ENABLED=true
+# Then:
+npm run build
+npm run cli -- vmc:probe
+npm run cli -- vmc:run-all
+npm run cli -- vmc:compare
+npm start
+```
+
+For the main signal-analysis pipeline, independently set `DATA_SOURCE=coinmarketcap_web`.
+Its paginated listing source feeds existing discovery, market snapshots, feature computation,
+screening, and agent evidence. It deduplicates featured coins, applies the per-run page cap,
+and reports partial coverage when fewer unique assets than `totalCount` were collected.
+
+Manual CSV remains available: download a coin's historical CSV, then run:
+
+```bash
+VMC_ASSET_IDS=2 VMC_DAILY_CONVENTION=ohlcv \
+  npm run cli -- vmc:import-csv --id 2 --file ~/Downloads/history.csv --symbol LTC --name Litecoin
+VMC_ASSET_IDS=2 VMC_DAILY_CONVENTION=ohlcv npm run cli -- vmc:baseline
+```
+
+CSV imports keep their original file in raw storage, skip incomplete days, and preserve
+revisions. CSV provides daily inputs only; the API or website collector supplies hourly data.
 
 ## 10. Limitations and open decisions
 
-- **No CoinMarketCap key configured yet** → only the fixture transport has run; live endpoint
-  behavior (exact daily sample times, OHLCV access on Basic) must be confirmed with `vmc:probe`.
+- The website page, daily history, chart and listing were exercised live without a key.
+  Official API plan access remains key-dependent; use `vmc:probe` with the selected source.
 - EOD-quote convention approximates "daily volume" with rolling 24 h volume sampled just after
   midnight; OHLCV daily is closer to the website table (p.4) but may require a higher plan.
   The two conventions are stored separately and never mixed in one baseline.
-- Hourly backfill depth depends on the plan's intraday history (Basic: 1 month ≥ 72 h).
+- Official API hourly history depends on the plan. Website backfill uses the latest seven-day
+  chart; a configured window longer than this is reported as partial.
 - Asset classification (stablecoins etc.) is out of scope; the universe is whatever ids you list.
 - Open decisions from p.8 remain yours: which assets, which plan, where results are displayed
   beyond the dashboard/CLI/file, and any comparison threshold (none implemented).
+
+## Prediction panel startup
+
+The VMC baseline comparison is descriptive; its daily rows are not prediction inputs.
+The main website source now also exposes genuine chart prices/caps/rolling volume to the
+market-snapshot pipeline. On collection, it bootstraps up to 72 completed hourly samples for
+at most `SOURCE_HISTORY_BOOTSTRAP_MAX_ASSETS` coins (default 8), prioritizing monitored VMC
+ids, benchmarks and active coins. Existing current observations are not overwritten; gaps
+are not filled. Historical rows carry `historical_backfill`, source observation time and
+actual retrieval time; historical freshness is assessed relative to the observation hour.
+Other coins remain in warm-up until sufficient consecutive hourly snapshots arrive.
+
+Discovery respects `SOURCE_MAX_MARKET_PAGES_PER_RUN`; the following collect stage reuses
+its listing payload once. The dashboard shows run progress and warm-up/exclusion reasons,
+and only reads signal results once publication succeeds. No threshold is relaxed to make
+an empty prediction panel appear populated. Set `AGENT_PROVIDER=claude` for real reviews.

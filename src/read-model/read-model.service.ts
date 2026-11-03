@@ -84,7 +84,8 @@ export class ReadModelService {
 
   async signals(q: { status?: string[]; classification?: string; runId?: string; limit: number }) {
     const runId = q.runId ?? (await this.latestRunId());
-    if (!runId) return plain<Record<string, unknown>>({ runId: null, signals: [] });
+    const readiness = await this.predictionStatus();
+    if (!runId) return plain<Record<string, unknown>>({ runId: null, signals: [], readiness });
     const rows = await this.prisma.signal.findMany({
       where: { runId, ...(q.status?.length ? { status: { in: q.status } } : {}) },
       include: { asset: { select: { name: true, symbol: true, assetClass: true } }, paperPosition: true },
@@ -96,7 +97,30 @@ export class ReadModelService {
     const merged = rows
       .map((r) => ({ ...r, classification: cls.get(r.assetId)?.classification ?? null, rank: cls.get(r.assetId)?.rank ?? null }))
       .filter((r) => !q.classification || r.classification === q.classification);
-    return plain<Record<string, unknown>>({ runId, signals: merged });
+    return plain<Record<string, unknown>>({ runId, signals: merged, readiness });
+  }
+
+  /** Explain an empty prediction panel using persisted run and screening state. */
+  async predictionStatus() {
+    const latest = await this.prisma.pipelineRun.findFirst({ where: { providerId: this.providerId }, orderBy: [{ slotTime: "desc" }, { startedAt: "desc" }], include: { stages: true } });
+    const common = { requiredSnapshots: this.cfg.SNAPSHOT_WINDOW, candidateMinHistory: this.cfg.CANDIDATE_MIN_HISTORY, agentProvider: this.cfg.AGENT_PROVIDER, runId: latest?.id ?? null, slotTime: latest?.slotTime ?? null };
+    if (!latest) return { ...common, state: "waiting", message: this.cfg.SCHEDULER_ENABLED ? "Waiting for the first collection run to start." : "Automatic collection is disabled. Run the pipeline to collect and analyze market data." };
+    if (latest.status === "running") {
+      const labels: Record<string, string> = { discover: "Discovering coins", collect: "Collecting market snapshots and recent history", features: "Calculating market features", screen: "Screening coins", analyze: "Reviewing shortlisted coins", publish: "Preparing prediction results", notify: "Finishing the report" };
+      return { ...common, state: "running", stage: latest.currentStage, startedAt: latest.startedAt, message: `${labels[latest.currentStage ?? ""] ?? "Starting analysis"}. Results appear when this run finishes.` };
+    }
+    if (latest.status === "failed") return { ...common, state: "failed", message: `The latest analysis failed: ${latest.error ?? "see Collection health for details"}` };
+    const [screened, eligible, warming, shortlisted, signals] = await Promise.all([
+      this.prisma.screeningResult.count({ where: { runId: latest.id } }),
+      this.prisma.screeningResult.count({ where: { runId: latest.id, eligible: true } }),
+      this.prisma.screeningResult.count({ where: { runId: latest.id, exclusionReasons: { has: "warming_up" } } }),
+      this.prisma.screeningResult.count({ where: { runId: latest.id, shortlisted: true } }),
+      this.prisma.signal.count({ where: { runId: latest.id } }),
+    ]);
+    const analysis = latest.stages.find((s) => s.stage === "analyze")?.detail as { agentStatus?: string; summary?: string | null; notes?: string[] } | null;
+    const state = signals ? "ready" : !eligible && warming ? "warming_up" : "no_matches";
+    const message = signals ? `${signals} research signal(s) available.` : !eligible && warming ? `${warming} coin(s) are warming up. Screening needs ${this.cfg.SNAPSHOT_WINDOW} consecutive hourly snapshots; no prediction has been generated yet.` : `${screened} coins screened; ${eligible} eligible. No coins met the signal rules in this run.`;
+    return { ...common, state, message, screened, eligible, warming, shortlisted, signals, finishedAt: latest.finishedAt, agentStatus: analysis?.agentStatus ?? null, summary: analysis?.summary ?? null, notes: analysis?.notes ?? [] };
   }
 
   async screening(q: { runId?: string; eligibleOnly: boolean; classification?: string; limit: number }) {
@@ -105,7 +129,7 @@ export class ReadModelService {
     const rows = await this.prisma.screeningResult.findMany({
       where: { runId, ...(q.eligibleOnly ? { eligible: true } : {}), ...(q.classification ? { classification: q.classification } : {}) },
       include: { asset: { select: { name: true, symbol: true, assetClass: true } } },
-      orderBy: [{ heuristicScore: "desc" }],
+      orderBy: [{ eligible: "desc" }, { heuristicScore: "desc" }],
       take: q.limit,
     });
     return plain<Record<string, unknown>>({ runId, results: rows });
@@ -113,6 +137,7 @@ export class ReadModelService {
 
   async runs(limit: number) {
     const rows = await this.prisma.pipelineRun.findMany({
+      where: { providerId: this.providerId },
       orderBy: { slotTime: "desc" },
       take: limit,
       include: { stages: { orderBy: { startedAt: "asc" } } },
@@ -131,6 +156,7 @@ export class ReadModelService {
 
   async paper() {
     const rows = await this.prisma.paperPosition.findMany({
+      where: { signal: { run: { providerId: this.providerId } } },
       orderBy: { createdAt: "desc" },
       take: 200,
       include: { signal: { select: { slotTime: true, status: true, asset: { select: { symbol: true, name: true } } } } },
@@ -159,6 +185,7 @@ export class ReadModelService {
 
   async deliveries(limit: number) {
     const rows = await this.prisma.telegramDelivery.findMany({
+      where: { run: { providerId: this.providerId } },
       orderBy: { createdAt: "desc" },
       take: limit,
       select: { id: true, runId: true, partIndex: true, partCount: true, mode: true, status: true, attempts: true, lastError: true, createdAt: true, sentAt: true, text: true },
@@ -168,8 +195,8 @@ export class ReadModelService {
 
   async latestRunId(): Promise<string | null> {
     const r = await this.prisma.pipelineRun.findFirst({
-      where: { providerId: this.providerId, stages: { some: { stage: "screen", status: "succeeded" } } },
-      orderBy: { slotTime: "desc" },
+      where: { providerId: this.providerId, stages: { some: { stage: "publish", status: "succeeded" } } },
+      orderBy: [{ slotTime: "desc" }, { startedAt: "desc" }],
       select: { id: true },
     });
     return r?.id ?? null;

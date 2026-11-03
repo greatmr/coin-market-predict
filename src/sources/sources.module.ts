@@ -6,35 +6,13 @@ import { CoinGeckoSource, COINGECKO_PROVIDER } from "./coingecko/coingecko.adapt
 import { CoinMarketCapSource, CMC_PROVIDER } from "./coinmarketcap/coinmarketcap.adapter.js";
 import { FixtureSource } from "./fixture/fixture.adapter.js";
 import { PoliteHttpClient } from "./http/polite-client.js";
-import { initialHealth, type SourceHealthState, type SourceHealthStore } from "./http/source-health.js";
+import { PrismaSourceHealthStore } from "./http/prisma-source-health.js";
 import { MARKET_DATA_SOURCE, type MarketDataSource } from "./types.js";
+import { CmcWebClient } from "./coinmarketcap-web/client.js";
+import { CoinMarketCapWebSource } from "./coinmarketcap-web/coinmarketcap-web.adapter.js";
+import { CmcWebModule } from "./coinmarketcap-web/web.module.js";
 
-/** Circuit-breaker / budget state persisted in PostgreSQL so it survives restarts. */
-export class PrismaSourceHealthStore implements SourceHealthStore {
-  constructor(private readonly prisma: PrismaService) {}
-
-  async load(providerId: string): Promise<SourceHealthState> {
-    const row = await this.prisma.sourceHealth.findUnique({ where: { providerId } });
-    if (!row) return initialHealth();
-    return {
-      state: row.state as SourceHealthState["state"],
-      consecutiveFailures: row.consecutiveFailures,
-      consecutiveDenials: row.consecutiveDenials,
-      openedAt: row.openedAt,
-      retryAfterUntil: row.retryAfterUntil,
-      suspendedReason: row.suspendedReason,
-      lastSuccessAt: row.lastSuccessAt,
-      lastFailureAt: row.lastFailureAt,
-      lastStatusCode: row.lastStatusCode,
-      budgetPeriodStart: row.budgetPeriodStart,
-      budgetUsed: row.budgetUsed,
-    };
-  }
-
-  async save(providerId: string, s: SourceHealthState): Promise<void> {
-    await this.prisma.sourceHealth.upsert({ where: { providerId }, create: { providerId, ...s }, update: s });
-  }
-}
+export { PrismaSourceHealthStore } from "./http/prisma-source-health.js";
 
 export const FIXTURE_ANCHOR_KEY = "fixture.anchorSlot";
 
@@ -48,7 +26,7 @@ export async function fixtureAnchor(prisma: PrismaService): Promise<Date> {
   return new Date(saved.value as string);
 }
 
-export function createSource(cfg: AppConfig, prisma: PrismaService): MarketDataSource {
+export function createSource(cfg: AppConfig, prisma: PrismaService, web?: CmcWebClient): MarketDataSource {
   const ensureProvider = async (info: typeof CMC_PROVIDER) =>
     prisma.provider.upsert({ where: { id: info.id }, create: { ...info }, update: {} });
   const client = (info: typeof CMC_PROVIDER, headers: Record<string, string>) => {
@@ -68,6 +46,9 @@ export function createSource(cfg: AppConfig, prisma: PrismaService): MarketDataS
     });
   };
   switch (cfg.DATA_SOURCE) {
+    case "coinmarketcap_web":
+      if (!web) throw new Error("CMC website client is not available");
+      return new CoinMarketCapWebSource(web, cfg.SOURCE_MAX_MARKET_PAGES_PER_RUN);
     case "coinmarketcap":
       return new CoinMarketCapSource(client(CMC_PROVIDER, { "X-CMC_PRO_API_KEY": cfg.CMC_API_KEY! }));
     case "coingecko":
@@ -78,7 +59,8 @@ export function createSource(cfg: AppConfig, prisma: PrismaService): MarketDataS
 }
 
 @Module({
-  providers: [{ provide: MARKET_DATA_SOURCE, inject: [APP_CONFIG, PrismaService], useFactory: createSource }],
+  imports: [CmcWebModule],
+  providers: [{ provide: MARKET_DATA_SOURCE, inject: [APP_CONFIG, PrismaService, CmcWebClient], useFactory: createSource }],
   exports: [MARKET_DATA_SOURCE],
 })
 export class SourcesModule {}

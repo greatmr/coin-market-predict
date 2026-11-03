@@ -133,7 +133,11 @@ export class PipelineService {
     let summary: string | null = null;
     try {
       await stage("discover", async () => ((await this.ingestion.discoveryDue(now)) ? this.ingestion.discover(now) : { skipped: "not due" }));
-      const collected = await stage("collect", () => this.ingestion.collect(slot, runId, now), { retries: 1 });
+      const collected = await stage("collect", async () => {
+        const result = await this.ingestion.collect(slot, runId, this.clock.now());
+        const history = await this.ingestion.bootstrapHistory(slot, runId, this.clock.now());
+        return { ...result, notes: [...result.notes, ...history.notes] };
+      }, { retries: 1 });
       if (collected) coverage = collected;
       await this.prisma.pipelineRun.update({ where: { id: runId }, data: { coverage: coverage as never } });
 
