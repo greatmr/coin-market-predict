@@ -40,6 +40,9 @@ Volume / Market Cap baseline (docs/volume-mcap.md; needs VMC_ASSET_IDS):
   vmc:hourly-backfill [--force] One-time backfill of the last 72 hourly quotes
   vmc:hourly                   Collect current quotes for this hour
   vmc:run-all                  sync-assets, weekly, hourly-backfill, hourly
+  vmc:import-csv --id <cmcId> --file <csv> [--symbol S --name N]
+                               Import a CSV downloaded manually from the coin's CMC
+                               "Historical Data" page (Download CSV); no key, no crawling
   vmc:compare [--format table|json] [--out file]   Print/write the comparison
 `;
 
@@ -124,6 +127,19 @@ async function main() {
         for (const s of steps) results.push(await s());
         process.stdout.write(`${JSON.stringify(results.flat(), null, 2)}\n`);
         if (results.flat().some((r) => (r as { status?: string }).status === "failed")) process.exitCode = 1;
+        break;
+      }
+      case "vmc:import-csv": {
+        const file = arg("--file");
+        const id = Number(arg("--id"));
+        if (!file || !Number.isInteger(id) || id < 1) throw new Error("usage: vmc:import-csv --id <cmcId> --file <downloaded.csv> [--symbol LTC --name Litecoin]");
+        const { readFileSync } = await import("node:fs");
+        const { basename } = await import("node:path");
+        const r = await ctx.get(VmcService).importCsv({ cmcId: id, text: readFileSync(file, "utf8"), fileName: basename(file), symbol: arg("--symbol"), name: arg("--name") });
+        process.stdout.write(`${JSON.stringify(r, null, 2)}\n`);
+        const detail = await ctx.get(PrismaService).vmcAssetResult.findFirst({ where: { runId: r.runId ?? "" } });
+        if (detail) process.stdout.write(`${JSON.stringify(detail.detail, null, 2)}\n`);
+        if (r.status === "failed") process.exitCode = 1;
         break;
       }
       case "vmc:compare": {

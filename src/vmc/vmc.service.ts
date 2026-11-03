@@ -22,10 +22,11 @@ import {
   validatePair,
 } from "./cmc-parse.js";
 import { analyzeWindow, buildRow, type ComparisonRow, formatTable } from "./comparison.js";
+import { parseCmcHistoryCsv } from "./csv-import.js";
 import { Decimal, sha256 } from "./decimal.js";
 import { addDays, baselineWindow, daysInclusive, eachDay, HOUR_MS, hourFloor, isoDate, parseIsoDate } from "./window.js";
 
-type Job = "probe" | "sync_assets" | "daily_history" | "baseline" | "hourly_backfill" | "hourly";
+type Job = "probe" | "sync_assets" | "daily_history" | "baseline" | "hourly_backfill" | "hourly" | "csv_import";
 
 interface RunCtx {
   runId: string;
@@ -404,6 +405,59 @@ export class VmcService {
         });
       });
       return { convention: conv, window: win };
+    });
+  }
+
+  /**
+   * Import a CSV the user downloaded from a coin's CoinMarketCap Historical Data page
+   * ("Download CSV"). Stored as the `ohlcv` daily convention (website table semantics) with
+   * the full file kept as the raw source; re-imports are idempotent and corrections become
+   * revisions, exactly like API data.
+   */
+  importCsv(opts: { cmcId: number; text: string; fileName: string; symbol?: string; name?: string }): Promise<JobOutcome> {
+    return this.withRun("csv_import", async (ctx) => {
+      const parsed = parseCmcHistoryCsv(opts.text, opts.cmcId, ctx.now);
+      const existing = await this.prisma.vmcAsset.findUnique({ where: { cmcId: opts.cmcId } });
+      if (!existing) {
+        if (!opts.symbol) throw new Error(`CMC id ${opts.cmcId} is not synced yet; pass --symbol (and --name) to register it from the CSV`);
+        await this.prisma.vmcAsset.create({
+          data: { cmcId: opts.cmcId, symbol: opts.symbol.toUpperCase(), name: opts.name ?? parsed.name ?? opts.symbol, metadataSource: "manual_csv_import" },
+        });
+      }
+      const raw = await this.prisma.vmcRawResponse.create({
+        data: {
+          runId: ctx.runId,
+          endpoint: "manual_csv_import",
+          params: { cmcId: opts.cmcId, file: opts.fileName, columns: parsed.columns },
+          httpStatus: null,
+          errorCode: null,
+          creditCount: 0,
+          retrievedAt: ctx.now,
+          body: opts.text,
+          bodySha256: sha256(opts.text),
+          isFixture: false,
+        },
+      });
+      const counts = { inserted: 0, revised: 0, unchanged: 0, invalid: 0 };
+      for (const row of parsed.rows) {
+        counts[await this.upsertDaily(row, "ohlcv", raw.id, ctx)]++;
+        if (!row.valid) counts.invalid++;
+      }
+      const first = parsed.rows[0]?.dateUtc ?? null;
+      const last = parsed.rows.at(-1)?.dateUtc ?? null;
+      const gaps = first && last ? eachDay(first, last).length - parsed.rows.length : 0;
+      await ctx.result(opts.cmcId, parsed.rows.length === 0 ? "failed" : counts.invalid || gaps ? "partial" : "ok", {
+        file: opts.fileName,
+        convention: "ohlcv",
+        range: { first, last },
+        rows: parsed.rows.length,
+        missingDaysInRange: gaps,
+        skippedIncompleteDay: parsed.skippedIncomplete,
+        skippedUnparseable: parsed.skippedUnparseable,
+        ...counts,
+        note: this.cfg.VMC_DAILY_CONVENTION === "ohlcv" ? null : "VMC_DAILY_CONVENTION is not 'ohlcv': imported rows are stored but not used by the baseline until you set VMC_DAILY_CONVENTION=ohlcv",
+      });
+      return { file: opts.fileName };
     });
   }
 

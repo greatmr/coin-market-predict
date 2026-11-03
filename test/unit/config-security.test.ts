@@ -62,6 +62,12 @@ describe("redaction", () => {
     expect(redact(`token ${"sk-ant-"}oat01-abcdefghijklmnopqrstuvwxyz`)).not.toMatch(/abcdefghijklmnop/);
     expect(redact("postgresql://u:pw@h/db")).toBe("postgresql://u:***@h/db");
   });
+
+  it("never throws on undefined, null or non-JSON values (Nest passes undefined stacks)", () => {
+    expect(redact(undefined)).toBe("undefined");
+    expect(redact(null)).toBe("null");
+    expect(redact(() => 1)).toMatch(/=>/);
+  });
 });
 
 describe("MCP access boundaries", () => {

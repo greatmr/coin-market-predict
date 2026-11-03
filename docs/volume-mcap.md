@@ -156,7 +156,31 @@ RUN_LIVE_CMC=1 npm run test:live       # optional, ~2 live credits
 
 Synthetic example output: `docs/examples/vmc-comparison.synthetic.txt` / `.json`.
 
-## 9. Limitations and open decisions
+## 9. No-key path: manual CSV import (and why there is no crawler)
+
+The website's internal `api.coinmarketcap.com/data-api/...` endpoints are undocumented, and
+CMC's terms prohibit automated crawling/scraping; calling them with copied browser headers
+(`sec-ch-ua`, `origin`, `referer`, `x-request-id`) to avoid blocking is anti-bot circumvention.
+This project does not do that. Two supported routes instead:
+
+1. **Official API (recommended):** a free Basic key covers 1 year of daily and 1 month of
+   hourly quotes history — everything the brief needs. Set `CMC_API_KEY`, `VMC_SOURCE=cmc`.
+2. **Manual CSV import (no key):** on a coin's page open *See historical data* (PDF p.3),
+   choose the date range, click **Download CSV** (PDF p.4), then:
+
+   ```bash
+   VMC_ASSET_IDS=2 VMC_DAILY_CONVENTION=ohlcv \
+     npm run cli -- vmc:import-csv --id 2 --file ~/Downloads/<file>.csv --symbol LTC --name Litecoin
+   VMC_ASSET_IDS=2 VMC_DAILY_CONVENTION=ohlcv npm run cli -- vmc:baseline
+   ```
+
+   Rows are stored as the `ohlcv` daily convention (website table = day volume + day market
+   cap), the whole file is kept in `VmcRawResponse` (`endpoint = manual_csv_import`), the
+   current UTC day is skipped, re-imports are idempotent and changed values become revisions.
+   The CMC id is shown as "UCID" on the coin page (PDF p.3). This path only supplies daily
+   baseline inputs; hourly snapshots still need the API.
+
+## 10. Limitations and open decisions
 
 - **No CoinMarketCap key configured yet** → only the fixture transport has run; live endpoint
   behavior (exact daily sample times, OHLCV access on Basic) must be confirmed with `vmc:probe`.

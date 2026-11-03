@@ -29,7 +29,8 @@ export function redact(input: unknown): string {
 
 function safeJson(v: unknown): string {
   try {
-    return JSON.stringify(v);
+    // JSON.stringify returns undefined for undefined/functions/symbols.
+    return JSON.stringify(v) ?? String(v);
   } catch {
     return String(v);
   }

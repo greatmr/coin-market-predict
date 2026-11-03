@@ -188,3 +188,30 @@ describe("volume / market cap collection (fixture transport, real CMC ids)", () 
     expect(JSON.stringify(await prisma.vmcRun.findMany())).not.toContain(key);
   });
 });
+
+describe("manual CSV import (CMC Historical Data → Download CSV)", () => {
+  it("feeds the ohlcv baseline, is idempotent on re-import, and records corrections as revisions", async () => {
+    const { readFileSync } = await import("node:fs");
+    const text = readFileSync(new URL("../fixtures/cmc-history-litecoin.csv", import.meta.url), "utf8");
+    const { vmc, prisma } = await setup({ VMC_ASSET_IDS: "2", VMC_DAILY_CONVENTION: "ohlcv" });
+    vmc.now = () => new Date("2026-11-03T15:00:00Z");
+    await expect(vmc.importCsv({ cmcId: 2, text, fileName: "ltc.csv" })).resolves.toMatchObject({ status: "failed" }); // not registered, no --symbol
+    const first = await vmc.importCsv({ cmcId: 2, text, fileName: "ltc.csv", symbol: "LTC", name: "Litecoin" });
+    expect(first.status).toBe("succeeded"); // 12 contiguous valid days
+    const d1 = (await prisma.vmcAssetResult.findFirstOrThrow({ where: { runId: first.runId! } })).detail as Record<string, number>;
+    expect(d1).toMatchObject({ rows: 12, inserted: 12, skippedIncompleteDay: 1 });
+
+    const again = await vmc.importCsv({ cmcId: 2, text, fileName: "ltc.csv" });
+    expect((await prisma.vmcAssetResult.findFirstOrThrow({ where: { runId: again.runId! } })).detail).toMatchObject({ unchanged: 12, inserted: 0 });
+
+    const corrected = text.replace("149922575", "150000000");
+    const fix = await vmc.importCsv({ cmcId: 2, text: corrected, fileName: "ltc-corrected.csv" });
+    expect((await prisma.vmcAssetResult.findFirstOrThrow({ where: { runId: fix.runId! } })).detail).toMatchObject({ revised: 1, unchanged: 11 });
+
+    const b = await vmc.baseline();
+    expect(b.assets[2]).toBe("partial"); // 12 of 184 days
+    const base = await prisma.vmcBaseline.findFirstOrThrow({ where: { cmcId: 2 } });
+    expect(base).toMatchObject({ validDays: 12, expectedDays: 184, convention: "ohlcv", status: "partial" });
+    expect(await prisma.vmcRawResponse.count({ where: { endpoint: "manual_csv_import" } })).toBe(3);
+  });
+});
