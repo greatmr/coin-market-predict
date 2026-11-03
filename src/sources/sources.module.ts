@@ -48,7 +48,7 @@ export function createSource(cfg: AppConfig, prisma: PrismaService, web?: CmcWeb
   switch (cfg.DATA_SOURCE) {
     case "coinmarketcap_web":
       if (!web) throw new Error("CMC website client is not available");
-      return new CoinMarketCapWebSource(web, cfg.SOURCE_MAX_MARKET_PAGES_PER_RUN);
+      return new CoinMarketCapWebSource(web, cfg.SOURCE_MAX_MARKET_PAGES_PER_RUN, cfg.CMC_WEB_LISTING_PAGE_SIZE);
     case "coinmarketcap":
       return new CoinMarketCapSource(client(CMC_PROVIDER, { "X-CMC_PRO_API_KEY": cfg.CMC_API_KEY! }));
     case "coingecko":

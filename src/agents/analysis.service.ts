@@ -6,6 +6,7 @@ import type { MarketContext } from "../features/compute.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { ReadModelService } from "../read-model/read-model.service.js";
 import { canonicalJson, type EvidencePack } from "../screening/evidence.js";
+import { defaultStrategy } from "../screening/strategy.js";
 import { buildAgentTools, toolsetFor } from "./agent-tools.js";
 import { deterministicSignal, finalizeSignal, type FinalSignal } from "./guardrails.js";
 import { ESCALATION_BUDGET_SHARE, roleConfigs, systemPromptFor, type RoleConfig } from "./roles.js";
@@ -90,7 +91,8 @@ export class AnalysisService {
     if (reused.length) notes.push(`reused cached analysis for ${reused.length} asset(s) with unchanged evidence`);
     if (todo.length === 0) return { finals: reused, summary: null, agentStatus: "completed", notes, costUsd: 0 };
 
-    const tools = buildAgentTools({ packs: new Map(todo.map((p) => [p.assetId, p])), market, readModel: this.readModel, collectionHealth });
+    const strategy = defaultStrategy({ minVolume24hUsd: this.cfg.MIN_VOLUME_24H_USD, minMarketCapUsd: this.cfg.MIN_MARKET_CAP_USD });
+    const tools = buildAgentTools({ packs: new Map(todo.map((p) => [p.assetId, p])), market, readModel: this.readModel, collectionHealth, strategy });
     const ids = todo.map((p) => p.assetId);
     const batchHash = createHash("sha256").update(ids.map((i) => hashes.get(i)).join(",")).digest("hex").slice(0, 40);
     let budgetLeft = Math.min(this.cfg.AGENT_RUN_BUDGET_USD, this.cfg.AGENT_DAILY_BUDGET_USD - spentToday);
@@ -285,6 +287,11 @@ function fromStoredSignal(s: {
   riskFlags: string[];
   origin: string;
   reviewOutcome: string | null;
+  pumpChance: string | null;
+  agentRecommendation: string | null;
+  agentRecommendationReason: string | null;
+  recommendation: string | null;
+  recommendationReason: string | null;
 }): FinalSignal {
   return {
     assetId: s.assetId,
@@ -304,5 +311,10 @@ function fromStoredSignal(s: {
     riskFlags: s.riskFlags,
     origin: s.origin as FinalSignal["origin"],
     reviewOutcome: (s.reviewOutcome ?? "not_reviewed") as FinalSignal["reviewOutcome"],
+    pumpChance: (s.pumpChance ?? "low") as FinalSignal["pumpChance"],
+    agentRecommendation: s.agentRecommendation as FinalSignal["agentRecommendation"],
+    agentRecommendationReason: s.agentRecommendationReason,
+    recommendation: (s.recommendation ?? "watch") as FinalSignal["recommendation"],
+    recommendationReason: s.recommendationReason ?? "reused prior analysis of identical evidence",
   };
 }

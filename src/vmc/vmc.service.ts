@@ -226,12 +226,12 @@ export class VmcService {
   // ---------------------------------------------------------------------------------------
   // Asset identity: CMC numeric id is the key; symbol/name changes are logged, never re-keyed
   // ---------------------------------------------------------------------------------------
-  syncAssets(): Promise<JobOutcome> {
+  syncAssets(ids: number[] = this.assetIds): Promise<JobOutcome> {
     return this.withRun("sync_assets", async (ctx) => {
-      const wanted = new Set(this.assetIds);
+      const wanted = new Set(ids);
       const found = new Map<number, ReturnType<typeof parseMap>[number]>();
       if (this.isWeb) {
-        await this.forEachAsset(ctx, this.assetIds, async (id) => {
+        await this.forEachAsset(ctx, ids, async (id) => {
           const r = await this.web.get(WEB_DETAIL, { id, convertId: 2781 }, ctx.record);
           found.set(id, parseWebIdentity(websiteData(r.body), id));
         });
@@ -246,7 +246,7 @@ export class VmcService {
           if (found.size === wanted.size) break;
         }
       }
-      for (const id of this.assetIds) {
+      for (const id of ids) {
         const e = found.get(id);
         if (!e) {
           if (this.isWeb) continue; // forEachAsset already recorded the precise failure/skip.
@@ -264,14 +264,14 @@ export class VmcService {
         ]);
         await ctx.result(id, "ok", { symbol: e.symbol, name: e.name, metadataChanges: changes.map((c) => c.field) });
       }
-      return { requested: this.assetIds.length, found: found.size };
+      return { requested: ids.length, found: found.size };
     });
   }
 
-  private async requireAssets(ctx: RunCtx): Promise<number[]> {
-    const known = new Set((await this.prisma.vmcAsset.findMany({ where: { cmcId: { in: this.assetIds } }, select: { cmcId: true } })).map((a) => a.cmcId));
+  private async requireAssets(ctx: RunCtx, ids: number[] = this.assetIds): Promise<number[]> {
+    const known = new Set((await this.prisma.vmcAsset.findMany({ where: { cmcId: { in: ids } }, select: { cmcId: true } })).map((a) => a.cmcId));
     const ready: number[] = [];
-    for (const id of this.assetIds) {
+    for (const id of ids) {
       if (known.has(id)) ready.push(id);
       else await ctx.result(id, "skipped", { reason: "asset not synced; run vmc:sync-assets" });
     }
@@ -281,11 +281,11 @@ export class VmcService {
   // ---------------------------------------------------------------------------------------
   // Daily history (baseline inputs): backfill + incremental refresh with correction window
   // ---------------------------------------------------------------------------------------
-  dailyHistory(opts: { full?: boolean } = {}): Promise<JobOutcome> {
+  dailyHistory(opts: { full?: boolean; ids?: number[] } = {}): Promise<JobOutcome> {
     return this.withRun("daily_history", async (ctx) => {
       const conv = this.cfg.VMC_DAILY_CONVENTION;
       const win = baselineWindow(ctx.now, this.cfg.VMC_BASELINE_MONTHS);
-      const ids = await this.requireAssets(ctx);
+      const ids = await this.requireAssets(ctx, opts.ids);
       await this.forEachAsset(ctx, ids, async (id) => {
         const last = await this.prisma.vmcDailyCurrent.findFirst({ where: { cmcId: id, convention: conv }, orderBy: { dateUtc: "desc" } });
         const lastDate = last ? isoDate(last.dateUtc) : null;
@@ -386,11 +386,11 @@ export class VmcService {
   // ---------------------------------------------------------------------------------------
   // Baseline: computed from persisted effective daily rows only (never from hourly data)
   // ---------------------------------------------------------------------------------------
-  baseline(): Promise<JobOutcome> {
+  baseline(opts: { ids?: number[] } = {}): Promise<JobOutcome> {
     return this.withRun("baseline", async (ctx) => {
       const conv = this.cfg.VMC_DAILY_CONVENTION;
       const win = baselineWindow(ctx.now, this.cfg.VMC_BASELINE_MONTHS);
-      const ids = await this.requireAssets(ctx);
+      const ids = await this.requireAssets(ctx, opts.ids);
       await this.forEachAsset(ctx, ids, async (id) => {
         const asset = await this.prisma.vmcAsset.findUniqueOrThrow({ where: { cmcId: id } });
         const pointers = await this.prisma.vmcDailyCurrent.findMany({ where: { cmcId: id, convention: conv, dateUtc: { gte: parseIsoDate(win.start), lte: parseIsoDate(win.end) } } });
@@ -501,6 +501,25 @@ export class VmcService {
       });
       return { file: opts.fileName };
     });
+  }
+
+  /**
+   * Six-month baselines for coins the strategy recommends (in addition to VMC_ASSET_IDS): sync
+   * identity, fetch completed daily history and compute the baseline, only for ids whose latest
+   * baseline is missing or older than `maxAgeDays`. About two website requests per new coin.
+   */
+  async ensureBaselines(ids: number[], maxAgeDays = 7): Promise<{ requested: number; refreshed: number[]; skipped: string | null; outcomes: JobOutcome[] }> {
+    const unique = [...new Set(ids)].filter((id) => Number.isSafeInteger(id) && id > 0);
+    if (!unique.length) return { requested: 0, refreshed: [], skipped: null, outcomes: [] };
+    if (this.isFixture) return { requested: unique.length, refreshed: [], skipped: "VMC_SOURCE=fixture: no real baselines (set VMC_SOURCE=cmc_web)", outcomes: [] };
+    const since = new Date(this.now().getTime() - maxAgeDays * 86_400_000);
+    const fresh = new Set((await this.prisma.vmcBaseline.findMany({ where: { cmcId: { in: unique }, calculatedAt: { gte: since } }, select: { cmcId: true }, distinct: ["cmcId"] })).map((b) => b.cmcId));
+    const todo = unique.filter((id) => !fresh.has(id));
+    if (!todo.length) return { requested: unique.length, refreshed: [], skipped: null, outcomes: [] };
+    const outcomes = [await this.syncAssets(todo)];
+    outcomes.push(await this.dailyHistory({ ids: todo }));
+    outcomes.push(await this.baseline({ ids: todo }));
+    return { requested: unique.length, refreshed: todo, skipped: null, outcomes };
   }
 
   /** Weekly job: refresh daily history (incl. correction lookback) then recompute baselines. */

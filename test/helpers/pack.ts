@@ -39,6 +39,11 @@ export function makePack(over: Partial<EvidencePack> = {}): EvidencePack {
     screening: { classification: "advance_candidate", heuristicScore: 61.5, components: {}, riskFlags: ["no_liquidity_data"], rank: 1 },
     market: { btcRet1h: 0.001, ethRet1h: 0.001, marketMedianRet1h: 0.001, marketMedianRet2h: 0.002, breadth: 20, advancingShare: 0.5 },
     scenario: buildScenario({ referencePrice: 1.025, slotTime: SLOT, classification: "advance_candidate", params: strategy, feeBps: 10, slippageBps: 30, estSlippagePct: null }),
+    pump: { chance: "high", reasons: ["early-surge setup: all conditions met (score 62)"] },
+    context: {
+      threeDay: { change: 0.12, high: 1.03, low: 0.9, fromPrice: 0.915, fromSlot: "2026-10-31T12:00:00.000Z", spanHours: 72, points: 73 },
+      vmc: { currentRatio: 0.032, baselineMean: 0.01, multiple: 3.2, baselineStatus: "full", baselineValidDays: 184, baselineWindow: "2026-05-03..2026-11-02" },
+    },
     strategyVersion: strategy.version,
     featureSetVersion: "fs-1",
     ...over,

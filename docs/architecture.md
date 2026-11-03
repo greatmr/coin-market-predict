@@ -4,7 +4,7 @@
 ```
                  ┌─────────────── NestJS application (one process) ───────────────┐
  cron (UTC) ───▶ │ PipelineService (lease + stage records)                         │
-                 │  discover ─ collect ─ validate ─ persist ─ features ─ screen     │
+                 │  discover ─ collect ─ history ─ features ─ screen               │
                  │        │ MarketDataSource adapter (fixture | CMC API/web | CoinGecko)    │
                  │  analyze ─▶ AnalysisService ─▶ Claude Agent SDK (subprocess)     │
                  │               analyst → reviewer (→ escalation) → coordinator    │
@@ -22,13 +22,13 @@
 |---|---|
 | `config/` | Zod-validated env, `*_FILE` secrets, redaction |
 | `sources/` | Adapter contract, fixture market, CMC API/website and CoinGecko adapters, shared website queue, polite HTTP client, persisted source health |
-| `ingestion/` | Discovery (identity resolution, delisting on complete sweeps), collection, validation, coverage |
+| `ingestion/` | Discovery (identity resolution, delisting on complete sweeps), collection, validation, coverage, genuine-history backfill, classification |
 | `features/` | Versioned feature registry + pure computation; market context |
-| `screening/` | Strategy version, eligibility, classification, heuristic score, paper scenario, evidence packs |
+| `screening/` | Strategy version, screen universe (`universe.ts`), eligibility, classification, heuristic score, paper scenario, evidence packs |
 | `agents/` | Role configs, runners (Claude SDK / fixture), tools, schemas, guardrails, orchestration |
 | `evaluation/` | Paper simulation, research-target labeling, walk-forward backtest |
 | `telegram/` | Report building/formatting, delivery with dedupe and retries |
-| `pipeline/` | Orchestrator, DB lease, scheduler, restart recovery |
+| `pipeline/` | Orchestrator, DB lease, scheduler, restart recovery, storage retention |
 | `mcp/` | Shared tool definitions, external MCP server (HTTP + stdio) |
 | `dashboard/` | REST API + Basic auth + security headers |
 | `read-model/` | Read-only queries shared by dashboard, MCP and agent tools |
@@ -40,6 +40,37 @@ provider/asset/slot/quote), `PipelineRun` (unique per kind/slot/provider) + `Pip
 `JobLease`, `AppState`, `FeatureSetVersion`, `StrategyVersion`, `FeatureValue`,
 `ScreeningResult`, `Signal`, `AgentExecution`, `TelegramDelivery`, `PaperPosition`,
 `SignalOutcome`, `BacktestReport`. Money columns are `Decimal`; timestamps `timestamptz`.
+
+## Pipeline stages
+| Stage | What it does |
+|---|---|
+| `discover` | Listing sweep when due (`DISCOVERY_INTERVAL_HOURS`): identities, contracts, classes, delisting on complete sweeps |
+| `collect` | One validated snapshot per listed coin for the UTC hour (website: one 10k-row listing request) |
+| `history` | Genuine chart history for coins that would be eligible but lack t−1h/t−2h (bounded, resumable; failures never fail the run) |
+| `features` | Features for the screen universe only; market context; exclusion counts for the rest |
+| `screen` | Deterministic eligibility, classification, score, pump chance + reasons, shortlist |
+| `vmc` | Six-month volume / market cap baselines for the pump watchlist (non-fatal) |
+| `analyze` | Agents review the shortlist (≤ `SHORTLIST_SIZE`) with pump, 3-day and VMC context and give buy / hold / sell; code combines into buy / watch / avoid |
+| `publish` | Signals, paper positions, outcomes |
+| `notify` | Telegram report (dry run by default); retention runs afterwards |
+
+## Storage and retention
+Snapshot rows cost ~870 bytes (with indexes); the full website listing is ~8k coins, about
+7 MB per hour. Rules (`src/pipeline/retention.service.ts`):
+- Every listed coin: one `MarketSnapshot` per UTC hour (unique key, idempotent).
+- Only the screen universe (benchmarks + non-excluded coins at or above the market-cap floor,
+  ~1k coins) gets `FeatureValue` and `ScreeningResult` rows; the rest are counted per run in
+  `PipelineRun.metrics.outsideReasons`. These rows are recomputable from snapshots.
+- After `RETENTION_DETAIL_DAYS` (default 30): coins outside the floors keep the first snapshot of
+  each UTC day — a genuine observation, never an aggregate — unless they qualified within ±72 h
+  (look-back and outcome windows stay intact for floor-crossers); feature rows and
+  non-shortlisted screening rows are pruned. A persisted watermark makes this resumable.
+- `RETENTION_SNAPSHOT_DAYS > 0` still deletes everything older. Signals, paper positions, runs
+  and VMC tables are never pruned here.
+Approximate footprint with the defaults (8k coins, ~1k in the screen universe): a rolling
+~6 GB of 30-day detail (tail snapshots ~4.3 GB, derived rows ~1.4 GB) plus ~11 GB/year of kept
+history (universe hourly ~9 GB, tail daily ~2 GB). Storing every coin's snapshot, feature and
+screening rows hourly without this policy would grow by roughly 250 GB/year.
 
 ## Reliability
 - **Non-overlap**: in-process flag + `JobLease` (atomic upsert using DB time, heartbeat).
@@ -92,6 +123,11 @@ capped at `watch`, report says "agent analysis unavailable". `authentication_fai
 ## CMC website collection
 
 `CmcWebModule` supplies one shared `CmcWebClient` to the main source adapter and VMC module.
+The main adapter reads the whole listing with `limit=CMC_WEB_LISTING_PAGE_SIZE` (10,000: all
+~8k coins in one response). Multi-page sweeps sorted by market cap are unstable among the
+thousands of coins tied at zero cap, so they are a fallback with a small boundary overlap and are
+reported as partial when coins repeat or vanish. The `history` stage calls the seven-day chart per
+coin (~15-minute samples) only for strategy-eligible coins that lack the previous hours.
 It reads coin pages' embedded Next.js data and the website listing/detail/history/chart JSON
 endpoints. A bounded cache reduces repeated calls; `PoliteHttpClient` provides sequential
 requests, persisted monthly budgets/cooldowns, backoff, Retry-After and denial suspension.

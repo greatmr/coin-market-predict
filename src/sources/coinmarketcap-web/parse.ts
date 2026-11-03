@@ -77,16 +77,22 @@ export function parseWebHourly(body: unknown, cmcId: number, start: Date, end: D
   return [...hours.values()];
 }
 
-/** Genuine chart prices, cap and rolling volume for the main feature pipeline. */
+/**
+ * Every genuine chart sample in [start, end] for the main feature pipeline, oldest first:
+ * v = [USD price, rolling 24h USD volume, circulating USD market cap, ...]. Hourly slot
+ * selection happens in ingestion; historical circulating supply is not reported here.
+ */
 export function parseWebMarketHistory(body: unknown, asset: SourceAsset, start: Date, end: Date): RawObservation[] {
   const data = websiteData(body);
   if (!object(data.points)) return invalid("chart points missing");
-  const points = data.points;
-  return parseWebHourly(body, Number(asset.providerAssetId), start, end).map((r) => {
-    const point = points[String(r.observedAt.getTime() / 1000)] as Obj;
-    const values = point.v as unknown[];
-    return { providerAssetId: asset.providerAssetId, name: asset.name, symbol: asset.symbol, sourceUrl: asset.sourceUrl, observedAt: r.observedAt, price: num(values[0]), marketCap: r.marketCap?.toNumber() ?? null, volume24h: r.volume?.toNumber() ?? null, circulatingSupply: null, fullyDilutedValuation: null, categories: asset.categories };
-  });
+  const out: RawObservation[] = [];
+  for (const [key, p] of Object.entries(data.points)) {
+    if (!/^\d{10}$/.test(key) || !object(p) || !Array.isArray(p.v)) continue;
+    const observedAt = new Date(Number(key) * 1000);
+    if (observedAt < start || observedAt > end) continue;
+    out.push({ providerAssetId: asset.providerAssetId, name: asset.name, symbol: asset.symbol, sourceUrl: asset.sourceUrl, observedAt, price: num(p.v[0]), marketCap: num(p.v[2]), volume24h: num(p.v[1]), circulatingSupply: null, fullyDilutedValuation: null, categories: asset.categories });
+  }
+  return out.sort((a, b) => a.observedAt!.getTime() - b.observedAt!.getTime());
 }
 
 export function parseWebListing(body: unknown): { assets: SourceAsset[]; observations: RawObservation[]; total: number; count: number; skipped: number } {

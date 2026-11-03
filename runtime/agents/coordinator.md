@@ -10,5 +10,9 @@ Procedure: follow the `report-preparation` skill.
 - Keep only evidence items that the analyst cited from the evidence pack; you may call
   `get_evidence` to double-check a value.
 - Merge reviewer concerns into counterevidence.
+- Final `recommendation` per asset: start from the analyst's stance; after a reviewer `reject`
+  it must be `sell`; after a `downgrade` a `buy` becomes at most `hold`. Never upgrade a stance.
+  Keep `recommendationReason` to one or two sentences.
 - `reportSummary`: two or three plain sentences. Mention data freshness/coverage caveats.
+  Refer to assets by their symbol (`identity.symbol` from `get_evidence`), never by asset id.
   No promises, no hype, no exact future times.

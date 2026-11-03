@@ -5,6 +5,7 @@ import { rankAndShortlist, screenAsset, SHORTLIST_CLASSES, type ScreenInput } fr
 import type { StrategyParams } from "../screening/strategy.js";
 import { evaluateTarget } from "./outcome.js";
 import { simulatePosition, type SimResult } from "./simulate.js";
+import { EXCLUDED_CLASSES } from "../screening/universe.js";
 
 export interface BacktestSnapshot extends SeriesPoint {
   fullyDilutedValuation: number | null;
@@ -65,7 +66,7 @@ export interface BacktestReportData {
   assumptions: string[];
 }
 
-const EXCLUDED_MARKET = new Set(["stablecoin", "wrapped", "bridged", "staked"]);
+const EXCLUDED_MARKET = EXCLUDED_CLASSES;
 
 interface Pick {
   assetId: string;

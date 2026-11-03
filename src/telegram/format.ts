@@ -34,6 +34,32 @@ export interface ReportRow {
   scenario?: RowScenario;
 }
 
+/** One row of the pump watchlist table (strategy + agents). Values come from the read model. */
+export interface RecommendationRow {
+  symbol: string;
+  name: string;
+  price: number | null;
+  marketCap: number | null;
+  volume24h: number | null;
+  /** Price change over the stored last three days (fraction) and the hours it spans. */
+  threeDayChange: number | null;
+  threeDaySpanHours: number;
+  /** 24h volume ÷ market cap now, its six-month daily mean, and the multiple. */
+  vmcCurrent: number | null;
+  vmcBaseline: number | null;
+  vmcMultiple: number | null;
+  pumpChance: "high" | "medium" | "low";
+  pumpReasons: string[];
+  /** Agents' own stance (null = not reviewed by agents) and the combined recommendation. */
+  agentRecommendation: "buy" | "hold" | "sell" | null;
+  agentReason: string | null;
+  agentOrigin: string | null;
+  recommendation: "buy" | "watch" | "avoid";
+  recommendationReason: string;
+  risk: string[];
+  scenario?: { entryPrice: number; stopPrice: number | null; targetPrice: number | null; expiresAt: string | null };
+}
+
 export interface ReportInput {
   generatedAt: Date;
   slotTime: Date;
@@ -48,6 +74,8 @@ export interface ReportInput {
   screened: number;
   eligible: number;
   rows: ReportRow[];
+  /** Pump watchlist; when present it replaces the per-signal cards with a table + cards. */
+  recommendations?: RecommendationRow[];
 }
 
 export function escapeHtml(s: string): string {
@@ -156,7 +184,10 @@ export function formatReport(r: ReportInput): string[] {
   if (r.summary) header.push(`💬 ${escapeHtml(r.summary)}`);
 
   const blocks: string[] = [header.join("\n")];
-  if (r.rows.length === 0) {
+  if (r.recommendations?.length) {
+    blocks.push(recTable(r.recommendations));
+    r.recommendations.forEach((row, i) => blocks.push(recCard(row, i, r.timezone)));
+  } else if (r.rows.length === 0) {
     blocks.push("✅ <b>No qualifying signals this hour.</b>\nNothing passed screening and review — that is normal.");
   } else {
     blocks.push(`<b>Top ${r.rows.length} (ranked)</b>`);
@@ -164,6 +195,73 @@ export function formatReport(r: ReportInput): string[] {
   }
   blocks.push(`<i>${escapeHtml(RESEARCH_NOTE)}${r.attribution && r.isLive ? `\n${escapeHtml(r.attribution)}` : ""}</i>`);
   return pack(blocks);
+}
+
+const PUMP_SHORT = { high: "HIGH", medium: "MED", low: "LOW" } as const;
+const AGENT_SHORT = { buy: "BUY", hold: "HOLD", sell: "SELL" } as const;
+const REC_SHORT = { buy: "BUY", watch: "WATCH", avoid: "AVOID" } as const;
+const REC_LABEL = { buy: "✅ BUY (paper, on entry trigger)", watch: "👀 WATCH", avoid: "⛔ AVOID" } as const;
+const PUMP_LABEL = { high: "🔥 HIGH", medium: "🌤 MEDIUM", low: "🧊 LOW" } as const;
+
+/** ASCII-only signed percent for monospace tables (no Unicode minus: alignment must hold). */
+function tablePct(x: number | null): string {
+  if (x === null || !Number.isFinite(x)) return "n/a";
+  const v = x * 100;
+  return `${v > 0 ? "+" : v < 0 ? "-" : ""}${Math.abs(v).toFixed(Math.abs(v) >= 100 ? 0 : 1)}%`;
+}
+/** Compact amount without the dollar sign: 61M, 1.6B, 950K. */
+function tableAmount(n: number | null): string {
+  if (n === null || !Number.isFinite(n)) return "n/a";
+  const a = Math.abs(n);
+  const f = (v: number) => (v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(0) : v.toFixed(1));
+  if (a >= 1e12) return `${f(n / 1e12)}T`;
+  if (a >= 1e9) return `${f(n / 1e9)}B`;
+  if (a >= 1e6) return `${f(n / 1e6)}M`;
+  if (a >= 1e3) return `${f(n / 1e3)}K`;
+  return n.toFixed(0);
+}
+const tableMultiple = (m: number | null) => (m === null || !Number.isFinite(m) ? "n/a" : `${m >= 10 ? m.toFixed(0) : m.toFixed(1)}x`);
+
+/** Phone-width monospace table (≤ 44 columns): coin, 3-day move, market cap, VMC multiple, pump chance, agents, combined. */
+export function recTable(rows: RecommendationRow[]): string {
+  const cols = [
+    { h: "Coin", w: 6, left: true, v: (r: RecommendationRow) => r.symbol.slice(0, 6) },
+    { h: "3d", w: 7, v: (r: RecommendationRow) => tablePct(r.threeDayChange) },
+    { h: "MCap", w: 5, v: (r: RecommendationRow) => tableAmount(r.marketCap) },
+    { h: "VMC", w: 4, v: (r: RecommendationRow) => tableMultiple(r.vmcMultiple) },
+    { h: "Pump", w: 4, left: true, v: (r: RecommendationRow) => PUMP_SHORT[r.pumpChance] },
+    { h: "Agent", w: 5, left: true, v: (r: RecommendationRow) => (r.agentRecommendation ? AGENT_SHORT[r.agentRecommendation] : "-") },
+    { h: "Rec", w: 5, left: true, v: (r: RecommendationRow) => REC_SHORT[r.recommendation] },
+  ];
+  const cell = (text: string, w: number, left?: boolean) => (left ? text.padEnd(w) : text.padStart(w)).slice(0, w);
+  const line = (vals: string[]) => vals.map((v, i) => cell(v, cols[i]!.w, cols[i]!.left)).join(" ").trimEnd();
+  const lines = [line(cols.map((c) => c.h)), ...rows.map((r) => line(cols.map((c) => c.v(r))))];
+  return [
+    `<b>🔥 Pump watchlist</b> · strategy + agents`,
+    `<pre>${escapeHtml(lines.join("\n"))}</pre>`,
+    `<i>3d = price change over the last 72h · VMC = 24h volume/market cap vs its 6-month average · Pump = strategy chance (heuristic, not a probability) · Agent = agents' own view · Rec = combined</i>`,
+  ].join("\n");
+}
+
+function recCard(r: RecommendationRow, i: number, tz: string): string {
+  const span = r.threeDaySpanHours >= 70 || r.threeDayChange === null ? "3d" : `${r.threeDaySpanHours}h`;
+  const lines = [
+    `<b>${i + 1}. ${escapeHtml(r.symbol)}</b> · ${escapeHtml(r.name)}`,
+    `${REC_LABEL[r.recommendation]} · ${PUMP_LABEL[r.pumpChance]} pump chance`,
+    `🤖 Agents: ${r.agentRecommendation ? `<b>${AGENT_SHORT[r.agentRecommendation]}</b>${r.agentOrigin === "fixture_agent" ? " (offline stand-in)" : ""}` : "not reviewed"}`,
+    `💵 ${usdPrice(r.price)} · ${span} ${escapeHtml(tablePct(r.threeDayChange))} · Cap ${compactUsd(r.marketCap)}`,
+    `📊 VMC ${r.vmcCurrent === null ? "n/a" : r.vmcCurrent.toFixed(3)}${r.vmcBaseline !== null ? ` vs ${r.vmcBaseline.toFixed(3)} 6-mo avg (${escapeHtml(tableMultiple(r.vmcMultiple))})` : " · no 6-mo baseline yet"}`,
+  ];
+  for (const reason of r.pumpReasons.slice(0, 3)) lines.push(`• ${escapeHtml(reason)}`);
+  if (r.agentReason) lines.push(`🤖 ${escapeHtml(r.agentReason.slice(0, 220))}`);
+  if (r.scenario) {
+    const exp = r.scenario.expiresAt ? ` by ${hhmm(r.scenario.expiresAt, tz)}` : "";
+    lines.push(`▶️ Enter ≥ ${usdPrice(r.scenario.entryPrice)}${exp}`);
+    lines.push(`⛔ Stop ≤ ${usdPrice(r.scenario.stopPrice)} · 🎯 ${usdPrice(r.scenario.targetPrice)}`);
+  }
+  lines.push(`⚖️ ${escapeHtml(r.recommendationReason.slice(0, 200))}`);
+  if (r.risk.length) lines.push(`⚠️ ${escapeHtml(riskText(r.risk))}`);
+  return lines.join("\n");
 }
 
 /** Pack blocks into messages under the limit, separated by blank lines; never split a block. */

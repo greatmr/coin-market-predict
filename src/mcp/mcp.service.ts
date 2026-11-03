@@ -1,7 +1,7 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { AssetAssessment } from "../agents/schemas.js";
+import { ExternalAssessment } from "../agents/schemas.js";
 import { slotOf } from "../common/time.js";
 import { APP_CONFIG, type AppConfig } from "../config/config.js";
 import { PrismaService } from "../prisma/prisma.service.js";
@@ -33,7 +33,7 @@ export class McpService {
         scope: "read",
         input: {
           search: z.string().max(64).optional(),
-          assetClass: z.enum(["regular", "stablecoin", "wrapped", "bridged", "staked", "unknown"]).optional(),
+          assetClass: z.enum(["regular", "stablecoin", "tokenized", "wrapped", "bridged", "staked", "unknown"]).optional(),
           limit: z.number().int().min(1).max(200).optional(),
           offset: z.number().int().min(0).max(100_000).optional(),
         },
@@ -77,6 +77,53 @@ export class McpService {
         handler: (a) => r.signals({ runId: a.runId, status: a.status, limit: a.limit ?? 25 }),
       }),
       defineTool({
+        name: "get_recommendations",
+        description:
+          "Pump watchlist of the latest (or given) run: coins with a high/medium strategy pump chance (heuristic, not a probability) with price, last-3-day change, market cap, volume/market cap vs the six-month baseline (VMC), the agents' own buy/hold/sell stance and the combined buy/watch/avoid recommendation with reasons.",
+        scope: "read",
+        input: { runId: z.string().uuid().optional(), limit: z.number().int().min(1).max(25).optional() },
+        output: json,
+        handler: (a) => r.recommendations({ runId: a.runId, limit: a.limit }),
+      }),
+      defineTool({
+        name: "get_screening",
+        description: "Strategy screen of the latest (or given) run: every evaluated coin with eligibility, exclusion reasons, pattern, heuristic score, pump chance, key features and the current quote.",
+        scope: "read",
+        input: {
+          runId: z.string().uuid().optional(),
+          eligibleOnly: z.boolean().optional(),
+          classification: z.enum(["advance_candidate", "move_underway", "gradual_trend", "market_wide", "overextended", "none"]).optional(),
+          search: z.string().max(64).optional(),
+          limit: z.number().int().min(1).max(500).optional(),
+          offset: z.number().int().min(0).max(100_000).optional(),
+        },
+        output: json,
+        handler: (a) => r.screening({ runId: a.runId, eligibleOnly: a.eligibleOnly ?? false, classification: a.classification, search: a.search, limit: a.limit ?? 100, offset: a.offset ?? 0 }),
+      }),
+      defineTool({
+        name: "get_market",
+        description: "Every coin collected in the latest hour (price, 1h/24h/7d change, market cap, 24h volume) with its strategy status; search, sort and page.",
+        scope: "read",
+        input: {
+          search: z.string().max(64).optional(),
+          sort: z.enum(["market_cap", "volume", "change_1h", "change_24h", "change_7d", "symbol"]).optional(),
+          dir: z.enum(["asc", "desc"]).optional(),
+          scope: z.enum(["all", "universe", "outside"]).optional(),
+          limit: z.number().int().min(1).max(200).optional(),
+          offset: z.number().int().min(0).max(100_000).optional(),
+        },
+        output: json,
+        handler: (a) => r.market({ search: a.search, sort: a.sort ?? "market_cap", dir: a.dir ?? (a.sort === "symbol" ? "asc" : "desc"), scope: a.scope ?? "all", limit: a.limit ?? 50, offset: a.offset ?? 0 }),
+      }),
+      defineTool({
+        name: "get_overview",
+        description: "Strategy funnel of the latest published run (listed, collected, universe, eligible, patterns, pump chances, shortlist, signals), market context, history backfill and agent outcome, plus the progress of a run in flight.",
+        scope: "read",
+        input: {},
+        output: json,
+        handler: () => r.overview(),
+      }),
+      defineTool({
         name: "get_run_status",
         description: "Recent pipeline runs with stage status, coverage, metrics and model cost.",
         scope: "read",
@@ -89,14 +136,14 @@ export class McpService {
         description:
           "WRITE: persist an externally prepared, schema-validated signal report for an asset in the latest run. Stored with origin external_mcp; 'candidate' is capped at 'watch' because it has not passed the internal review.",
         scope: "write",
-        input: { assessment: AssetAssessment, note: z.string().max(300).optional() },
+        input: { assessment: ExternalAssessment, note: z.string().max(300).optional() },
         output: json,
         handler: (a) => this.publish(a.assessment, a.note),
       }),
     ];
   }
 
-  async publish(assessment: z.infer<typeof AssetAssessment>, note?: string) {
+  async publish(assessment: z.infer<typeof ExternalAssessment>, note?: string) {
     const runId = await this.read.latestRunId();
     if (!runId) throw new Error("no completed run to attach the report to");
     const run = await this.prisma.pipelineRun.findUniqueOrThrow({ where: { id: runId } });
@@ -148,6 +195,12 @@ export class McpService {
       "coins://signals/latest",
       { description: "Signals of the latest completed run", mimeType: "application/json" },
       async (uri) => ({ contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(await this.read.signals({ limit: 50 })) }] }),
+    );
+    server.registerResource(
+      "recommendations",
+      "coins://recommendations/latest",
+      { description: "Pump watchlist of the latest completed run (strategy + agents)", mimeType: "application/json" },
+      async (uri) => ({ contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(await this.read.recommendations({})) }] }),
     );
     server.registerResource(
       "run-status",

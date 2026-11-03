@@ -1,4 +1,5 @@
 import type { EvidencePack } from "../screening/evidence.js";
+import { combineRecommendation, type AgentRecommendation, type PumpChance, type Recommendation } from "../screening/recommend.js";
 import type { AssetAssessment, Review, SignalStatus } from "./schemas.js";
 
 /** Final, validated signal ready to persist. */
@@ -21,6 +22,14 @@ export interface FinalSignal {
   /** agent = Claude Agent SDK; fixture_agent = offline deterministic stand-in; deterministic = no agent. */
   origin: "agent" | "fixture_agent" | "deterministic";
   reviewOutcome: "agree" | "downgrade" | "reject" | "not_reviewed";
+  /** Base-strategy pump chance (heuristic level, not a probability). */
+  pumpChance: PumpChance;
+  /** The agents' own paper-trading stance; null when no agent reviewed the asset. */
+  agentRecommendation: AgentRecommendation | null;
+  agentRecommendationReason: string | null;
+  /** Combined strategy + agents recommendation after guardrails. */
+  recommendation: Recommendation;
+  recommendationReason: string;
 }
 
 const RANK: Record<SignalStatus, number> = { no_signal: 0, insufficient_data: 1, watch: 2, candidate: 3 };
@@ -30,6 +39,11 @@ function minStatus(...xs: Array<SignalStatus | undefined>): SignalStatus {
 }
 
 function lookup(pack: EvidencePack, metric: string): number | null | undefined {
+  if (metric.startsWith("context.")) {
+    let v: unknown = pack.context;
+    for (const k of metric.split(".").slice(1)) v = v && typeof v === "object" ? (v as Record<string, unknown>)[k] : undefined;
+    return typeof v === "number" ? v : v === null ? null : undefined;
+  }
   const m = metric.replace(/^features\./, "");
   if (m in pack.features) return pack.features[m];
   const latestKey = m.replace(/^latest\./, "") as keyof EvidencePack["latest"];
@@ -114,6 +128,12 @@ export function finalizeSignal(
     status = "watch";
     notes.push("poor data quality: capped at watch");
   }
+  if (status === "candidate" && pack.screening.classification !== "advance_candidate") {
+    status = "watch";
+    notes.push(`base strategy pattern is ${pack.screening.classification}, not an advance setup: capped at watch`);
+  }
+  const reviewOutcome = input.review?.verdict ?? "not_reviewed";
+  const combined = combineRecommendation({ pumpChance: pack.pump.chance, status, agentRecommendation: base.recommendation, reviewOutcome });
 
   // Agents cannot relabel detection of a move already underway as an advance signal.
   const cls = pack.screening.classification;
@@ -144,19 +164,26 @@ export function finalizeSignal(
     rationale: base.rationale,
     riskFlags: pack.screening.riskFlags,
     origin: "agent",
-    reviewOutcome: input.review?.verdict ?? "not_reviewed",
+    reviewOutcome,
+    pumpChance: pack.pump.chance,
+    agentRecommendation: base.recommendation,
+    agentRecommendationReason: base.recommendationReason,
+    recommendation: combined.recommendation,
+    recommendationReason: combined.reason,
   };
 }
 
 /** Signal produced without agent analysis (agents off/unavailable). Never above "watch". */
 export function deterministicSignal(pack: EvidencePack, reason: string): FinalSignal {
   const observedAt = pack.latest.observedAt ?? pack.latest.slotTime;
+  const status: SignalStatus = pack.warmupState === "warming_up" ? "insufficient_data" : "watch";
+  const combined = combineRecommendation({ pumpChance: pack.pump.chance, status, agentRecommendation: null, reviewOutcome: "not_reviewed" });
   const evidence = ["ret_2h", "accel_1h", "vol24_change_2h", "rs_market_2h"]
     .filter((m) => typeof pack.features[m] === "number")
     .map((m) => ({ metric: m, value: pack.features[m]!, observedAt, interpretation: "deterministic screen input" }));
   return {
     assetId: pack.assetId,
-    status: pack.warmupState === "warming_up" ? "insufficient_data" : "watch",
+    status,
     signalType: pack.screening.classification === "advance_candidate" ? "advance" : pack.screening.classification === "move_underway" ? "move_underway" : "none",
     horizonHours: pack.scenario.maxHoldHours,
     heuristicScore: pack.screening.heuristicScore,
@@ -177,5 +204,10 @@ export function deterministicSignal(pack: EvidencePack, reason: string): FinalSi
     riskFlags: pack.screening.riskFlags,
     origin: "deterministic",
     reviewOutcome: "not_reviewed",
+    pumpChance: pack.pump.chance,
+    agentRecommendation: null,
+    agentRecommendationReason: null,
+    recommendation: combined.recommendation,
+    recommendationReason: combined.reason,
   };
 }

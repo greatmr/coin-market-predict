@@ -1,6 +1,6 @@
 # Strategy and its limitations
 
-## What the screen looks for (`surge-screen-1`, feature set `fs-1`)
+## What the screen looks for (`surge-screen-3`, feature set `fs-1`)
 An **advance candidate** is an asset whose rolling-24h volume is building (`vol24_change_2h`),
 whose price is accelerating (`accel_1h > 0`) while still modest (`ret_2h` below the
 "underway" threshold), and that outperforms the market median (`rs_market_2h > 0`).
@@ -11,9 +11,59 @@ Other classes, kept separate:
 - **market_wide** — moving with a broad rally, little relative strength.
 - **overextended** — ≥ 25% in 2h or ≥ 60% in 24h.
 
-Excluded before classification: stablecoins, wrapped/bridged/staked exposure, benchmark
-references (BTC/ETH), stale or incomplete observations, illiquid (24h volume / market-cap
-floors), missing circulating market cap, and warm-up.
+Excluded before classification: stablecoins, tokenized off-chain assets (stocks, ETFs,
+commodities, treasuries), wrapped/bridged/staked exposure, benchmark references (BTC/ETH), stale
+or incomplete observations, illiquid (24h volume / market-cap floors), missing circulating market
+cap, and warm-up. `surge-screen-2` added the tokenized class: on the 2026-11-03 listing, 103
+tokenized stocks and 16 tokenized ETFs/gold coins sat inside the floors and move with equities
+and gold rather than crypto.
+
+How a coin's class is decided (`src/ingestion/classify.ts`, only ever made stricter):
+provider tags (`stablecoin`/`*-stablecoin`, `wrapped-tokens`, `tokenized-stock|etfs|commodities|
+gold|silver|treasury-*|real-estate`), then name heuristics (wrapped/bridged/staked/stablecoin
+symbols), then price evidence: a coin priced within 0.9–1.4× of BTC, ETH, SOL or BNB *and* naming
+that asset (wstETH, LBTC, BTCB, slisBNBx…), or a USD-named coin pinned to $1. Ambiguous tags are
+not used alone: `liquid-staking-derivatives`/`restaking` also tag LDO, RPL or PENDLE, and
+`stablecoin-protocol` tags governance tokens.
+
+## Pump chance and recommendations (`surge-screen-3`)
+Every screened coin gets a **pump chance** — a heuristic level from the deterministic screen,
+never a probability (`src/screening/recommend.ts`):
+
+| Level | Rule |
+|---|---|
+| high | advance candidate with heuristic score ≥ 50 |
+| medium | advance candidate below 50; move underway with score ≥ 50 (late, chasing risk); or a forming setup — 3 of the 4 early-surge conditions (volume build ≥ 15%, acceleration > 0, 2h return ≥ +0.5%, ahead of the market median) with score ≥ `minShortlistScore` |
+| low | everything else, and any coin flagged for wash trading or 24h volume above market cap |
+
+Each level carries plain-language reasons (conditions met ✓ / missed ✗, cautions). The pump
+watchlist is the top `RECOMMENDATIONS_MAX` (10) eligible coins by chance then score; the top
+`SHORTLIST_SIZE` (6) of those (high, or medium with score ≥ 35) go to the agents.
+
+For the watchlist the `vmc` stage fetches each coin's six-month daily volume / market cap baseline
+(two website requests per new coin, refreshed weekly) so every row shows the current ratio, the
+baseline and the multiple, plus the last three days of stored hourly prices (change, high, low).
+
+Agents analyse the shortlist with that context and give their **own stance**: `buy` (take the
+paper long only if the entry trigger prints), `hold` (wait for confirmation) or `sell` (avoid or
+exit). Code then combines strategy, guardrails and agents into **Buy / Watch / Avoid**: Buy only
+when the pump chance is high or medium, the guardrailed status is `candidate` and the agents say
+buy; any agent sell, review rejection, low chance or missing data is Avoid; everything else is
+Watch. `candidate` itself now requires the base strategy's advance pattern. All of this is paper
+trading research: no orders exist, and a "Buy" is a hypothesis to test, not advice.
+
+## Universe and history
+Every listed coin is collected each hour (the website listing returns all ~8k coins in one
+request). The **screen universe** is benchmarks plus non-excluded coins with circulating market
+cap ≥ the floor; only these get feature and screening rows. Coins outside it are stored as raw
+snapshots and summarized as exclusion counts per run. The market median uses the same universe
+(non-stale), so it reflects ~1,000+ coins rather than whichever coins happened to have history.
+
+A coin that would be eligible but lacks t−1h/t−2h (first run, newly qualifying, or after
+downtime) gets one chart request: genuine samples for the previous 72 hours, each hour taken at
+the same minute offset as the current snapshot so t, t−1h, t−2h are about an hour apart. Hours the
+chart lacks stay missing. The backfill is bounded per run (coins, minutes, monthly-request
+reserve) and resumes next run; meanwhile every coin also accumulates its own hourly snapshots.
 
 ## Features and data requirements
 | Feature | Kind | Needs |
@@ -57,7 +107,8 @@ understated. Reports and the dashboard state this; no continuous monitoring is i
 ## Three snapshots
 With only t, t−1h, t−2h, the screen can measure 2-hour momentum, acceleration and volume build —
 crude heuristics. "Candidate" status requires `CANDIDATE_MIN_HISTORY` (25) consecutive hours;
-before that, signals are capped at `watch`.
+before that, signals are capped at `watch`. Coins with a genuine 72-hour backfill meet this on
+their first screened hour; coins that only warm up from hourly collection need 25 hours.
 
 ## Evaluation
 `npm run cli -- backtest` runs a time-ordered walk-forward evaluation on stored history:

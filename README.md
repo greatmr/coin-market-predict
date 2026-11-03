@@ -16,7 +16,7 @@ server, and a Telegram channel.
 ## What is live vs fixture
 | Component | Status |
 |---|---|
-| Market data | **Fixture (synthetic) by default.** Optional CMC website crawler (no key; live-tested) or official free APIs (key required) |
+| Market data | **Fixture (synthetic) by default.** CMC website collector (no key; every listed coin, hourly) or official free APIs (key required, partial) |
 | Claude agents | Real Agent SDK with `CLAUDE_CODE_OAUTH_TOKEN` (`AGENT_PROVIDER=claude`); offline `fixture` stand-in by default |
 | Telegram | Dry-run by default; live with `TELEGRAM_MODE=live` + bot token + chat id |
 | Dashboard / MCP / PostgreSQL | Live (local) |
@@ -49,7 +49,10 @@ without approval — keep this deployment for your own use.
 ### Telegram
 Create a bot with @BotFather, add it as an admin of your channel, then set
 `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (e.g. `@your_channel` or `-100…`) and
-`TELEGRAM_MODE=live`. Preview first:
+`TELEGRAM_MODE=live`. Each hourly report leads with a phone-width pump watchlist table
+(Coin · 3d · MCap · VMC× · Pump · Agent · Rec, legend included) followed by one card per coin with
+the strategy's reasons, the agents' reasoning, the paper entry / stop / target and the combined
+call. Preview first:
 ```bash
 npm run cli -- telegram:preview --fake   # layout with invented numbers
 npm run cli -- telegram:preview          # latest stored run
@@ -99,22 +102,37 @@ npm run cli -- run-once
 npm start
 ```
 
-The crawler reads structured data from coin pages and their website JSON endpoints.
-It preserves raw VMC responses, daily revisions and hourly observations, with throttling,
-request budgets, caching, backoff and persisted suspension on repeated access denials.
-Website endpoints may change. See [the collection flow](docs/volume-mcap.md#9-no-key-website-crawler-and-manual-csv-import).
-`DATA_SOURCE` and `VMC_SOURCE` are independent. The main website pipeline bootstraps real
-seven-day-chart samples for up to `SOURCE_HISTORY_BOOTSTRAP_MAX_ASSETS=8` coins before its
-first screening, prioritizing configured VMC ids, BTC/ETH benchmarks, then active coins.
-Missing hours stay missing; historical circulating supply is not copied from today's quote.
-Other coins collect consecutive snapshots hourly. Discovery uses the same per-run page cap
-as collection and its listing results are reused rather than immediately fetched again.
-The panel displays collection progress, warm-up counts and exclusion reasons. A completed
-screen with no qualifying coins is shown explicitly. Use `AGENT_PROVIDER=claude` with your
+What one hourly run does with `DATA_SOURCE=coinmarketcap_web`:
+
+1. **Collect every coin**: one `limit=10000` listing request returns all ~8,000 listed coins;
+   each gets one validated snapshot for the UTC hour (coverage `complete`).
+2. **History** (`history` stage): coins that would be eligible but lack t−1h/t−2h get one
+   seven-day chart request each, storing up to 72 genuine hourly samples taken at the same
+   minute as the current snapshot. On the first run this is ~800 coins (about 30 minutes at
+   `CMC_WEB_REQUESTS_PER_MINUTE=30`); later runs only need it for newly qualifying coins or after
+   downtime. It is bounded (`SOURCE_HISTORY_BOOTSTRAP_MAX_ASSETS`, `…_MAX_MINUTES`, a reserve of
+   the monthly request budget) and resumes next run. Missing hours stay missing.
+3. **Strategy**: features and screening for the ~1,000 coins inside the floors (cap ≥ $5M, not
+   a stablecoin / tokenized stock / wrapped / bridged / staked token); the rest are counted as
+   exclusions. Each coin gets a **pump chance** (high / medium / low with reasons; a heuristic
+   level, not a probability). The top 10 form the pump watchlist.
+4. **VMC + agents**: the watchlist gets its six-month volume / market cap baseline from CMC; the
+   top 6 go to the Claude agents, who give their own **buy / hold / sell** view. Code combines
+   strategy + agents into **Buy / Watch / Avoid** (Buy only when everything agrees).
+5. **Delivery**: dashboard (Recommendations), MCP (`get_recommendations` …) and a Telegram table
+   — Coin · 3d · MCap · VMC× · Pump · Agent · Rec — followed by a card per coin.
+
+The crawler preserves raw VMC responses, daily revisions and hourly observations, with
+throttling, request budgets, caching, backoff and persisted suspension on repeated access
+denials. Website endpoints may change. See [the collection flow](docs/volume-mcap.md#9-no-key-website-crawler-and-manual-csv-import).
+`DATA_SOURCE` and `VMC_SOURCE` are independent. The dashboard shows run and backfill
+progress, the strategy funnel, why coins are excluded, the screen with each coin's strategy
+features, every collected coin, and per-coin details. Use `AGENT_PROVIDER=claude` with your
 configured token for real agent reviews; `fixture` reviews are synthetic.
 
-Live sources start in warm-up: real history accumulates one snapshot per hour (no invented
-backfill). Coverage is partial by design on free tiers and labelled as such.
+Live sources never invent history. The website collector backfills genuine chart samples for
+coins the strategy can use; API sources warm up one snapshot per hour. Coverage on free API
+tiers is partial by design and labelled as such.
 
 ## MCP
 - HTTP: `POST http://127.0.0.1:3000/mcp` with `Authorization: Bearer <MCP_READ_TOKEN|MCP_WRITE_TOKEN>`
@@ -122,8 +140,11 @@ backfill). Coverage is partial by design on free tiers and labelled as such.
 - stdio (local hosts, read-only): `npm run mcp:stdio` (`--allow-write` to add
   `publish_signal_report`). `.mcp.json` registers it for Claude Code in this repo.
 - Tools: `list_assets`, `get_coverage`, `get_snapshots`, `get_features`, `get_signals`,
-  `get_run_status`, write: `publish_signal_report`. Resources: `coins://signals/latest`,
-  `coins://runs/latest`.
+  `get_recommendations`, `get_screening`, `get_market`, `get_overview`, `get_run_status`,
+  write: `publish_signal_report`. Resources: `coins://signals/latest`,
+  `coins://recommendations/latest`, `coins://runs/latest`.
+- `.mcp.json` starts the stdio server through `scripts/mcp-stdio.sh`, which selects the `.nvmrc`
+  Node version via nvm (a system Node 20 cannot run the app).
 
 ## Tests
 ```bash
@@ -152,6 +173,11 @@ instructions and skills) so production agents load the same procedures.
   Never `db push`/`migrate reset` against real history.
 - Retention: `RETENTION_SNAPSHOT_DAYS=0` keeps everything (default, for research). A positive
   value deletes snapshots/features older than N days after each run.
+- Full-universe storage policy: `RETENTION_DETAIL_DAYS=30` (default) keeps 30 days of hourly
+  detail for every coin, then thins coins outside the strategy floors to their first snapshot of
+  each UTC day and prunes recomputable feature/screening rows. Strategy-universe history,
+  signals and paper trades are kept. About 7 MB per hour of snapshots for the full listing; see
+  [Storage and retention](docs/architecture.md#storage-and-retention). `0` keeps all detail.
 - Backup: `docker compose exec -T postgres pg_dump -U coins -Fc coins > backups/coins-$(date +%F).dump`
 - Restore (into an empty DB): `docker compose exec -T postgres pg_restore -U coins -d coins --clean --if-exists < backups/coins-YYYY-MM-DD.dump`
 - History survives container restarts in the named volume `coins_pgdata`. Do not run

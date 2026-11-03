@@ -7,17 +7,20 @@ import { APP_CONFIG, type AppConfig } from "../config/config.js";
 import { redact } from "../config/redact.js";
 import { EvaluationService } from "../evaluation/evaluation.service.js";
 import { FeaturesService } from "../features/features.service.js";
-import { IngestionService, type CoverageReport } from "../ingestion/ingestion.service.js";
+import { IngestionService, type CoverageReport, type HistoryBackfillReport } from "../ingestion/ingestion.service.js";
 import { PrismaService } from "../prisma/prisma.service.js";
+import { byPumpChance } from "../screening/recommend.js";
 import { ScreeningService } from "../screening/screening.service.js";
+import { VmcService } from "../vmc/vmc.service.js";
 import { SourceUnavailableError } from "../sources/http/polite-client.js";
 import { ReportService } from "../telegram/report.service.js";
 import { TelegramService } from "../telegram/telegram.service.js";
 import { LeaseService } from "./lease.service.js";
+import { RetentionService } from "./retention.service.js";
 
 export const PIPELINE_LEASE = "hourly-pipeline";
 const LEASE_TTL_MS = 10 * 60_000;
-const STAGES = ["discover", "collect", "features", "screen", "analyze", "publish", "notify"] as const;
+export const STAGES = ["discover", "collect", "history", "features", "screen", "vmc", "analyze", "publish", "notify"] as const;
 type Stage = (typeof STAGES)[number];
 
 export interface RunOutcome {
@@ -45,6 +48,8 @@ export class PipelineService {
     private readonly reports: ReportService,
     private readonly telegram: TelegramService,
     private readonly leases: LeaseService,
+    private readonly retention: RetentionService,
+    private readonly vmc: VmcService,
   ) {}
 
   get providerId() {
@@ -133,24 +138,59 @@ export class PipelineService {
     let summary: string | null = null;
     try {
       await stage("discover", async () => ((await this.ingestion.discoveryDue(now)) ? this.ingestion.discover(now) : { skipped: "not due" }));
-      const collected = await stage("collect", async () => {
-        const result = await this.ingestion.collect(slot, runId, this.clock.now());
-        const history = await this.ingestion.bootstrapHistory(slot, runId, this.clock.now());
-        return { ...result, notes: [...result.notes, ...history.notes] };
-      }, { retries: 1 });
+      const collected = await stage("collect", () => this.ingestion.collect(slot, runId, this.clock.now()), { retries: 1 });
       if (collected) coverage = collected;
       await this.prisma.pipelineRun.update({ where: { id: runId }, data: { coverage: coverage as never } });
+
+      // Genuine history for coins that cannot be screened yet. A failure here degrades those coins
+      // to warm-up (and the run to partial); it never blocks screening of the collected snapshots.
+      let historyFailed = false;
+      let history = await stage("history", () =>
+        this.ingestion.backfillHistory(slot, runId, this.clock.now(), {
+          listingRequestsPerRun: Math.max(coverage?.pagesFetched ?? 1, 1),
+          onProgress: async (p) => {
+            metrics.history = p;
+            await this.prisma.pipelineRun.update({ where: { id: runId }, data: { metrics: metrics as never } });
+          },
+        }),
+      ).catch((err) => {
+        historyFailed = true;
+        this.log.warn(`history backfill failed, continuing with collected snapshots: ${redact(err)}`);
+        return undefined;
+      });
+      if (!history && !historyFailed) history = ((await this.prisma.pipelineStage.findUnique({ where: { runId_stage: { runId, stage: "history" } } }))?.detail ?? undefined) as HistoryBackfillReport | undefined;
+      if (history) metrics.history = history;
 
       // Features and screening are deterministic and cheap; recompute on resume (writes are idempotent).
       const fr = (await stage("features", () => this.features.computeForSlot(providerId, slot), { skipIfDone: false }))!;
       const ranked = (await stage("screen", () => this.screening.screen(runId, providerId, fr), { skipIfDone: false }))!;
+      metrics.observed = fr.universe.observed;
+      metrics.outsideUniverse = fr.universe.outside;
+      metrics.outsideReasons = fr.universe.outsideReasons;
       metrics.screened = ranked.length;
       metrics.eligible = ranked.filter((r) => r.eligible).length;
+      metrics.warming = ranked.filter((r) => r.exclusionReasons.includes("warming_up")).length;
       metrics.shortlisted = ranked.filter((r) => r.shortlisted).length;
+      const classifications: Record<string, number> = {};
+      for (const r of ranked) if (r.eligible) classifications[r.classification] = (classifications[r.classification] ?? 0) + 1;
+      metrics.classifications = classifications;
+      metrics.market = fr.market;
+      const recommended = ranked.filter((r) => r.eligible && r.pumpChance !== "low").sort(byPumpChance).slice(0, this.cfg.RECOMMENDATIONS_MAX);
+      metrics.recommended = recommended.length;
+      metrics.pumpChances = { high: ranked.filter((r) => r.eligible && r.pumpChance === "high").length, medium: ranked.filter((r) => r.eligible && r.pumpChance === "medium").length };
+      await this.prisma.pipelineRun.update({ where: { id: runId }, data: { metrics: metrics as never } });
+
+      // Six-month volume / market-cap baselines for the recommended coins, before agents read them.
+      await stage("vmc", async () => {
+        const ids = [...new Set([...ranked.filter((r) => r.shortlisted).map((r) => r.assetId), ...recommended.map((r) => r.assetId)])];
+        const cmc = await this.screening.cmcIds(providerId, ids);
+        if (!cmc.size) return { skipped: "source asset ids are not CoinMarketCap ids" };
+        return this.vmc.ensureBaselines([...cmc.values()]);
+      }).catch((err) => this.log.warn(`VMC baselines unavailable this run: ${redact(err)}`));
 
       const analysis = await stage("analyze", async () => {
         const packs = await this.screening.buildEvidence(providerId, fr, ranked.filter((r) => r.shortlisted));
-        const health = { ...(coverage ?? {}), sourceHealth: await this.prisma.sourceHealth.findUnique({ where: { providerId } }) };
+        const health = { ...(coverage ?? {}), history: history ?? null, sourceHealth: await this.prisma.sourceHealth.findUnique({ where: { providerId } }) };
         const out = await this.analysis.analyze(runId, slot, packs, fr.market, JSON.parse(JSON.stringify(health)));
         const packBy = new Map(packs.map((p) => [p.assetId, p]));
         await this.prisma.$transaction(
@@ -180,6 +220,11 @@ export class PipelineService {
                 riskFlags: f.riskFlags,
                 origin: f.origin,
                 reviewOutcome: f.reviewOutcome,
+                pumpChance: f.pumpChance,
+                agentRecommendation: f.agentRecommendation,
+                agentRecommendationReason: f.agentRecommendationReason,
+                recommendation: f.recommendation,
+                recommendationReason: f.recommendationReason,
                 evidenceHash: f.evidenceHash,
                 isLiveData: this.ingestion.source.info.isLive,
               },
@@ -218,8 +263,9 @@ export class PipelineService {
         return { ...prep, parts: parts.length, delivery: sent };
       });
 
-      await this.applyRetention();
-      const partial = coverage?.label !== "complete" || agentStatus === "partial" || agentStatus === "unavailable";
+      // Storage policy runs after delivery; a retention problem never invalidates the run.
+      metrics.retention = await this.retention.apply(providerId, this.clock.now()).catch((e) => ({ error: redact(e).slice(0, 300) }));
+      const partial = coverage?.label !== "complete" || historyFailed || agentStatus === "partial" || agentStatus === "unavailable";
       await this.prisma.pipelineRun.update({ where: { id: runId }, data: { status: partial ? "partial" : "succeeded", finishedAt: new Date(), currentStage: null, metrics: metrics as never } });
       // "partial" means coverage or agent review was incomplete; the run itself finished.
       return { runId, slot: slot.toISOString(), status: partial ? "partial" : "succeeded", stages };
@@ -255,12 +301,6 @@ export class PipelineService {
     return { missedRecorded: missed, ran: await this.runSlot(current) };
   }
 
-  private async applyRetention() {
-    if (this.cfg.RETENTION_SNAPSHOT_DAYS <= 0) return;
-    const cutoff = addHours(this.clock.now(), -24 * this.cfg.RETENTION_SNAPSHOT_DAYS);
-    await this.prisma.marketSnapshot.deleteMany({ where: { slotTime: { lt: cutoff } } });
-    await this.prisma.featureValue.deleteMany({ where: { slotTime: { lt: cutoff } } });
-  }
 }
 
 function summarize(v: unknown): unknown {
@@ -269,7 +309,7 @@ function summarize(v: unknown): unknown {
   if (Array.isArray(v)) return { count: v.length };
   if (typeof v === "object") {
     const o = v as Record<string, unknown>;
-    if ("perAsset" in o && o.perAsset instanceof Map) return { assets: o.perAsset.size, market: o.market };
+    if ("perAsset" in o && o.perAsset instanceof Map) return { assets: o.perAsset.size, market: o.market, universe: o.universe };
     return JSON.parse(JSON.stringify(o, (_k, val) => (typeof val === "bigint" ? Number(val) : val)));
   }
   return v;

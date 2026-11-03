@@ -51,6 +51,9 @@ async function setup(overrides: Record<string, string> = {}) {
   await resetDb(prisma);
   const vmc = app.get(VmcService);
   vmc.now = () => NOW;
+  // Freshness is judged against the pipeline clock; pin it to the transport's clock so the
+  // fixture listing (observed 15:36 UTC) is not stale whenever the suite happens to run.
+  app.get(PipelineService).clock = { now: () => NOW };
   return { prisma, vmc, seen, revise: () => { revised = true; }, emptyChart: (empty: boolean) => { emptyChart = empty; }, deny: () => { denied = true; } };
 }
 
@@ -112,7 +115,8 @@ describe("website source into PostgreSQL (synthetic transport)", () => {
     expect(historical.isStale).toBe(false);
     expect(historical.observedAt!.getTime()).toBeLessThan(historical.collectedAt.getTime());
     const count = await prisma.marketSnapshot.count();
-    await app!.get(IngestionService).bootstrapHistory(new Date("2026-11-03T16:00:00Z"), result.runId!, NOW);
+    const again = await app!.get(IngestionService).backfillHistory(new Date("2026-11-03T16:00:00Z"), result.runId!, NOW);
+    expect(again).toMatchObject({ needed: 0, attempted: 0 });
     expect(await prisma.marketSnapshot.count()).toBe(count);
     expect(await prisma.featureValue.count()).toBeGreaterThan(0);
     expect((await prisma.provider.findUniqueOrThrow({ where: { id: "coinmarketcap_web" } })).accessMethod).toBe("website");
@@ -120,15 +124,25 @@ describe("website source into PostgreSQL (synthetic transport)", () => {
   });
 
   it("explains startup and warming-up states instead of returning an unexplained empty panel", async () => {
-    await setup({ SOURCE_HISTORY_BOOTSTRAP_MAX_ASSETS: "0" });
+    const { prisma } = await setup({ SOURCE_HISTORY_BOOTSTRAP_MAX_ASSETS: "0" });
     const read = app!.get(ReadModelService);
     expect((await read.signals({ limit: 50 })).readiness).toMatchObject({ state: "waiting" });
     const result = await app!.get(PipelineService).runSlot(new Date("2026-11-03T16:00:00Z"));
     const response = await read.signals({ limit: 50 });
     expect(response.runId).toBe(result.runId);
     expect(response.signals).toEqual([]);
-    expect(response.readiness).toMatchObject({ state: "warming_up", requiredSnapshots: 3, warming: 3, eligible: 0 });
-    expect((await read.screening({ eligibleOnly: false, limit: 100 })).results).toHaveLength(3);
+    // All three listed coins are collected; CMC20 ($4.47M cap) is below the $5M floor, so it is
+    // counted as outside the strategy universe instead of getting a screening row.
+    expect(await prisma.marketSnapshot.count({ where: { slotTime: new Date("2026-11-03T16:00:00Z") } })).toBe(3);
+    expect(response.readiness).toMatchObject({ state: "warming_up", requiredSnapshots: 3, observed: 3, outside: 1, warming: 2, eligible: 0 });
+    const run = await prisma.pipelineRun.findUniqueOrThrow({ where: { id: result.runId! } });
+    expect(run.metrics).toMatchObject({ observed: 3, outsideUniverse: 1, outsideReasons: { below_min_market_cap: 1 }, screened: 2 });
+    const screened = (await read.screening({ eligibleOnly: false, limit: 100 })).results as Array<{ asset: { symbol: string }; exclusionReasons: string[] }>;
+    expect(screened.map((r) => r.asset.symbol).sort()).toEqual(["BTC", "ETH"]);
+    expect(screened.every((r) => r.exclusionReasons.includes("warming_up") && r.exclusionReasons.includes("benchmark_reference"))).toBe(true);
+    const outside = (await read.market({ sort: "market_cap", dir: "desc", scope: "outside", limit: 10, offset: 0 })).coins as Array<{ asset: { symbol: string }; strategy: { inUniverse: boolean; reasons: string[] } }>;
+    expect(outside).toHaveLength(1);
+    expect(outside[0]).toMatchObject({ asset: { symbol: "CMC20" }, strategy: { inUniverse: false, reasons: ["below_min_market_cap"] } });
   });
 
   it("does not select a half-finished screen as the latest published prediction run", async () => {

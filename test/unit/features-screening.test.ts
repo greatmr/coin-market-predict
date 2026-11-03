@@ -161,16 +161,28 @@ describe("screening", () => {
     expect(wash.heuristicScore).toBeLessThan(clean.heuristicScore);
   });
 
-  it("shortlists only eligible advance/underway assets above the minimum score, ranked by score", () => {
+  it("shortlists eligible coins by strategy pump chance (high, or medium above the minimum score), ranked by score", () => {
+    // Market cap is price × 1e7 here, so volumes stay below it (no manipulation-like flags).
     const outs = [
-      { ...screenAsset(input([1, 1.005, 1.025], [10e6, 12e6, 16e6], { assetId: "a" }), market, p) },
-      { ...screenAsset(input([1, 1.05, 1.12], [10e6, 15e6, 25e6], { assetId: "b" }), market, p) },
-      { ...screenAsset(input([1, 1.002, 1.004], [1e7, 1e7, 1e7], { assetId: "c" }), market, p) },
+      { ...screenAsset(input([1, 1.005, 1.025], [1e6, 1.2e6, 1.6e6], { assetId: "a" }), market, p) },
+      { ...screenAsset(input([1, 1.05, 1.12], [1e6, 1.5e6, 2.5e6], { assetId: "b" }), market, p) },
+      { ...screenAsset(input([1, 1.002, 1.004], [1e6, 1e6, 1e6], { assetId: "c" }), market, p) },
     ];
+    expect(outs.map((o) => [o.assetId, o.classification])).toEqual([["a", "advance_candidate"], ["b", "move_underway"], ["c", expect.not.stringMatching(/advance|underway/)]]);
     const ranked = rankAndShortlist(outs, 1, 0);
-    expect(ranked.filter((r) => r.shortlisted)).toHaveLength(1);
-    expect(ranked.find((r) => r.assetId === "c")!.shortlisted).toBe(false);
+    expect(ranked.filter((r) => r.shortlisted).map((r) => r.assetId)).toEqual(["a"]);
+    expect(ranked.find((r) => r.assetId === "c")!.pumpChance).toBe("low");
     expect(ranked.map((r) => r.rank).sort()).toEqual([1, 2, 3]);
+    expect(rankAndShortlist(outs, 5, 0).filter((r) => r.shortlisted).every((r) => r.pumpChance !== "low")).toBe(true);
+  });
+
+  it("rules out a pump call when 24h volume exceeds market cap, even for an advance pattern", () => {
+    const o = screenAsset(input([1, 1.005, 1.025], [10e6, 12e6, 16e6]), market, p);
+    expect(o.classification).toBe("advance_candidate");
+    expect(o.riskFlags).toContain("volume_exceeds_market_cap");
+    expect(o.pumpChance).toBe("low");
+    expect(o.pumpReasons[0]).toMatch(/ruled out: 24h volume above market cap/);
+    expect(rankAndShortlist([o], 5, 0)[0]!.shortlisted).toBe(false);
   });
 
   it("builds a conditional paper scenario from strategy parameters", () => {

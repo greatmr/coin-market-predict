@@ -7,94 +7,148 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header>
-    <div class="brand">Coins Predicts <span class="sub">signal research — hypotheses, not advice</span></div>
-    <div id="badges"></div>
+  <header class="topbar">
+    <div class="brand">Coins Predicts <span class="sub">hourly surge-signal research · hypotheses, not advice</span></div>
+    <div class="badges"><span id="badges" class="badges"></span><button id="theme" class="icon-btn" type="button" title="Switch color theme">Theme: auto</button></div>
   </header>
-  <div id="banner" class="banner" hidden></div>
+  <div id="banner" class="banner" role="status" hidden></div>
+  <nav class="tabs" role="tablist" aria-label="Dashboard sections">
+    <button role="tab" id="t-overview" data-tab="overview" aria-controls="tab-overview">Overview</button>
+    <button role="tab" id="t-signals" data-tab="signals" aria-controls="tab-signals">Recommendations <span class="count" id="count-signals">0</span></button>
+    <button role="tab" id="t-screen" data-tab="screen" aria-controls="tab-screen">Strategy screen <span class="count" id="count-screen">0</span></button>
+    <button role="tab" id="t-market" data-tab="market" aria-controls="tab-market">All coins <span class="count" id="count-market">0</span></button>
+    <button role="tab" id="t-collection" data-tab="collection" aria-controls="tab-collection">Collection</button>
+    <button role="tab" id="t-vmc" data-tab="vmc" aria-controls="tab-vmc">Volume / MCap</button>
+    <button role="tab" id="t-paper" data-tab="paper" aria-controls="tab-paper">Paper trading</button>
+  </nav>
+
   <main>
-    <section>
-      <div class="section-head">
-        <h2>Ranked signals</h2>
-        <div class="filters">
-          <label>Status
-            <select id="f-status">
-              <option value="">all</option>
-              <option value="candidate">candidate</option>
-              <option value="watch">watch</option>
-              <option value="insufficient_data">insufficient data</option>
-              <option value="no_signal">no signal</option>
-            </select>
-          </label>
-          <label>Class
-            <select id="f-class">
-              <option value="">all</option>
-              <option value="advance_candidate">advance</option>
-              <option value="move_underway">move underway</option>
-            </select>
-          </label>
+    <!-- Overview -->
+    <section id="tab-overview" class="tab" role="tabpanel" aria-labelledby="t-overview">
+      <div id="run-strip" class="card status-strip" aria-live="polite">Loading…</div>
+      <div id="kpis" class="tiles"></div>
+      <div class="card">
+        <div class="card-head"><h2>Recommendations · strategy + agents</h2><button type="button" class="linkish" data-goto="signals">Reasons and details →</button></div>
+        <p class="lead small">Coins the base strategy rates with a high or medium pump chance (a heuristic level, not a probability), with the last three days, market cap and 24h volume ÷ market cap versus the coin's own six-month average (VMC). The agents add their own buy / hold / sell view; the combined call is Buy only when the strategy, the guardrails and the agents agree. Paper trading only.</p>
+        <div class="table-wrap" id="recs"></div>
+      </div>
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head"><h2>Strategy funnel</h2><span class="hint" id="funnel-slot"></span></div>
+          <p class="lead small">Every listed coin is collected each hour. Only coins that pass the strategy floors are evaluated; of those, only coins with three consecutive hourly snapshots (t, t−1h, t−2h) can be screened.</p>
+          <div id="funnel"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>Market context this hour</h2><span class="hint">used to separate a coin's own move from a broad rally</span></div>
+          <div id="market-context"></div>
         </div>
       </div>
-      <div id="prediction-status" class="empty" role="status" aria-live="polite">Loading prediction status…</div>
-      <div id="signals"></div>
-    </section>
-
-    <section>
-      <div class="section-head">
-        <h2>Coin screening</h2>
-        <label>Show
-          <select id="f-eligibility">
-            <option value="false">all coins, including warm-up</option>
-            <option value="true">eligible only</option>
-          </select>
-        </label>
-        <label>Classification
-          <select id="f-screen">
-            <option value="">all classifications</option>
-            <option value="advance_candidate">advance_candidate</option>
-            <option value="move_underway">move_underway</option>
-            <option value="gradual_trend">gradual_trend</option>
-            <option value="market_wide">market_wide</option>
-            <option value="overextended">overextended</option>
-            <option value="none">none</option>
-          </select>
-        </label>
+      <div class="grid-2" data-gap="top">
+        <div class="card">
+          <div class="card-head"><h2>Eligible coins by pattern</h2><span class="hint">deterministic classification</span></div>
+          <div id="patterns"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>Why coins are not eligible</h2><span class="hint">a coin can have several reasons</span></div>
+          <div id="exclusions"></div>
+        </div>
       </div>
-      <div id="screening"></div>
+      <div class="card" data-gap="top">
+        <div class="card-head"><h2>Agent-reviewed signals</h2><button type="button" class="linkish" data-goto="signals">All recommendations →</button></div>
+        <div id="top-signals"></div>
+      </div>
+      <div class="grid-2">
+        <div class="card"><div class="card-head"><h2>Agent review</h2></div><div id="agent-review"></div></div>
+        <div class="card"><div class="card-head"><h2>Genuine history backfill</h2><span class="hint">one chart request per coin that cannot be screened yet</span></div><div id="history-backfill"></div></div>
+      </div>
     </section>
 
-    <section id="detail-section" hidden>
-      <div class="section-head"><h2 id="detail-title">Asset</h2><button id="detail-close" type="button">close</button></div>
-      <div id="detail"></div>
+    <!-- Signals -->
+    <section id="tab-signals" class="tab" role="tabpanel" aria-labelledby="t-signals" hidden>
+      <div class="card">
+        <div class="card-head"><h2>Recommendations</h2><span class="hint" id="recs-meta"></span></div>
+        <p class="lead small">Every coin with a high or medium strategy pump chance this hour, why the strategy rates it, what the agents think (buy / hold / sell) and the combined call. Buy means: take the paper entry only if an hourly snapshot prints the entry trigger before it expires.</p>
+        <div class="table-wrap" id="recs-full"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Agent-reviewed signals</h2><span class="hint" id="signals-meta"></span></div>
+        <p class="lead small">Shortlisted coins after agent review (or the deterministic screen when agents are off). Each signal is a testable paper-trading hypothesis: entry only if an hourly snapshot confirms the breakout, with a fixed stop, target and expiry. Scores are heuristics, not probabilities.</p>
+        <div class="filters">
+          <label>Status <select id="f-status"><option value="">All</option><option value="candidate">Candidate</option><option value="watch">Watch</option><option value="insufficient_data">Insufficient data</option><option value="no_signal">No signal</option></select></label>
+          <label>Type <select id="f-type"><option value="">All</option><option value="advance_candidate">Advance</option><option value="move_underway">Move underway</option></select></label>
+        </div>
+        <div id="signals-status" class="muted small" aria-live="polite"></div>
+        <div id="signals" class="signal-cards"></div>
+      </div>
     </section>
 
-    <div class="grid">
-      <section>
-        <h2>Collection health</h2>
-        <div id="health"></div>
-      </section>
-      <section>
-        <h2>Paper trading</h2>
-        <div id="paper"></div>
-      </section>
-    </div>
-
-    <section>
-      <div class="section-head"><h2>Volume / Market Cap vs six-month baseline</h2><span class="muted" id="vmc-meta"></span></div>
-      <p class="muted">Current ratio = rolling 24h volume ÷ market cap at the observation time (not volume within the hour). Baseline = mean of completed daily ratios. Cur/Base is descriptive only.</p>
-      <div id="vmc"></div>
+    <!-- Strategy screen -->
+    <section id="tab-screen" class="tab" role="tabpanel" aria-labelledby="t-screen" hidden>
+      <div class="card">
+        <div class="card-head"><h2>Strategy screen</h2><span class="hint" id="screen-meta"></span></div>
+        <p class="lead small" id="strategy-summary"></p>
+        <div class="filters">
+          <input type="search" id="screen-search" placeholder="Search coin or symbol" aria-label="Search coins">
+          <label>Show <select id="screen-ready"><option value="">All evaluated coins</option><option value="eligible">Eligible</option><option value="shortlisted">Shortlisted</option><option value="warming">Warming up</option><option value="excluded">Excluded this hour</option></select></label>
+          <label>Pattern <select id="screen-pattern"><option value="">All patterns</option></select></label>
+          <label>Rows <select id="screen-rows"><option>25</option><option selected>50</option><option>100</option></select></label>
+        </div>
+        <div class="table-wrap" id="screen-table"></div>
+        <div class="pager" id="screen-pager"></div>
+      </div>
     </section>
 
-    <section>
-      <h2>Runs</h2>
-      <div id="runs"></div>
+    <!-- All coins -->
+    <section id="tab-market" class="tab" role="tabpanel" aria-labelledby="t-market" hidden>
+      <div class="card">
+        <div class="card-head"><h2>All collected coins</h2><span class="hint" id="market-meta"></span></div>
+        <p class="lead small">Every coin in the source listing for the latest hour. Changes are provider-reported (CoinMarketCap). The strategy column shows whether the coin is inside the strategy floors and, if so, how it was screened.</p>
+        <div class="filters">
+          <input type="search" id="market-search" placeholder="Search coin or symbol" aria-label="Search all coins">
+          <label>Scope <select id="market-scope"><option value="all">All coins</option><option value="universe">Strategy universe</option><option value="outside">Outside strategy floors</option></select></label>
+          <label>Rows <select id="market-rows"><option>50</option><option selected>100</option><option>200</option></select></label>
+        </div>
+        <div class="table-wrap" id="market-table"></div>
+        <div class="pager" id="market-pager"></div>
+      </div>
     </section>
 
-    <section>
-      <h2>Backtest</h2>
-      <div id="backtest"></div>
+    <!-- Collection -->
+    <section id="tab-collection" class="tab" role="tabpanel" aria-labelledby="t-collection" hidden>
+      <div id="coverage-tiles" class="tiles"></div>
+      <div class="grid-2">
+        <div class="card"><div class="card-head"><h2>Source health</h2></div><div id="source-health"></div></div>
+        <div class="card"><div class="card-head"><h2>Storage policy</h2></div><div id="storage-policy"></div></div>
+      </div>
+      <div class="card" data-gap="top"><div class="card-head"><h2>Pipeline runs</h2><span class="hint">UTC hourly slots shown in your display timezone</span></div><div class="table-wrap" id="runs"></div></div>
+    </section>
+
+    <!-- Volume / Market cap -->
+    <section id="tab-vmc" class="tab" role="tabpanel" aria-labelledby="t-vmc" hidden>
+      <div class="card">
+        <div class="card-head"><h2>Volume / Market Cap vs six-month baseline</h2><span class="hint" id="vmc-meta"></span></div>
+        <p class="lead small">Current ratio = rolling 24h volume ÷ circulating market cap at the observation time (not volume within the hour). Baseline = arithmetic mean of completed daily ratios over six months. The multiple is descriptive only: no threshold or signal is implied.</p>
+        <div class="table-wrap" id="vmc"></div>
+      </div>
+    </section>
+
+    <!-- Paper trading -->
+    <section id="tab-paper" class="tab" role="tabpanel" aria-labelledby="t-paper" hidden>
+      <div id="paper-tiles" class="tiles"></div>
+      <div class="card"><div class="card-head"><h2>Paper positions</h2><span class="hint">no real orders are ever placed</span></div><div class="table-wrap" id="paper"></div></div>
+      <div class="card"><div class="card-head"><h2>Walk-forward backtest</h2></div><div id="backtest"></div></div>
     </section>
   </main>
+
+  <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+  <aside id="drawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden>
+    <div class="drawer-head">
+      <div><h2 id="drawer-title">Coin</h2><div class="sub" id="drawer-sub"></div></div>
+      <button type="button" class="btn" id="drawer-close">Close</button>
+    </div>
+    <div class="drawer-body" id="drawer-body"></div>
+  </aside>
+  <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
   <footer id="footer"></footer>
   <script src="app.js"></script>
 </body>

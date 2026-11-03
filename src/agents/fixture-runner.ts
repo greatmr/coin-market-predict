@@ -79,7 +79,19 @@ function analyze(p: EvidencePack): AssetAssessment {
     exitConditions: { target: p.scenario.targetRule.slice(0, 200), trailing: p.scenario.trailingRule.slice(0, 200), maxHoldingHours: p.scenario.maxHoldHours },
     expiresAt: p.scenario.signalExpiresAt,
     rationale: `[fixture analyst] ${p.screening.classification} with heuristic score ${p.screening.heuristicScore.toFixed(1)}; history ${p.historyDepth}h (${p.warmupState}).`,
+    ...stance(p),
   };
+}
+
+/** Deterministic stand-in for the agents' own buy / hold / sell view. */
+function stance(p: EvidencePack): Pick<AssetAssessment, "recommendation" | "recommendationReason"> {
+  if (p.screening.riskFlags.some((f) => SEVERE.has(f))) return { recommendation: "sell", recommendationReason: "[fixture] manipulation-like risk flags: avoid." };
+  if (p.warmupState === "warming_up") return { recommendation: "hold", recommendationReason: "[fixture] not enough consecutive hourly history yet." };
+  if (p.pump.chance === "low") return { recommendation: "sell", recommendationReason: "[fixture] strategy pump chance is low." };
+  if (p.pump.chance === "high" && p.screening.classification === "advance_candidate") {
+    return { recommendation: "buy", recommendationReason: "[fixture] clean early-surge setup; paper entry only if the trigger prints." };
+  }
+  return { recommendation: "hold", recommendationReason: `[fixture] ${p.pump.chance} pump chance (${p.screening.classification}); wait for confirmation.` };
 }
 
 function review(p: EvidencePack): Review {
@@ -98,7 +110,9 @@ function coordinate(packs: EvidencePack[], analyst?: AnalystOutput, reviews?: Re
   const signals = packs.map((p) => {
     const a = analyst?.assessments.find((x) => x.assetId === p.assetId) ?? analyze(p);
     const r = reviews?.reviews.find((x) => x.assetId === p.assetId);
-    return { ...a, status: r && r.verdict !== "agree" ? r.recommendedStatus : a.status, rationale: `[fixture coordinator] ${a.rationale} Review: ${r?.verdict ?? "none"}.`.slice(0, 800) };
+    const rec = r?.verdict === "reject" ? "sell" : r?.verdict === "downgrade" && a.recommendation === "buy" ? "hold" : a.recommendation;
+    const recReason = rec === a.recommendation ? a.recommendationReason : `[fixture coordinator] reviewer ${r?.verdict}: ${rec}.`;
+    return { ...a, status: r && r.verdict !== "agree" ? r.recommendedStatus : a.status, rationale: `[fixture coordinator] ${a.rationale} Review: ${r?.verdict ?? "none"}.`.slice(0, 800), recommendation: rec, recommendationReason: recReason };
   });
   const n = signals.filter((s) => s.status === "candidate").length;
   return { signals, reportSummary: `Fixture analysis of ${packs.length} shortlisted assets; ${n} candidate(s). Synthetic data, not market advice.` };

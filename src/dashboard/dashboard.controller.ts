@@ -1,4 +1,5 @@
 import { BadRequestException, Controller, Get, Inject, NotFoundException, Param, Query } from "@nestjs/common";
+import { CronTime } from "cron";
 import { z } from "zod";
 import { AGENT_RUNNER, type AgentRunner } from "../agents/runner.js";
 import { APP_CONFIG, type AppConfig } from "../config/config.js";
@@ -14,6 +15,14 @@ function parse<T>(schema: z.ZodType<T>, v: unknown): T {
 }
 
 const uuid = z.string().uuid();
+
+function nextCronRun(expr: string): string | null {
+  try {
+    return new CronTime(expr, "UTC").sendAt().toUTC().toISO();
+  } catch {
+    return null;
+  }
+}
 
 /** Read-only JSON API for the dashboard. The dashboard never talks to MCP. */
 @Controller("api")
@@ -45,9 +54,29 @@ export class DashboardController {
       },
       telegramMode: this.cfg.TELEGRAM_MODE,
       snapshotWindow: this.cfg.SNAPSHOT_WINDOW,
+      staleAfterMinutes: this.cfg.STALE_AFTER_MINUTES,
+      candidateMinHistory: this.cfg.CANDIDATE_MIN_HISTORY,
+      shortlistSize: this.cfg.SHORTLIST_SIZE,
+      recommendationsMax: this.cfg.RECOMMENDATIONS_MAX,
+      schedulerEnabled: this.cfg.SCHEDULER_ENABLED,
+      pipelineCron: this.cfg.PIPELINE_CRON,
+      nextRunAt: this.cfg.SCHEDULER_ENABLED ? nextCronRun(this.cfg.PIPELINE_CRON) : null,
+      history: { maxAssetsPerRun: this.cfg.SOURCE_HISTORY_BOOTSTRAP_MAX_ASSETS, maxMinutesPerRun: this.cfg.SOURCE_HISTORY_BOOTSTRAP_MAX_MINUTES },
+      retention: { snapshotDays: this.cfg.RETENTION_SNAPSHOT_DAYS, detailDays: this.cfg.RETENTION_DETAIL_DAYS },
       strategy: this.screening.strategy,
       features: FEATURES,
     };
+  }
+
+  @Get("overview")
+  overview() {
+    return this.read.overview();
+  }
+
+  @Get("recommendations")
+  recommendations(@Query() q: unknown) {
+    const p = parse(z.object({ runId: uuid.optional(), limit: z.coerce.number().int().min(1).max(25).optional() }), q);
+    return this.read.recommendations({ runId: p.runId, limit: p.limit });
   }
 
   @Get("health")
@@ -63,11 +92,29 @@ export class DashboardController {
         runId: uuid.optional(),
         eligibleOnly: z.enum(["true", "false"]).optional(),
         classification: z.string().max(32).optional(),
-        limit: z.coerce.number().int().min(1).max(500).optional(),
+        search: z.string().trim().max(64).optional(),
+        limit: z.coerce.number().int().min(1).max(5000).optional(),
+        offset: z.coerce.number().int().min(0).max(100_000).optional(),
       }),
       q,
     );
-    return this.read.screening({ runId: p.runId, eligibleOnly: p.eligibleOnly === "true", classification: p.classification, limit: p.limit ?? 100 });
+    return this.read.screening({ runId: p.runId, eligibleOnly: p.eligibleOnly === "true", classification: p.classification, search: p.search || undefined, limit: p.limit ?? 100, offset: p.offset ?? 0 });
+  }
+
+  @Get("market")
+  market(@Query() q: unknown) {
+    const p = parse(
+      z.object({
+        search: z.string().trim().max(64).optional(),
+        sort: z.enum(["market_cap", "volume", "change_1h", "change_24h", "change_7d", "symbol"]).optional(),
+        dir: z.enum(["asc", "desc"]).optional(),
+        scope: z.enum(["all", "universe", "outside"]).optional(),
+        limit: z.coerce.number().int().min(1).max(500).optional(),
+        offset: z.coerce.number().int().min(0).max(100_000).optional(),
+      }),
+      q,
+    );
+    return this.read.market({ search: p.search || undefined, sort: p.sort ?? "market_cap", dir: p.dir ?? (p.sort === "symbol" ? "asc" : "desc"), scope: p.scope ?? "all", limit: p.limit ?? 100, offset: p.offset ?? 0 });
   }
 
   @Get("signals")

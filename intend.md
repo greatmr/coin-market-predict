@@ -68,8 +68,9 @@ channel. Every output is a **testable research hypothesis**, evaluated by paper 
 1. **Live data source.** Implemented choices: fixture, explicitly selected CMC website collector
    (`DATA_SOURCE=coinmarketcap_web`, `VMC_SOURCE=cmc_web`, no key), or official keyed APIs.
    The website page/history/chart/listing routes were verified live on 2026-11-03.
-2. **Coverage vs cadence.** Free tiers fit roughly the top 2,000–3,000 assets hourly. Choose
-   hourly-partial (current default) or full-universe every few hours.
+2. **Coverage vs cadence.** The website collector reads the full universe (~8k coins) hourly in
+   one listing request. Free official API tiers fit roughly the top 2,000–3,000 assets hourly
+   (hourly-partial) — choose that or full-universe every few hours if you switch to an API.
 3. **Redistribution in Telegram.** Summary signals are lower-risk than bulk data tables; confirm
    the provider's terms for the channel's audience (private vs public).
 4. **Candidate threshold.** `CANDIDATE_MIN_HISTORY=25` hours before any "candidate"; revisit
@@ -80,3 +81,6 @@ channel. Every output is a **testable research hypothesis**, evaluated by paper 
    to confirm the selected source's access (Basic documents daily 1 year / intraday 1 month for
    quotes/historical; OHLCV access on Basic is ambiguous). Display beyond dashboard/CLI/file and
    any comparison threshold are undecided (PDF p.8).
+7. **Storage retention.** Default `RETENTION_DETAIL_DAYS=30`: after 30 days, coins outside the
+   strategy floors keep one snapshot per UTC day; strategy-universe coins stay hourly. Set `0` to
+   keep all hourly detail (~60 GB/year of snapshots at the full universe).

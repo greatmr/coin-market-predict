@@ -5,3 +5,14 @@ export const BENCHMARK_IDS: Record<string, { btc: string; eth: string }> = {
   coinmarketcap_web: { btc: "1", eth: "1027" },
   coingecko: { btc: "bitcoin", eth: "ethereum" },
 };
+
+/**
+ * Provider ids of assets whose wrapped / staked / bridged variants trade near their price.
+ * Used only as classification evidence (see `trackedExposure`), never as data.
+ */
+export const REFERENCE_IDS: Record<string, Partial<Record<"bitcoin" | "ethereum" | "solana" | "binancecoin", string>>> = {
+  fixture: { bitcoin: "fx-bitcoin", ethereum: "fx-ethereum" },
+  coinmarketcap: { bitcoin: "1", ethereum: "1027", solana: "5426", binancecoin: "1839" },
+  coinmarketcap_web: { bitcoin: "1", ethereum: "1027", solana: "5426", binancecoin: "1839" },
+  coingecko: { bitcoin: "bitcoin", ethereum: "ethereum", solana: "solana", binancecoin: "binancecoin" },
+};

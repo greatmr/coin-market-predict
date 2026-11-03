@@ -164,7 +164,12 @@ describe("Telegram bot commands", () => {
     const run = await bot.handle("186142556", "/run");
     expect(run[0]).toMatch(/Coins Predicts — hourly report/);
     expect(run[0]).toMatch(/TEST DATA/);
-    expect(run[0]).not.toContain("<pre>");
+    // The pump watchlist is a compact monospace table (operator request) that still fits a phone.
+    expect(run[0]).toMatch(/🔥 Pump watchlist/);
+    const table = /<pre>([\s\S]*?)<\/pre>/.exec(run.join("\n"));
+    expect(table).not.toBeNull();
+    expect(table![1]!.split("\n")[0]).toMatch(/^Coin\s+3d\s+MCap\s+VMC\s+Pump\s+Agent\s+Rec$/);
+    for (const line of table![1]!.split("\n")) expect(line.length).toBeLessThanOrEqual(44);
     expect((await bot.handle("186142556", "/status"))[0]).toMatch(/Recent runs/);
     expect((await bot.handle("186142556", "/vmc"))[0]).toMatch(/not configured/);
     expect(sf.calls.every((c) => !c.url.includes("getUpdates"))).toBe(true);

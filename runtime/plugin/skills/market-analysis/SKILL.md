@@ -36,7 +36,19 @@ Risk flags (`screening.riskFlags`) are counterevidence: `volume_exceeds_market_c
 - `no_signal` when the evidence does not support a surge hypothesis.
 - `insufficient_data` when warm-up or missing fields prevent judgement.
 
-## 5. Write the assessment
+## 5. Decide your own stance (buy / hold / sell)
+Call `get_strategy` once for the thresholds and definitions, then for each asset:
+- `buy` only for a clean early setup: `pump.chance` high (or medium with strong evidence),
+  status `candidate`, no severe risk flag, and the last three days not already a large run-up
+  (`context.threeDay.change`). Volume well above its six-month norm (`context.vmc.multiple` > 1)
+  supports a build-up when price is still modest; without a baseline, rely on the hourly features.
+- `hold` when the setup is plausible but unconfirmed, underway, or history is limited.
+- `sell` when the move is exhausted or overextended, the volume looks manipulated, the data is
+  poor, or the setup is invalid.
+`recommendationReason`: one or two sentences citing the evidence. A stance is a paper-trading
+research view, not advice; never promise a pump or a profit.
+
+## 6. Write the assessment
 - Evidence: 2–5 items, each `{metric, value, observedAt, interpretation}` copied exactly.
 - Counterevidence: the strongest reasons it may fail.
 - Entry/invalidation/exit/expiry: from `scenario`, optionally stricter.

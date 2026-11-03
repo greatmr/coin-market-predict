@@ -10,7 +10,9 @@ not a technical finding. On 2026-11-03, direct requests successfully retrieved t
 embedded Next.js data and its website listing, daily history and seven-day chart endpoints.
 The project now supports the operator-requested website collector explicitly:
 
-- `DATA_SOURCE=coinmarketcap_web`: paginated website listings into the analysis pipeline.
+- `DATA_SOURCE=coinmarketcap_web`: the full website listing (all ~8k coins, one `limit=10000`
+  request per hour) into the analysis pipeline, plus seven-day chart history for coins that would
+  be eligible but lack the previous hourly snapshots.
 - `VMC_SOURCE=cmc_web`, `VMC_DAILY_CONVENTION=ohlcv`: coin pages, daily OHLCV baseline inputs,
   hourly chart backfill and current rolling-24h volume / market-cap snapshots.
 - `fixture` remains the offline default. The official CoinMarketCap and CoinGecko adapters
@@ -62,15 +64,17 @@ agreement details, Binance main terms, CoinCap free tier.
 Use `coinmarketcap_web` / `cmc_web` for the requested no-key website collection, or use the
 existing official adapters with their keys. Choose monitored VMC numeric ids explicitly.
 Requests, page limits and budgets bound coverage; every collector reports partial coverage
-when it has not collected all reported assets. Market-analysis history accumulates hourly;
+when it has not collected all reported assets. The website collector reads the complete listing
+each hour; the official free API tiers remain partial by design. Market-analysis history accumulates hourly;
 the separate VMC workflow can backfill its daily baseline and recent hourly comparison.
 
 ## Access discipline (implemented in `PoliteHttpClient`)
 Sequential requests (concurrency 1 per client), per-minute rate limit, monthly request budget persisted in
 PostgreSQL, exponential backoff with jitter, Retry-After (seconds or HTTP date), ETag
 conditional requests, circuit breaker (opens after repeated failures), and **suspension after
-repeated 401/403** until a human runs `npm run cli -- source:reset`. The website consumers share a client with a bounded 60-second cache and six requests/minute
-by default. Application-level errors inside HTTP 200 are also checked. No proxy rotation, no
+repeated 401/403** until a human runs `npm run cli -- source:reset`. The website consumers share a client with a bounded 60-second cache and 30 requests/minute
+by default (one every two seconds, strictly sequential); steady-state load is about one listing
+request per hour plus a few chart requests, the first run's history backfill being the burst. Application-level errors inside HTTP 200 are also checked. No proxy rotation, no
 identity rotation, no CAPTCHA handling. "No bans" is not promised.
 
 ## Cost separation
@@ -78,5 +82,5 @@ identity rotation, no CAPTCHA handling. "No bans" is not promised.
 |---|---|
 | Market data | $0 (fixture, website collector without a key, or free official API tiers with keys) |
 | Model inference | Claude subscription via `CLAUDE_CODE_OAUTH_TOKEN` (usage limits apply); per-run and daily caps use the SDK's cost *estimate* (`total_cost_usd`) as a proxy |
-| Hosting | Your machine or a small VM + Docker; PostgreSQL storage grows ~1–2 GB/year at 2,000 assets/hour |
+| Hosting | Your machine or a small VM + Docker; with the default retention policy PostgreSQL holds a rolling ~6 GB of 30-day detail plus ~11 GB/year for the full ~8k-coin website universe (see `architecture.md` § Storage and retention) |
 | Telegram | Bot API is free; subject to rate limits |

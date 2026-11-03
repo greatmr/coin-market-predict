@@ -47,8 +47,17 @@ export const AssetAssessment = z.object({
   }),
   expiresAt: z.string().datetime({ offset: true }),
   rationale: text(800),
+  recommendation: z
+    .enum(["buy", "hold", "sell"])
+    .describe(
+      "Your own paper-trading stance under this strategy: buy = take the paper long if the entry trigger prints; hold = no new entry, wait for confirmation (keep an existing paper position); sell = avoid or exit because the setup is exhausted, risky or invalid.",
+    ),
+  recommendationReason: text(300).describe("One or two plain sentences explaining the stance from the evidence (pump chance, 3-day move, VMC, risks)."),
 });
 export type AssetAssessment = z.infer<typeof AssetAssessment>;
+
+/** External MCP reports may omit the stance (older clients); internal agents must give one. */
+export const ExternalAssessment = AssetAssessment.partial({ recommendation: true, recommendationReason: true });
 
 export const AnalystOutput = z.object({ assessments: z.array(AssetAssessment).max(25) });
 export type AnalystOutput = z.infer<typeof AnalystOutput>;

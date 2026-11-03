@@ -4,6 +4,8 @@ import type { MarketContext } from "../features/compute.js";
 import { defineTool, invokeTool, toSdkTool, type ToolCallResult, type ToolDef } from "../mcp/tool-def.js";
 import type { ReadModelService } from "../read-model/read-model.service.js";
 import type { EvidencePack } from "../screening/evidence.js";
+import { HIGH_PUMP_SCORE } from "../screening/recommend.js";
+import type { StrategyParams } from "../screening/strategy.js";
 import type { AgentRole } from "./runner.js";
 
 export const AGENT_MCP_SERVER = "coins";
@@ -13,6 +15,7 @@ export interface AgentToolContext {
   market: MarketContext;
   readModel: ReadModelService;
   collectionHealth: Record<string, unknown>;
+  strategy?: StrategyParams;
 }
 
 const json = z.record(z.string(), z.unknown());
@@ -81,6 +84,38 @@ export function buildAgentTools(ctx: AgentToolContext): ToolDef[] {
       },
     }),
     defineTool({
+      name: "get_strategy",
+      description:
+        "The base strategy the screen applied: thresholds, pattern definitions, how the pump chance is graded, and what buy / hold / sell mean in this paper-trading system.",
+      scope: "read",
+      input: {},
+      output: json,
+      handler: async () => ({
+        version: ctx.strategy?.version ?? null,
+        params: ctx.strategy ?? null,
+        patterns: {
+          advance_candidate: "rolling-24h volume up >= advanceMinVolumeBuild over 2h, accel_1h > 0, ret_2h between advanceMinRet2h and underwayRet2h, rs_market_2h > 0",
+          move_underway: "ret_2h >= underwayRet2h: detection of a move already in progress, not an early signal",
+          gradual_trend: "small steady gains without acceleration or volume build",
+          market_wide: "moving with a broad rally (market median 2h >= marketRallyRet2h) without relative strength",
+          overextended: "ret_2h >= overextendedRet2h or 24h change >= overextendedChange24h",
+        },
+        pumpChance: {
+          high: `advance_candidate with heuristic score >= ${HIGH_PUMP_SCORE}`,
+          medium: `advance_candidate below ${HIGH_PUMP_SCORE}; move_underway with score >= ${HIGH_PUMP_SCORE}; or a forming setup (3 of 4 early-surge conditions, score >= minShortlistScore)`,
+          low: "everything else, and any coin with wash-trading or volume > market cap flags",
+          note: "A heuristic level from deterministic rules, not a probability.",
+        },
+        stances: {
+          buy: "take the paper long only if the entry trigger prints before expiry",
+          hold: "no new entry; wait for confirmation (or keep an existing paper position)",
+          sell: "avoid or exit: setup exhausted, risky or invalid",
+          combined: "Code combines your stance with the strategy and guardrails: buy only when strategy, status (candidate) and agents agree; any sell or rejection means avoid.",
+        },
+        context: "Each evidence pack has context.threeDay (72h price change/high/low from stored hourly snapshots) and context.vmc (24h volume / market cap now vs the six-month daily mean). Cite them as context.threeDay.change, context.vmc.multiple, etc.",
+      }),
+    }),
+    defineTool({
       name: "get_collection_health",
       description: "Coverage and collection health for this run (provider, live/fixture, coverage label, stale count, missing fields, source circuit state).",
       scope: "read",
@@ -93,8 +128,8 @@ export function buildAgentTools(ctx: AgentToolContext): ToolDef[] {
 
 /** Least-privilege tool sets per role. */
 export const ROLE_TOOLS: Record<AgentRole, string[]> = {
-  market_analyst: ["get_shortlist", "get_evidence", "get_market_context", "get_asset_history"],
-  risk_reviewer: ["get_evidence", "get_asset_history", "get_market_context", "get_collection_health"],
+  market_analyst: ["get_shortlist", "get_evidence", "get_market_context", "get_asset_history", "get_strategy"],
+  risk_reviewer: ["get_evidence", "get_asset_history", "get_market_context", "get_collection_health", "get_strategy"],
   coordinator: ["get_evidence"],
 };
 

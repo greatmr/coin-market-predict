@@ -27,6 +27,8 @@ function assessment(over: Partial<AssetAssessment> = {}): AssetAssessment {
     exitConditions: { target: p.scenario.targetRule, trailing: p.scenario.trailingRule, maxHoldingHours: 24 },
     expiresAt: p.scenario.signalExpiresAt,
     rationale: "test",
+    recommendation: "buy",
+    recommendationReason: "clean advance setup with rising volume",
     ...over,
   };
 }

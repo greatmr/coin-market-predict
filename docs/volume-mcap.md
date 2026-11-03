@@ -182,7 +182,7 @@ outside the requested interval: the collector filters to the requested completed
 Chart `range=3D` was invalid; `range=7D` supplies the recent 72 hours. Gaps remain missing;
 no values are interpolated and daily OHLCV is never converted to hourly volume.
 
-All website calls share one queue per application process. Defaults: six requests/minute,
+All website calls share one queue per application process. Defaults: 30 requests/minute,
 9,000 requests/calendar month, two retries, 60-second bounded cache. HTTP and application
 rate limits honor Retry-After; cooldown/budget/circuit state persists in `SourceHealth` under
 `coinmarketcap_web`. Repeated denials suspend collection. Reset after resolving the cause:
@@ -211,9 +211,10 @@ npm start
 ```
 
 For the main signal-analysis pipeline, independently set `DATA_SOURCE=coinmarketcap_web`.
-Its paginated listing source feeds existing discovery, market snapshots, feature computation,
-screening, and agent evidence. It deduplicates featured coins, applies the per-run page cap,
-and reports partial coverage when fewer unique assets than `totalCount` were collected.
+Its listing source (one `limit=10000` request returns every listed coin) feeds discovery,
+market snapshots, feature computation, screening, and agent evidence. It deduplicates
+featured coins, applies the per-run page cap, and reports partial coverage when fewer unique
+assets than `totalCount` were collected.
 
 Manual CSV remains available: download a coin's historical CSV, then run:
 
@@ -242,15 +243,24 @@ revisions. CSV provides daily inputs only; the API or website collector supplies
 ## Prediction panel startup
 
 The VMC baseline comparison is descriptive; its daily rows are not prediction inputs.
-The main website source now also exposes genuine chart prices/caps/rolling volume to the
-market-snapshot pipeline. On collection, it bootstraps up to 72 completed hourly samples for
-at most `SOURCE_HISTORY_BOOTSTRAP_MAX_ASSETS` coins (default 8), prioritizing monitored VMC
-ids, benchmarks and active coins. Existing current observations are not overwritten; gaps
-are not filled. Historical rows carry `historical_backfill`, source observation time and
-actual retrieval time; historical freshness is assessed relative to the observation hour.
-Other coins remain in warm-up until sufficient consecutive hourly snapshots arrive.
+The main website source also exposes genuine chart prices/caps/rolling volume to the
+market-snapshot pipeline through the `history` stage. Every coin that would be eligible now
+(strategy floors, not stale, not an excluded class) but lacks the previous
+`SNAPSHOT_WINDOW − 1` hourly snapshots gets one seven-day chart request; up to 72 hourly samples
+are stored, each taken at the same minute offset as the current snapshot. Order: BTC/ETH
+benchmarks, monitored VMC ids, then 24h volume. Bounded per run by
+`SOURCE_HISTORY_BOOTSTRAP_MAX_ASSETS` (default 1,500), `SOURCE_HISTORY_BOOTSTRAP_MAX_MINUTES`
+(default 35) and a reserve of the monthly request budget for hourly listings; it resumes next
+run. A transient per-coin error skips that coin; denial, rate limiting or five consecutive
+failures stop the stage, never the run. Existing observations are not overwritten; gaps are not
+filled. Historical rows carry `historical_backfill`, source observation time and actual
+retrieval time; historical freshness is assessed relative to the observation hour.
 
-Discovery respects `SOURCE_MAX_MARKET_PAGES_PER_RUN`; the following collect stage reuses
-its listing payload once. The dashboard shows run progress and warm-up/exclusion reasons,
-and only reads signal results once publication succeeds. No threshold is relaxed to make
-an empty prediction panel appear populated. Set `AGENT_PROVIDER=claude` for real reviews.
+Measured on 2026-11-03 against the live website: the first run read all 8,041 coins in one
+listing request (7 s) and backfilled 899 of 901 eligible coins (64,728 genuine hourly rows; two
+transient HTTP errors were skipped and fetched the next hour) in 33 minutes at 30 requests/minute.
+The next hourly run took 15 seconds: one listing request and four history requests. (With the
+`surge-screen-2` classification about 790 coins need the first-run backfill.) The dashboard shows run and backfill progress,
+the strategy funnel and exclusion reasons, and only reads signal results once publication
+succeeds. No threshold is relaxed to make an empty prediction panel appear populated. Set
+`AGENT_PROVIDER=claude` for real reviews.

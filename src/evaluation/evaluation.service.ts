@@ -7,8 +7,9 @@ import type { PaperScenario } from "../screening/scenario.js";
 import type { ResearchTarget } from "../screening/strategy.js";
 import { evaluateTarget } from "./outcome.js";
 import { simulatePosition, type Observation } from "./simulate.js";
+import { EXCLUDED_CLASSES } from "../screening/universe.js";
 
-const EXCLUDED = ["stablecoin", "wrapped", "bridged", "staked"];
+const EXCLUDED = [...EXCLUDED_CLASSES];
 
 @Injectable()
 export class EvaluationService {

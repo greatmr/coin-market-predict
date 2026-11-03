@@ -1,7 +1,8 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { APP_CONFIG, type AppConfig } from "../config/config.js";
-import { PrismaService, toNum } from "../prisma/prisma.service.js";
+import { PrismaService } from "../prisma/prisma.service.js";
 import { ScreeningService } from "../screening/screening.service.js";
+import { EXCLUDED_CLASSES } from "../screening/universe.js";
 import { runBacktest, type BacktestSnapshot, type BacktestReportData } from "./backtest.js";
 
 @Injectable()
@@ -15,41 +16,37 @@ export class BacktestService {
   async run(opts: { includeFinalTest: boolean; minHistoryHours?: number }): Promise<{ id: string; report: BacktestReportData }> {
     const providerId = this.cfg.DATA_SOURCE;
     const provider = await this.prisma.provider.findUnique({ where: { id: providerId } });
-    const rows = await this.prisma.marketSnapshot.findMany({
-      where: { providerId },
-      orderBy: [{ assetId: "asc" }, { slotTime: "asc" }],
-      select: {
-        assetId: true,
-        slotTime: true,
-        price: true,
-        marketCap: true,
-        fullyDilutedValuation: true,
-        volumeRolling24h: true,
-        isStale: true,
-        providerChangePct1h: true,
-        providerChangePct24h: true,
-        bidAskSpreadPct: true,
-        depthPlus2PctUsd: true,
-        completeness: true,
-        marketCapProvenance: true,
-        qualityFlags: true,
-      },
-    });
+    // Coins that never reached the market-cap floor can neither be screened nor enter the market
+    // median, so the full-universe tail is not loaded (it would dominate memory). Plain floats:
+    // the backtest's arithmetic is float-based and Decimal objects per value are too heavy here.
+    const rows = await this.prisma.$queryRaw<
+      Array<{ assetId: string; slotTime: Date; price: number | null; marketCap: number | null; fdv: number | null; volume: number | null; isStale: boolean; ch1: number | null; ch24: number | null; spread: number | null; depth: number | null; completeness: number | null; marketCapProvenance: string; qualityFlags: string[] }>
+    >`
+      SELECT s."assetId", s."slotTime", s.price::float8 AS price, s."marketCap"::float8 AS "marketCap", s."fullyDilutedValuation"::float8 AS fdv,
+             s."volumeRolling24h"::float8 AS volume, s."isStale", s."providerChangePct1h"::float8 AS ch1, s."providerChangePct24h"::float8 AS ch24,
+             s."bidAskSpreadPct"::float8 AS spread, s."depthPlus2PctUsd"::float8 AS depth, s.completeness::float8 AS completeness,
+             s."marketCapProvenance", s."qualityFlags"
+      FROM "MarketSnapshot" s
+      WHERE s."providerId" = ${providerId} AND s."assetId" IN (
+        SELECT DISTINCT u."assetId" FROM "MarketSnapshot" u JOIN "Asset" a ON a.id = u."assetId"
+        WHERE u."providerId" = ${providerId} AND (a."isBenchmark" OR (a."assetClass" <> ALL(${[...EXCLUDED_CLASSES]}::text[]) AND u."marketCap" >= ${this.cfg.MIN_MARKET_CAP_USD}::numeric))
+      )
+      ORDER BY s."assetId", s."slotTime"`;
     const series = new Map<string, BacktestSnapshot[]>();
     for (const r of rows) {
       const list = series.get(r.assetId) ?? [];
       list.push({
         slotTime: r.slotTime,
-        price: toNum(r.price),
-        marketCap: toNum(r.marketCap),
-        fullyDilutedValuation: toNum(r.fullyDilutedValuation),
-        volumeRolling24h: toNum(r.volumeRolling24h),
+        price: r.price,
+        marketCap: r.marketCap,
+        fullyDilutedValuation: r.fdv,
+        volumeRolling24h: r.volume,
         isStale: r.isStale,
-        providerChangePct1h: toNum(r.providerChangePct1h),
-        providerChangePct24h: toNum(r.providerChangePct24h),
-        bidAskSpreadPct: toNum(r.bidAskSpreadPct),
-        depthPlus2PctUsd: toNum(r.depthPlus2PctUsd),
-        completeness: toNum(r.completeness) ?? 0,
+        providerChangePct1h: r.ch1,
+        providerChangePct24h: r.ch24,
+        bidAskSpreadPct: r.spread,
+        depthPlus2PctUsd: r.depth,
+        completeness: r.completeness ?? 0,
         marketCapProvenance: r.marketCapProvenance,
         qualityFlags: r.qualityFlags,
       });

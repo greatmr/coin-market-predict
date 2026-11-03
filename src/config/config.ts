@@ -36,12 +36,20 @@ const schema = z
     SOURCE_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(500).default(10),
     SOURCE_MONTHLY_REQUEST_BUDGET: z.coerce.number().int().min(1).default(9000),
     SOURCE_MAX_MARKET_PAGES_PER_RUN: z.coerce.number().int().min(1).max(200).default(10),
-    SOURCE_HISTORY_BOOTSTRAP_MAX_ASSETS: z.coerce.number().int().min(0).max(100).default(8),
+    /** Coins per run whose genuine hourly history may be fetched (one chart request each). 0 disables. */
+    SOURCE_HISTORY_BOOTSTRAP_MAX_ASSETS: z.coerce.number().int().min(0).max(20_000).default(1500),
+    /** Wall-clock budget for the history stage so an hourly run finishes inside its hour. */
+    SOURCE_HISTORY_BOOTSTRAP_MAX_MINUTES: z.coerce.number().min(1).max(50).default(35),
     DISCOVERY_INTERVAL_HOURS: z.coerce.number().int().min(1).default(24),
-    CMC_WEB_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(60).default(6),
+    CMC_WEB_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(60).default(30),
     CMC_WEB_MONTHLY_REQUEST_BUDGET: z.coerce.number().int().min(1).default(9000),
     CMC_WEB_MAX_RETRIES: z.coerce.number().int().min(0).max(6).default(2),
     CMC_WEB_CACHE_SECONDS: z.coerce.number().int().min(0).max(300).default(60),
+    /**
+     * Website listing page size. 10,000 returns the whole ~8k universe in one request, which also
+     * avoids unstable ordering among the thousands of coins tied at zero market cap across pages.
+     */
+    CMC_WEB_LISTING_PAGE_SIZE: z.coerce.number().int().min(100).max(10_000).default(10_000),
 
     SCHEDULER_ENABLED: bool.default(true),
     PIPELINE_CRON: z.string().default("7 * * * *"),
@@ -49,11 +57,19 @@ const schema = z
     SNAPSHOT_WINDOW: z.coerce.number().int().min(2).max(48).default(3),
     STALE_AFTER_MINUTES: z.coerce.number().int().min(5).default(90),
     SHORTLIST_SIZE: z.coerce.number().int().min(0).max(25).default(6),
+    /** Coins listed as pump recommendations (dashboard, MCP, Telegram table); the top SHORTLIST_SIZE go to the agents. */
+    RECOMMENDATIONS_MAX: z.coerce.number().int().min(1).max(25).default(10),
     MIN_VOLUME_24H_USD: z.coerce.number().min(0).default(250_000),
     MIN_MARKET_CAP_USD: z.coerce.number().min(0).default(5_000_000),
     /** Consecutive hourly snapshots required before a signal may be "candidate". */
     CANDIDATE_MIN_HISTORY: z.coerce.number().int().min(2).default(25),
     RETENTION_SNAPSHOT_DAYS: z.coerce.number().int().min(0).default(0),
+    /**
+     * After N days: snapshots of coins outside the strategy floors are thinned to the first
+     * snapshot of each UTC day, and recomputable per-coin feature/screening rows are pruned.
+     * Strategy-universe snapshots, signals and paper trades are kept. 0 = keep all detail.
+     */
+    RETENTION_DETAIL_DAYS: z.coerce.number().int().min(0).default(30),
 
     AGENT_PROVIDER: z.enum(["fixture", "claude", "off"]).default("fixture"),
     CLAUDE_CODE_OAUTH_TOKEN: optionalSecret,

@@ -6,8 +6,12 @@ never real orders. Purpose, requirements and open decisions: @intend.md
 
 ## Architecture boundaries
 - One NestJS app (`src/main.ts`), CLI (`src/cli.ts`), MCP stdio entry (`src/mcp-stdio.ts`).
-- Pipeline (`src/pipeline/pipeline.service.ts`): discover → collect → validate → persist →
-  features → screen → analyze (agents) → persist signals → publish → Telegram.
+- Pipeline (`src/pipeline/pipeline.service.ts`): discover → collect (every listed coin) →
+  history (genuine chart backfill for coins lacking t−1h/t−2h) → features → screen (pump chance)
+  → vmc (six-month baselines for the pump watchlist) → analyze (agents: buy/hold/sell) → publish
+  → Telegram (watchlist table) → retention. Combined buy/watch/avoid: `src/screening/recommend.ts`.
+- Screen universe (`src/screening/universe.ts`) is the single definition of which coins are
+  evaluated; only they get feature/screening rows. Storage policy: `docs/architecture.md`.
 - **Deterministic code owns all numbers**: ingestion, features, screening, scenarios,
   paper trading, backtests. Agents interpret evidence; they never compute or invent numbers.
 - **PostgreSQL is the source of truth.** Dashboard reads `/api/*` (REST). MCP (`/mcp`, stdio)

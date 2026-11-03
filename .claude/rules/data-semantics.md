@@ -18,6 +18,10 @@ paths:
   with real hourly bars. Never subtract overlapping 24h totals.
 - Missing values are NULL with a reason in `nullReasons` — no estimates, no forward-fill.
 - Coverage: "complete" only when the full listing was read and every listed asset collected.
+- Classification only ever gets stricter (tags → name → price evidence in `classify.ts`); never
+  use an ambiguous tag alone (`liquid-staking-derivatives`, `stablecoin-protocol`).
+- History backfill stores only genuine source samples aligned to hourly slots; it never
+  overwrites an existing observation. Derived rows exist only for the screen universe.
 - Features: declare `minSnapshots` and fields in `features/registry.ts`; missing history →
   NULL + reason. Any formula change bumps `FEATURE_SET_VERSION`; strategy changes bump the
   strategy `version`.

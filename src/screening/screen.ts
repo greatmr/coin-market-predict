@@ -1,5 +1,7 @@
 import type { FeatureVector, MarketContext } from "../features/compute.js";
+import { byPumpChance, pumpChance, type PumpChance } from "./recommend.js";
 import type { StrategyParams } from "./strategy.js";
+import { eligibilityExclusions } from "./universe.js";
 
 export type Classification =
   | "advance_candidate" // early: volume building, price starting to accelerate, outperforming
@@ -37,26 +39,19 @@ export interface ScreenOutput {
   heuristicScore: number;
   components: Record<string, number>;
   riskFlags: string[];
+  /** Strategy pump chance (heuristic level, not a probability) and its reasons. */
+  pumpChance: PumpChance;
+  pumpReasons: string[];
 }
 
 const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
 
-const EXCLUDED_CLASSES = new Set(["stablecoin", "wrapped", "bridged", "staked"]);
-
 export function screenAsset(input: ScreenInput, market: MarketContext, p: StrategyParams): ScreenOutput {
-  const reasons: string[] = [];
   const risk: string[] = [];
   const f = input.features.values;
   const latest = input.latest;
 
-  if (EXCLUDED_CLASSES.has(input.assetClass)) reasons.push(`excluded_class:${input.assetClass}`);
-  if (input.isBenchmark) reasons.push("benchmark_reference");
-  if (!input.hasCurrentSnapshot || !latest) reasons.push("no_current_snapshot");
-  if (latest?.isStale) reasons.push("stale_observation");
-  if (latest && (latest.price === null || latest.volumeRolling24h === null)) reasons.push("incomplete_data");
-  if (latest && latest.volumeRolling24h !== null && latest.volumeRolling24h < p.minVolume24hUsd) reasons.push("illiquid_volume");
-  if (latest && latest.marketCap === null) reasons.push("market_cap_unavailable");
-  if (latest && latest.marketCap !== null && latest.marketCap < p.minMarketCapUsd) reasons.push("below_min_market_cap");
+  const reasons = eligibilityExclusions(input, input.hasCurrentSnapshot ? latest : null, p);
   if (input.features.warmupState === "warming_up") reasons.push("warming_up");
 
   // Risk flags (do not exclude on their own; they reduce the score and inform reviewers).
@@ -132,20 +127,30 @@ export function screenAsset(input: ScreenInput, market: MarketContext, p: Strate
   if (classification === "overextended" || classification === "market_wide") score *= 0.5;
   score = Math.max(0, Math.min(100, score - penalties));
 
+  const heuristicScore = Math.round(score * 1000) / 1000;
+  const riskFlags = [...new Set(risk)];
+  const pump = pumpChance({ eligible, exclusionReasons: reasons, classification, heuristicScore, riskFlags, features: f }, p);
   return {
     assetId: input.assetId,
     eligible,
     exclusionReasons: reasons,
     classification,
-    heuristicScore: Math.round(score * 1000) / 1000,
+    heuristicScore,
     components,
-    riskFlags: [...new Set(risk)],
+    riskFlags,
+    pumpChance: pump.chance,
+    pumpReasons: pump.reasons,
   };
 }
 
+/** Patterns the strategy treats as surge setups (advance) or surge detection (underway). */
 export const SHORTLIST_CLASSES: ReadonlySet<Classification> = new Set(["advance_candidate", "move_underway"]);
 
-/** Rank eligible outputs by score and mark the configured shortlist. */
+/** Whether a screened coin may be sent to the agents: high pump chance, or medium with a decent score. */
+export const shortlistable = (o: Pick<ScreenOutput, "eligible" | "pumpChance" | "heuristicScore">, minScore: number) =>
+  o.eligible && (o.pumpChance === "high" || (o.pumpChance === "medium" && o.heuristicScore >= minScore));
+
+/** Rank eligible outputs by score; shortlist the top `size` by pump chance for agent review. */
 export function rankAndShortlist(outputs: ScreenOutput[], size: number, minScore: number) {
   const ranked = outputs
     .filter((o) => o.eligible)
@@ -154,7 +159,8 @@ export function rankAndShortlist(outputs: ScreenOutput[], size: number, minScore
   ranked.forEach((o, i) => rank.set(o.assetId, i + 1));
   const shortlist = new Set(
     ranked
-      .filter((o) => SHORTLIST_CLASSES.has(o.classification) && o.heuristicScore >= minScore)
+      .filter((o) => shortlistable(o, minScore))
+      .sort(byPumpChance)
       .slice(0, size)
       .map((o) => o.assetId),
   );

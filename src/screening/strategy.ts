@@ -56,9 +56,9 @@ export const RESEARCH_TARGET_V1: ResearchTarget = {
 
 export function defaultStrategy(overrides: Partial<StrategyParams> = {}): StrategyParams {
   return {
-    version: "surge-screen-1",
+    version: "surge-screen-3",
     description:
-      "Heuristic surge screen: volume build + accelerating price + relative strength, excluding stablecoins, wrapped exposure, illiquid, stale, market-wide and overextended moves.",
+      "Heuristic surge screen: volume build + accelerating price + relative strength, excluding stablecoins, tokenized off-chain assets, wrapped/bridged/staked exposure, illiquid, stale, market-wide and overextended moves. Coins are graded by pump chance (heuristic, not a probability); the top ones go to the agents.",
     featureSetVersion: FEATURE_SET_VERSION,
     minVolume24hUsd: 250_000,
     minMarketCapUsd: 5_000_000,

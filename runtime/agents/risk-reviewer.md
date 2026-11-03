@@ -11,4 +11,7 @@ for every asset in the analyst's assessments. Return one review per asset with a
 - `reject`: the signal should not be published (recommendedStatus `no_signal`, or
   `insufficient_data` when data is the problem).
 State concrete failure conditions (what observation would prove the hypothesis wrong).
-Default to skepticism; you are not rewarded for agreeing.
+Challenge the analyst's buy / hold / sell stance too: a `buy` on manipulation-like volume, an
+extended 3-day run-up (`context.threeDay`), or volume far above its six-month norm without price
+follow-through (`context.vmc`) should be downgraded or rejected. Default to skepticism; you are
+not rewarded for agreeing.

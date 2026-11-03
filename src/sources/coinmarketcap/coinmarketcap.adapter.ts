@@ -111,11 +111,20 @@ export function parseCmcListings(body: unknown): { observations: RawObservation[
 }
 
 /** CMC tags used for classification. */
+/** Tags of tokens that represent an off-chain asset (equities, ETFs, commodities, treasuries). */
+const TOKENIZED_TAGS = new Set(["tokenized-stock", "tokenized-etfs", "tokenized-commodities", "tokenized-gold", "tokenized-silver", "tokenized-treasury-bonds", "tokenized-treasury-bills", "tokenized-real-estate"]);
+
+/**
+ * Map CoinMarketCap tags to classification categories. Only unambiguous tags are used:
+ * "stablecoin-protocol" marks governance tokens and "liquid-staking-derivatives" also tags
+ * protocol tokens such as LDO or RPL, so neither excludes a coin on its own.
+ */
 export function cmcCategories(tags: string[] | null | undefined): string[] {
   const out: string[] = [];
   for (const t of tags ?? []) {
-    if (t.includes("stablecoin")) out.push("stablecoins");
+    if (t === "stablecoin" || t.endsWith("-stablecoin")) out.push("stablecoins");
     if (t.includes("wrapped")) out.push("wrapped-tokens");
+    if (TOKENIZED_TAGS.has(t)) out.push("tokenized-assets");
   }
   return [...new Set(out)];
 }

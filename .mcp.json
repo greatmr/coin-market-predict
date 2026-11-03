@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "coins-predicts": {
-      "command": "node",
-      "args": ["--env-file-if-exists=.env", "dist/mcp-stdio.js"]
+      "command": "bash",
+      "args": ["scripts/mcp-stdio.sh"]
     }
   }
 }

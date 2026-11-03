@@ -43,7 +43,7 @@ model Asset {
   id               String    @id @default(uuid()) @db.Uuid
   name             String
   symbol           String
-  /// Classification from discovery: regular | stablecoin | wrapped | bridged | staked | unknown
+  /// Classification from discovery: regular | stablecoin | tokenized | wrapped | bridged | staked | unknown
   assetClass       String    @default("unknown")
   classSource      String? // provider_category | heuristic_name | heuristic_price | manual
   underlyingAsset  String? // e.g. "bitcoin" for wrapped BTC exposure
@@ -241,7 +241,7 @@ model PipelineRun {
 model PipelineStage {
   id          String    @id @default(uuid()) @db.Uuid
   runId       String    @db.Uuid
-  stage       String // discover | collect | features | screen | analyze | publish | notify
+  stage       String // discover | collect | history | features | screen | analyze | publish | notify
   status      String // running | succeeded | failed | skipped
   startedAt   DateTime  @db.Timestamptz(3)
   finishedAt  DateTime? @db.Timestamptz(3)
@@ -281,7 +281,7 @@ model FeatureSetVersion {
 }
 
 model StrategyVersion {
-  version          String   @id // e.g. "surge-screen-1"
+  version          String   @id // e.g. "surge-screen-2"
   description      String
   params           Json
   /// Versioned research target: return threshold, horizon, benchmark, adverse-excursion limit.
@@ -332,6 +332,10 @@ model ScreeningResult {
   riskFlags         String[]
   rank              Int?
   shortlisted       Boolean  @default(false)
+  /// Strategy pump chance: high | medium | low. A heuristic level, NOT a probability.
+  pumpChance        String   @default("low")
+  /// Plain-language reasons behind pumpChance (criteria met/missed, risks).
+  pumpReasons       String[] @default([])
 
   run               PipelineRun @relation(fields: [runId], references: [id], onDelete: Cascade)
   asset             Asset       @relation(fields: [assetId], references: [id], onDelete: Restrict)
@@ -369,6 +373,14 @@ model Signal {
   /// agent | deterministic (agent unavailable) | external_mcp
   origin                String
   reviewOutcome         String? // agree | downgrade | reject | not_reviewed
+  /// Strategy pump chance at signal time: high | medium | low (heuristic, not a probability).
+  pumpChance            String?
+  /// The agents' own paper-trading stance: buy | hold | sell (NULL when no agent reviewed it).
+  agentRecommendation   String?
+  agentRecommendationReason String?
+  /// Combined recommendation from strategy + agents + guardrails: buy | watch | avoid.
+  recommendation        String?
+  recommendationReason  String?
   evidenceHash          String
   isLiveData            Boolean
   publishedAt           DateTime? @db.Timestamptz(3)

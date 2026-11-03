@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import type { MarketContext } from "../features/compute.js";
+import type { ThreeDay, VmcContext } from "./context.js";
+import type { PumpChance } from "./recommend.js";
 import type { PaperScenario } from "./scenario.js";
 import type { ScreenOutput } from "./screen.js";
 
@@ -42,6 +44,10 @@ export interface EvidencePack {
   screening: Pick<ScreenOutput, "classification" | "heuristicScore" | "components" | "riskFlags"> & { rank: number | null };
   market: MarketContext;
   scenario: PaperScenario;
+  /** Base-strategy pump chance (heuristic level, not a probability) with its reasons. */
+  pump: { chance: PumpChance; reasons: string[] };
+  /** Last three days of stored hourly prices and volume / market cap vs the six-month baseline. */
+  context: { threeDay: ThreeDay; vmc: VmcContext | null };
   strategyVersion: string;
   featureSetVersion: string;
 }

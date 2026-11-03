@@ -4,6 +4,9 @@ import type { FeatureRunResult } from "../features/features.service.js";
 import { FEATURE_SET_VERSION } from "../features/registry.js";
 import { PrismaService, toNum } from "../prisma/prisma.service.js";
 import type { EvidencePack } from "./evidence.js";
+import { addHours } from "../common/time.js";
+import { CMC_PROVIDERS, cmcIdsFor, latestBaselines } from "../read-model/vmc-lookup.js";
+import { threeDayStats, vmcContext } from "./context.js";
 import { buildScenario } from "./scenario.js";
 import { rankAndShortlist, screenAsset, type ScreenInput, type ScreenOutput } from "./screen.js";
 import { defaultStrategy, type StrategyParams } from "./strategy.js";
@@ -80,6 +83,8 @@ export class ScreeningService {
           riskFlags: r.riskFlags,
           rank: r.rank,
           shortlisted: r.shortlisted,
+          pumpChance: r.pumpChance,
+          pumpReasons: r.pumpReasons,
         })),
         skipDuplicates: true,
       });
@@ -90,7 +95,8 @@ export class ScreeningService {
   async buildEvidence(providerId: string, fr: FeatureRunResult, shortlisted: RankedOutput[]): Promise<EvidencePack[]> {
     if (shortlisted.length === 0) return [];
     const ids = shortlisted.map((s) => s.assetId);
-    const [assets, provider, snaps] = await Promise.all([
+    const cmcIds = CMC_PROVIDERS.has(providerId) ? await this.cmcIds(providerId, ids) : new Map<string, number>();
+    const [assets, provider, snaps, window72, baselines] = await Promise.all([
       this.prisma.asset.findMany({
         where: { id: { in: ids } },
         include: { contracts: true, identities: { where: { providerId } } },
@@ -101,6 +107,8 @@ export class ScreeningService {
         orderBy: { slotTime: "desc" },
         take: ids.length * Math.max(this.cfg.SNAPSHOT_WINDOW, 3) * 2,
       }),
+      this.prisma.marketSnapshot.findMany({ where: { providerId, assetId: { in: ids }, slotTime: { gte: addHours(fr.slot, -72), lte: fr.slot } }, select: { assetId: true, slotTime: true, price: true } }),
+      this.latestBaselines([...cmcIds.values()]),
     ]);
     return shortlisted.map((s) => {
       const a = assets.find((x) => x.id === s.assetId)!;
@@ -157,9 +165,23 @@ export class ScreeningService {
           slippageBps: this.cfg.PAPER_SLIPPAGE_BPS,
           estSlippagePct: f.values.est_slippage_pct ?? null,
         }),
+        pump: { chance: s.pumpChance, reasons: s.pumpReasons },
+        context: {
+          threeDay: threeDayStats(window72.filter((w) => w.assetId === s.assetId).map((w) => ({ slotTime: w.slotTime, price: toNum(w.price) })), fr.slot),
+          vmc: cmcIds.has(s.assetId) ? vmcContext(f.values.vol_mcap ?? null, baselines.get(cmcIds.get(s.assetId)!) ?? null) : null,
+        },
         strategyVersion: this.strategy.version,
         featureSetVersion: FEATURE_SET_VERSION,
       } satisfies EvidencePack;
     });
+  }
+
+  /** CoinMarketCap numeric id per canonical asset (provider ids of CMC-based sources). */
+  cmcIds(providerId: string, assetIds: string[]): Promise<Map<string, number>> {
+    return cmcIdsFor(this.prisma, providerId, assetIds);
+  }
+
+  latestBaselines(cmcIds: number[]) {
+    return latestBaselines(this.prisma, cmcIds);
   }
 }
