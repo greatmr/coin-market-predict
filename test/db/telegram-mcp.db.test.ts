@@ -140,3 +140,33 @@ describe("MCP server", () => {
     expect(stored.status).toBe("watch");
   });
 });
+
+describe("Telegram bot commands", () => {
+  it("serves only the configured chat and answers /help, /report, /run with readable cards", async () => {
+    const { TelegramBotService } = await import("../../src/telegram/telegram-bot.service.js");
+    const { ReportService } = await import("../../src/telegram/report.service.js");
+    const { ReadModelService } = await import("../../src/read-model/read-model.service.js");
+    const { VmcService } = await import("../../src/vmc/vmc.service.js");
+    const sf = scriptedFetch([{ status: 200, body: { ok: true, result: { message_id: 1 } } }]);
+    ctx = await makeApp({ TELEGRAM_MODE: "live", TELEGRAM_BOT_TOKEN: BOT, TELEGRAM_CHAT_ID: "186142556" }, sf.f);
+    await resetDb(ctx.prisma);
+    const tg = ctx.app.get(TelegramService);
+    tg.sleep = async () => undefined;
+    const bot = new TelegramBotService(ctx.cfg, sf.f, ctx.prisma, tg, ctx.app.get(ReportService), ctx.app.get(ReadModelService), ctx.app.get(PipelineService), ctx.app.get(VmcService));
+
+    expect(await bot.handle("999", "/report")).toEqual(["This bot is private."]);
+    expect((await bot.handle("186142556", "/help"))[0]).toMatch(/\/report — latest hourly report/);
+    expect((await bot.handle("186142556", "/report"))[0]).toMatch(/No report yet/);
+
+    const ing = ctx.app.get(IngestionService);
+    await ing.discover(new Date());
+    for (let h = 30; h >= 1; h--) await ing.collect(addHours(slotOf(new Date()), -h), null, new Date(), { fixtureBackfill: true });
+    const run = await bot.handle("186142556", "/run");
+    expect(run[0]).toMatch(/Coins Predicts — hourly report/);
+    expect(run[0]).toMatch(/TEST DATA/);
+    expect(run[0]).not.toContain("<pre>");
+    expect((await bot.handle("186142556", "/status"))[0]).toMatch(/Recent runs/);
+    expect((await bot.handle("186142556", "/vmc"))[0]).toMatch(/not configured/);
+    expect(sf.calls.every((c) => !c.url.includes("getUpdates"))).toBe(true);
+  });
+});

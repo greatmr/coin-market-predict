@@ -39,7 +39,7 @@ describe("hourly pipeline", () => {
     const deliveries = await ctx.prisma.telegramDelivery.findMany({ where: { runId: r.runId! } });
     expect(deliveries.length).toBeGreaterThan(0);
     expect(deliveries.every((d) => d.status === "dry_run")).toBe(true);
-    expect(deliveries[0]!.text).toMatch(/FIXTURE \/ SYNTHETIC DATA/);
+    expect(deliveries[0]!.text).toMatch(/TEST DATA<\/b> — synthetic prices/);
 
     const again = await p.runSlot();
     expect(again.status).toBe("skipped");

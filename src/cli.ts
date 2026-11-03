@@ -139,9 +139,12 @@ async function main() {
           process.exitCode = 1;
           break;
         }
-        const r = await tg.sendTest("<b>Coins Predicts</b> — test message. Telegram delivery is configured.");
-        process.stdout.write(`${JSON.stringify(r.ok ? { sent: true } : { sent: false, error: r.error })}\n`);
-        if (!r.ok) process.exitCode = 1;
+        const msgs = process.argv.includes("--sample") ? fakePreview(cfg.DISPLAY_TIMEZONE) : ["<b>Coins Predicts</b> — test message. Telegram delivery is configured."];
+        for (const m of msgs) {
+          const r = await tg.sendTest(m);
+          process.stdout.write(`${JSON.stringify(r.ok ? { sent: true } : { sent: false, error: r.error })}\n`);
+          if (!r.ok) process.exitCode = 1;
+        }
         break;
       }
       case "telegram:deliver": {
@@ -189,12 +192,12 @@ function fakePreview(tz: string): string[] {
     coverage: { label: "partial", collected: 2000, universeSize: 8049, coveragePct: 24.8, stale: 3 },
     oldestObservedAt: now.toISOString(),
     agentStatus: "preview",
-    summary: "Preview of the report layout using invented numbers.",
+    summary: "LAYOUT PREVIEW with invented numbers — not a real report.",
     screened: 2000,
     eligible: 812,
     rows: [
-      { symbol: "SPRK", name: "Early Spark (fake)", status: "candidate", signalType: "advance", price: 0.8312, marketCap: 748e6, volume24h: 12.1e6, volumeWindow: "rolling_24h", score: 62.4, horizonHours: 24, entry: "Enter only if an hourly snapshot prints ≥ 0.83950", invalidation: "Invalidate if an hourly snapshot prints ≤ 0.78074", exit: "Take profit at ≥ 0.96543; trail 5% after +8%; max hold 24h", risk: ["thin_history", "no_liquidity_data"], sourceUrl: "fixture://coins/fx-early-spark", observedAt: now.toISOString() },
-      { symbol: "SRG", name: "Surge <Protocol> & Co (fake)", status: "watch", signalType: "move_underway", price: 3.21, marketCap: 963e6, volume24h: 45e6, volumeWindow: "rolling_24h", score: 55, horizonHours: 24, entry: "Enter only if ≥ 3.274", invalidation: "≤ 3.045", exit: "≥ 3.765; trail 5%", risk: ["extreme_1h_move"], sourceUrl: "fixture://coins/fx-surge-protocol", observedAt: now.toISOString() },
+      { symbol: "SPRK", name: "Early Spark (fake)", status: "candidate", signalType: "advance", price: 0.8312, marketCap: 748e6, volume24h: 12.1e6, volumeWindow: "rolling_24h", score: 62.4, horizonHours: 24, entry: "", invalidation: "", exit: "", risk: ["thin_history", "no_liquidity_data"], sourceUrl: "fixture://coins/fx-early-spark", observedAt: now.toISOString(), scenario: { entryPrice: 0.8395, stopPrice: 0.7807, targetPrice: 0.9654, trailPct: 0.05, trailActivatePct: 0.08, maxHoldHours: 24, expiresAt: new Date(now.getTime() + 6 * 3_600_000).toISOString() } },
+      { symbol: "SRG", name: "Surge Protocol (fake)", status: "watch", signalType: "move_underway", price: 3.21, marketCap: 963e6, volume24h: 45e6, volumeWindow: "rolling_24h", score: 55, horizonHours: 24, entry: "", invalidation: "", exit: "", risk: ["extreme_1h_move"], sourceUrl: "fixture://coins/fx-surge-protocol", observedAt: now.toISOString(), scenario: { entryPrice: 3.274, stopPrice: 3.045, targetPrice: 3.765, trailPct: 0.05, trailActivatePct: 0.08, maxHoldHours: 24, expiresAt: new Date(now.getTime() + 6 * 3_600_000).toISOString() } },
     ],
   });
 }

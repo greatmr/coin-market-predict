@@ -148,6 +148,11 @@ export class TelegramService {
     return { sent, failed, deferred };
   }
 
+  /** Direct reply (used by the command handler); same rate spacing, retries are the caller's. */
+  reply(chatId: string, text: string) {
+    return this.sendOne(chatId, text);
+  }
+
   private async sendOne(chatId: string, text: string): Promise<{ ok: true; messageId: string } | { ok: false; error: string; permanent: boolean; retryAfterMs?: number }> {
     const wait = this.lastSentAt + MIN_SPACING_MS - this.clock.now().getTime();
     if (wait > 0) await this.sleep(wait);

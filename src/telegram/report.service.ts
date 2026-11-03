@@ -51,6 +51,17 @@ export class ReportService {
         risk: s.riskFlags,
         sourceUrl: snap?.sourceUrl ?? "",
         observedAt: snap?.observedAt?.toISOString() ?? null,
+        scenario: sc.entryTriggerPrice
+          ? {
+              entryPrice: sc.entryTriggerPrice,
+              stopPrice: sc.stopPrice,
+              targetPrice: sc.targetPrice,
+              trailPct: sc.trailPct,
+              trailActivatePct: sc.trailActivatePct,
+              maxHoldHours: sc.maxHoldHours,
+              expiresAt: sc.signalExpiresAt,
+            }
+          : undefined,
       };
     });
     const observed = rows.map((r) => r.observedAt).filter((x): x is string => !!x).sort();

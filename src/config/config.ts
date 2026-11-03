@@ -62,7 +62,9 @@ const schema = z
 
     TELEGRAM_MODE: z.enum(["disabled", "dry_run", "live"]).default("dry_run"),
     TELEGRAM_BOT_TOKEN: optionalSecret,
-    TELEGRAM_CHAT_ID: z.string().optional(),
+    TELEGRAM_CHAT_ID: z.string().trim().optional(),
+    /** Answer /report, /status, /vmc, /run, /help from TELEGRAM_CHAT_ID (web server only). */
+    TELEGRAM_COMMANDS_ENABLED: bool.default(true),
 
     MCP_HTTP_ENABLED: bool.default(true),
     MCP_READ_TOKEN: optionalSecret,
