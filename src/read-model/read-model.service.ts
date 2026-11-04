@@ -166,11 +166,13 @@ export class ReadModelService {
     });
     const screening = await this.prisma.screeningResult.findMany({ where: { runId, assetId: { in: rows.map((r) => r.assetId) } }, select: { assetId: true, classification: true, rank: true } });
     const cls = new Map(screening.map((s) => [s.assetId, s]));
+    const cmc = await cmcIdsFor(this.prisma, this.providerId, rows.map((r) => r.assetId));
     const slot = rows[0]?.slotTime;
     const extra = slot ? await this.quotesAndFeatures(rows.map((r) => r.assetId), slot) : { quotes: new Map(), features: new Map() };
     const merged = rows
       .map((r) => ({
         ...r,
+        asset: { ...r.asset, cmcId: cmc.get(r.assetId) ?? null },
         classification: cls.get(r.assetId)?.classification ?? null,
         rank: cls.get(r.assetId)?.rank ?? null,
         quote: extra.quotes.get(r.assetId) ?? null,
@@ -299,7 +301,8 @@ export class ReadModelService {
       }),
     ]);
     const { quotes, features } = await this.quotesAndFeatures(rows.map((r) => r.assetId), run.slotTime);
-    const results = rows.map((r) => ({ ...r, quote: quotes.get(r.assetId) ?? null, keyFeatures: features.get(r.assetId) ?? null }));
+    const cmc = await cmcIdsFor(this.prisma, this.providerId, rows.map((r) => r.assetId));
+    const results = rows.map((r) => ({ ...r, asset: { ...r.asset, cmcId: cmc.get(r.assetId) ?? null }, quote: quotes.get(r.assetId) ?? null, keyFeatures: features.get(r.assetId) ?? null }));
     return plain<Record<string, unknown>>({ runId, slotTime: run.slotTime, total, results });
   }
 
@@ -353,11 +356,13 @@ export class ReadModelService {
       ? await this.prisma.screeningResult.findMany({ where: { runId: published.id, assetId: { in: rows.map((r) => r.assetId) } }, select: { assetId: true, eligible: true, classification: true, heuristicScore: true, exclusionReasons: true, shortlisted: true, rank: true } })
       : [];
     const byAsset = new Map(screened.map((s) => [s.assetId, s]));
+    const cmc = await cmcIdsFor(this.prisma, this.providerId, rows.map((r) => r.assetId));
     const coins = rows.map((r) => {
       const latest = { price: toNum(r.price), marketCap: toNum(r.marketCap), volumeRolling24h: toNum(r.volumeRolling24h), isStale: r.isStale };
       const s = byAsset.get(r.assetId);
       return {
         ...r,
+        asset: { ...r.asset, cmcId: cmc.get(r.assetId) ?? null },
         strategy: inScreenUniverse(r.asset, latest, this.floors)
           ? { inUniverse: true, screened: !!s, eligible: s?.eligible ?? null, classification: s?.classification ?? null, score: s ? toNum(s.heuristicScore) : null, shortlisted: s?.shortlisted ?? false, rank: s?.rank ?? null, reasons: s?.exclusionReasons ?? [] }
           : { inUniverse: false, screened: false, eligible: false, classification: null, score: null, shortlisted: false, rank: null, reasons: eligibilityExclusions(r.asset, latest, this.floors) },
@@ -459,12 +464,13 @@ export class ReadModelService {
       where: { signal: { run: { providerId: this.providerId } } },
       orderBy: { createdAt: "desc" },
       take: 200,
-      include: { signal: { select: { slotTime: true, status: true, signalType: true, asset: { select: { symbol: true, name: true } } } } },
+      include: { signal: { select: { slotTime: true, status: true, signalType: true, assetId: true, asset: { select: { symbol: true, name: true } } } } },
     });
+    const cmc = await cmcIdsFor(this.prisma, this.providerId, [...new Set(rows.map((r) => r.signal.assetId))]);
     const closed = rows.filter((r) => r.status === "closed" && r.netReturn !== null);
     const net = closed.map((r) => r.netReturn!.toNumber());
     return plain<Record<string, unknown>>({
-      positions: rows,
+      positions: rows.map((r) => ({ ...r, signal: { ...r.signal, asset: { ...r.signal.asset, cmcId: cmc.get(r.signal.assetId) ?? null } } })),
       summary: {
         total: rows.length,
         open: rows.filter((r) => r.status === "open").length,

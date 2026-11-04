@@ -198,7 +198,8 @@ th[aria-sort="descending"]::after { content: " ↓"; }
 tbody tr.clickable { cursor: pointer; }
 tbody tr.clickable:hover td, tbody tr.clickable:focus-visible td { background: var(--surface-2); }
 tbody tr.highlight td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
-td .coin { display: flex; flex-direction: column; line-height: 1.25; min-width: 120px; }
+td .coin { display: flex; align-items: center; gap: 8px; line-height: 1.25; min-width: 120px; }
+td .coin .coin-text { display: flex; flex-direction: column; min-width: 0; }
 td .coin b { font-weight: 620; }
 td .coin span { color: var(--muted); font-size: 12px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 table.kv-table td:first-child { color: var(--ink-2); width: 42%; }
@@ -274,3 +275,8 @@ pre.json { background: var(--surface-2); padding: 8px; border-radius: 8px; font-
 .btn.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(0.92); }
 .btn.danger { color: var(--down); }
 .banner-note { padding: 8px 12px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); color: var(--ink-2); }
+
+.logo { flex: none; border-radius: 50%; background: var(--surface-2); object-fit: cover; vertical-align: middle; }
+.logo.fallback { display: inline-flex; align-items: center; justify-content: center; color: var(--ink-2); font-weight: 650; border: 1px solid var(--border); box-sizing: border-box; }
+.sig .title.with-logo { display: flex; align-items: center; gap: 10px; }
+.drawer-head h2 { display: flex; align-items: center; gap: 8px; }

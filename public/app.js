@@ -285,7 +285,20 @@ const riskChips = (flags, max = 4) => {
   return el("span", null, list);
 };
 const reasonChips = (reasons) => el("span", null, (reasons || []).map((r) => chip(reasonLabel(r))));
-const coinCell = (asset) => el("div", { class: "coin" }, el("b", null, asset.symbol), el("span", { title: asset.name }, asset.name));
+/** CoinMarketCap serves a logo per coin id (the same host the data comes from). The CSP allows only this host. */
+const logoUrl = (cmcId) => (Number.isInteger(cmcId) && cmcId > 0 ? `https://s2.coinmarketcap.com/static/img/coins/64x64/${cmcId}.png` : null);
+
+/** Round logo with a letter badge as the fallback (no id, offline, or the image fails to load). */
+function coinLogo(cmcId, symbol, size = 24) {
+  const letter = () => el("span", { class: "logo fallback", style: `width:${size}px;height:${size}px;font-size:${Math.round(size * 0.46)}px`, "aria-hidden": "true" }, (symbol || "?").slice(0, 1).toUpperCase());
+  const url = logoUrl(cmcId);
+  if (!url) return letter();
+  const img = el("img", { class: "logo", src: url, width: size, height: size, alt: "", loading: "lazy", decoding: "async", referrerpolicy: "no-referrer" });
+  img.addEventListener("error", () => img.replaceWith(letter()), { once: true });
+  return img;
+}
+
+const coinCell = (asset) => el("div", { class: "coin" }, coinLogo(asset.cmcId, asset.symbol), el("div", { class: "coin-text" }, el("b", null, asset.symbol), el("span", { title: asset.name }, asset.name)));
 const pctCell = (v, fmt = fmtRet) => el("span", { class: tone(v) }, fmt(v));
 
 function meter(score, opts = {}) {
@@ -759,7 +772,7 @@ function signalCard(s, compact = false) {
   const card = el(
     "article",
     { class: "sig", tabindex: 0, role: "button", "aria-label": `${s.asset.symbol} ${(STATUS[s.status] || {}).label || s.status} signal: open details` },
-    el("div", { class: "top" }, el("div", { class: "title" }, el("b", null, s.asset.symbol), el("span", null, s.asset.name)), el("div", null, signalStatus(s.status), el("div", { class: "hint" }, s.signalType === "move_underway" ? "Move underway (detection)" : s.signalType === "advance" ? "Advance" : "—"))),
+    el("div", { class: "top" }, el("div", { class: "title with-logo" }, coinLogo(s.asset.cmcId, s.asset.symbol, 32), el("div", null, el("b", null, s.asset.symbol), el("span", null, s.asset.name))), el("div", null, signalStatus(s.status), el("div", { class: "hint" }, s.signalType === "move_underway" ? "Move underway (detection)" : s.signalType === "advance" ? "Advance" : "—"))),
     el("div", { class: "row" }, el("span", null, "Price ", el("b", null, fmtPrice(q.price ?? ref))), el("span", null, "1h ", el("b", { class: tone(q.change1h) }, fmtPctValue(q.change1h))), el("span", null, "24h ", el("b", { class: tone(q.change24h) }, fmtPctValue(q.change24h))), el("span", null, "Cap ", el("b", null, fmtUsd(q.marketCap))), el("span", null, "Vol 24h ", el("b", null, fmtUsd(q.volume24h)))),
     el(
       "div",
@@ -1010,7 +1023,7 @@ async function loadVmc() {
     table(
       [
         { label: "CMC id", num: true, render: (r) => String(r.cmcId) },
-        { label: "Coin", render: (r) => coinCell({ symbol: r.symbol, name: r.name }) },
+        { label: "Coin", render: (r) => coinCell({ symbol: r.symbol, name: r.name, cmcId: r.cmcId }) },
         { label: "Observed", render: (r) => (r.observationTimeUtc ? `${fmtTime(r.observationTimeUtc)}${r.quoteAgeMinutes !== null ? ` (${r.quoteAgeMinutes} min old)` : ""}` : "—") },
         { label: "24h volume", num: true, render: (r) => fmtUsd(r.volume24hUsd === null ? null : Number(r.volume24hUsd)) },
         { label: "Market cap", num: true, render: (r) => fmtUsd(r.marketCapUsd === null ? null : Number(r.marketCapUsd)) },
@@ -1129,7 +1142,8 @@ function renderCoin(asset, snaps, feats) {
   const scr = asset.latestScreening;
   const sig = asset.latestSignal;
   const ident = (asset.identities || [])[0];
-  $("drawer-title").textContent = `${asset.symbol} · ${asset.name}`;
+  const cmcIdent = (asset.identities || []).find((i) => /^coinmarketcap/.test(i.providerId) && /^\d+$/.test(i.providerAssetId));
+  put($("drawer-title"), coinLogo(cmcIdent ? Number(cmcIdent.providerAssetId) : null, asset.symbol, 28), ` ${asset.symbol} · ${asset.name}`);
   put($("drawer-sub"), 
     el("span", null, `${CLASS_LABEL[asset.assetClass] || asset.assetClass}${asset.isBenchmark ? " · benchmark" : ""}`),
     latest && latest.sourceUrl && /^https:\/\//.test(latest.sourceUrl) ? el("span", null, " · ", el("a", { href: latest.sourceUrl, target: "_blank", rel: "noopener noreferrer" }, "Open on CoinMarketCap ↗")) : null,

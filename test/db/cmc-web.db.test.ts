@@ -137,11 +137,14 @@ describe("website source into PostgreSQL (synthetic transport)", () => {
     expect(response.readiness).toMatchObject({ state: "warming_up", requiredSnapshots: 3, observed: 3, outside: 1, warming: 2, eligible: 0 });
     const run = await prisma.pipelineRun.findUniqueOrThrow({ where: { id: result.runId! } });
     expect(run.metrics).toMatchObject({ observed: 3, outsideUniverse: 1, outsideReasons: { below_min_market_cap: 1 }, screened: 2 });
-    const screened = (await read.screening({ eligibleOnly: false, limit: 100 })).results as Array<{ asset: { symbol: string }; exclusionReasons: string[] }>;
+    const screened = (await read.screening({ eligibleOnly: false, limit: 100 })).results as Array<{ asset: { symbol: string; cmcId: number | null }; exclusionReasons: string[] }>;
     expect(screened.map((r) => r.asset.symbol).sort()).toEqual(["BTC", "ETH"]);
+    // Rows carry the CoinMarketCap id the dashboard uses to show each coin's logo.
+    expect(Object.fromEntries(screened.map((r) => [r.asset.symbol, r.asset.cmcId]))).toEqual({ BTC: 1, ETH: 1027 });
     expect(screened.every((r) => r.exclusionReasons.includes("warming_up") && r.exclusionReasons.includes("benchmark_reference"))).toBe(true);
-    const outside = (await read.market({ sort: "market_cap", dir: "desc", scope: "outside", limit: 10, offset: 0 })).coins as Array<{ asset: { symbol: string }; strategy: { inUniverse: boolean; reasons: string[] } }>;
+    const outside = (await read.market({ sort: "market_cap", dir: "desc", scope: "outside", limit: 10, offset: 0 })).coins as Array<{ asset: { symbol: string; cmcId: number | null }; strategy: { inUniverse: boolean; reasons: string[] } }>;
     expect(outside).toHaveLength(1);
+    expect(Number.isInteger(outside[0]!.asset.cmcId)).toBe(true);
     expect(outside[0]).toMatchObject({ asset: { symbol: "CMC20" }, strategy: { inUniverse: false, reasons: ["below_min_market_cap"] } });
   });
 
