@@ -1,4 +1,5 @@
-import { BadRequestException, Controller, Get, Inject, NotFoundException, Param, Query } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Get, Inject, NotFoundException, Param, Post, Query, Req } from "@nestjs/common";
+import type { Request } from "express";
 import { CronTime } from "cron";
 import { z } from "zod";
 import { AGENT_RUNNER, type AgentRunner } from "../agents/runner.js";
@@ -6,7 +7,10 @@ import { APP_CONFIG, type AppConfig } from "../config/config.js";
 import { FEATURES } from "../features/registry.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { ReadModelService } from "../read-model/read-model.service.js";
+import { LOOPBACK, assertTrustedWrite } from "./write-guard.js";
 import { ScreeningService } from "../screening/screening.service.js";
+import { TelegramAccessService, isChatId } from "../telegram/access.service.js";
+import { TelegramAdminService } from "../telegram/admin.service.js";
 
 function parse<T>(schema: z.ZodType<T>, v: unknown): T {
   const r = schema.safeParse(v);
@@ -24,7 +28,7 @@ function nextCronRun(expr: string): string | null {
   }
 }
 
-/** Read-only JSON API for the dashboard. The dashboard never talks to MCP. */
+/** JSON API for the dashboard (reads, plus Telegram access management). The dashboard never talks to MCP. */
 @Controller("api")
 export class DashboardController {
   constructor(
@@ -33,7 +37,69 @@ export class DashboardController {
     private readonly screening: ScreeningService,
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
     @Inject(AGENT_RUNNER) private readonly runner: AgentRunner,
+    private readonly access: TelegramAccessService,
+    private readonly admin: TelegramAdminService,
   ) {}
+
+  @Get("telegram/access")
+  async telegramAccess() {
+    const s = await this.access.list();
+    const rows = (o: Record<string, { label: string; at: string }>) => Object.entries(o).map(([chatId, e]) => ({ chatId, label: e.label, at: e.at })).sort((a, b) => b.at.localeCompare(a.at));
+    return {
+      owner: this.access.owner || null,
+      mode: this.cfg.TELEGRAM_MODE,
+      commandsEnabled: this.cfg.TELEGRAM_COMMANDS_ENABLED,
+      canManage: !!this.cfg.DASHBOARD_BASIC_AUTH || LOOPBACK.has(this.cfg.HOST),
+      missingCount: (await this.admin.missing(6)).length,
+      members: rows(s.approved),
+      pending: rows(s.pending),
+      denied: s.denied,
+    };
+  }
+
+  /** Reports a recipient did not receive (queued, retrying, given up, or never queued). */
+  @Get("telegram/missing")
+  async telegramMissing(@Query() q: unknown) {
+    const p = parse(z.object({ hours: z.coerce.number().int().min(1).max(48).optional() }), q);
+    const rows = await this.admin.missing(p.hours ?? 6);
+    return { hours: p.hours ?? 6, mode: this.cfg.TELEGRAM_MODE, recipients: await this.admin.recipients(), rows };
+  }
+
+  @Post("telegram/retry")
+  async telegramRetry(@Body() body: unknown, @Req() req: Request) {
+    assertTrustedWrite(req, this.cfg);
+    const b = parse(z.object({ runId: uuid.optional(), chatId: z.string().trim().max(64).optional() }), body ?? {});
+    await this.assertKnownChat(b.chatId);
+    return { ok: true, ...(await this.admin.retry({ runId: b.runId, chatId: b.chatId })) };
+  }
+
+  @Post("telegram/send")
+  async telegramSend(@Body() body: unknown, @Req() req: Request) {
+    assertTrustedWrite(req, this.cfg);
+    const b = parse(z.object({ runId: uuid.optional(), chatIds: z.array(z.string().trim().max(64)).max(50).optional() }), body ?? {});
+    for (const c of b.chatIds ?? []) await this.assertKnownChat(c);
+    return { ok: true, ...(await this.admin.sendReport({ runId: b.runId, chatIds: b.chatIds })) };
+  }
+
+  /** Only the owner or an approved member can be a delivery target. */
+  private async assertKnownChat(chatId: string | undefined) {
+    if (chatId === undefined) return;
+    if (!(await this.admin.recipients()).some((r) => r.chatId === chatId)) throw new BadRequestException("Unknown recipient: only the owner and approved members can receive reports.");
+  }
+
+  @Post("telegram/access/:action")
+  async telegramAccessChange(@Param("action") action: string, @Body() body: unknown, @Req() req: Request) {
+    assertTrustedWrite(req, this.cfg);
+    const act = parse(z.enum(["approve", "reject", "remove"]), action);
+    const { chatId } = parse(z.object({ chatId: z.string().trim().refine(isChatId, "chatId must be a numeric Telegram chat id") }), body);
+    if (chatId === this.access.owner) throw new BadRequestException("That is the owner.");
+    if (act === "approve") return { ok: true, ...(await this.admin.approve(chatId)) };
+    if (act === "reject") {
+      await this.admin.deny(chatId);
+      return { ok: true };
+    }
+    return { ok: true, removed: await this.admin.remove(chatId) };
+  }
 
   @Get("config")
   async config() {

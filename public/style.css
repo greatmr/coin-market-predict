@@ -266,3 +266,11 @@ pre.json { background: var(--surface-2); padding: 8px; border-radius: 8px; font-
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 .grid-2[data-gap="top"], .card[data-gap="top"] { margin-top: 16px; }
+
+.inline-form { display: flex; gap: 8px; flex-wrap: wrap; padding: 4px 0; }
+.inline-form input { flex: 1 1 240px; min-width: 0; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(0.92); }
+.btn.danger { color: var(--down); }
+.banner-note { padding: 8px 12px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); color: var(--ink-2); }

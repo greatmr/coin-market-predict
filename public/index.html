@@ -20,6 +20,7 @@
     <button role="tab" id="t-collection" data-tab="collection" aria-controls="tab-collection">Collection</button>
     <button role="tab" id="t-vmc" data-tab="vmc" aria-controls="tab-vmc">Volume / MCap</button>
     <button role="tab" id="t-paper" data-tab="paper" aria-controls="tab-paper">Paper trading</button>
+    <button role="tab" id="t-access" data-tab="access" aria-controls="tab-access">Telegram access <span class="count" id="count-access">0</span></button>
   </nav>
 
   <main>
@@ -137,6 +138,20 @@
       <div id="paper-tiles" class="tiles"></div>
       <div class="card"><div class="card-head"><h2>Paper positions</h2><span class="hint">no real orders are ever placed</span></div><div class="table-wrap" id="paper"></div></div>
       <div class="card"><div class="card-head"><h2>Walk-forward backtest</h2></div><div id="backtest"></div></div>
+    </section>
+
+    <!-- Telegram access -->
+    <section id="tab-access" class="tab" role="tabpanel" aria-labelledby="t-access" hidden>
+      <div id="access-note"></div>
+      <div class="card"><div class="card-head"><h2>Missed reports</h2><span class="hint" id="missed-hint">last 6 hours</span>
+        <span class="row-actions"><button type="button" class="btn" id="missed-retry-all">Retry all missed</button><button type="button" class="btn primary" id="send-latest-all">Send latest report to everyone</button></span></div>
+        <div class="table-wrap" id="access-missed"></div></div>
+      <div class="card"><div class="card-head"><h2>Waiting for approval</h2><span class="hint">people who messaged the bot</span></div><div class="table-wrap" id="access-pending"></div></div>
+      <div class="card"><div class="card-head"><h2>Members</h2><span class="hint">receive the hourly report and /report, /status, /vmc</span></div><div class="table-wrap" id="access-members"></div></div>
+      <div class="card"><div class="card-head"><h2>Add by chat id</h2><span class="hint">the person must also open the bot and press Start</span></div>
+        <form id="access-add" class="inline-form" autocomplete="off"><input id="access-add-id" inputmode="numeric" pattern="-?[0-9]{3,20}" placeholder="Telegram chat id, e.g. 186142556" aria-label="Telegram chat id" required><button type="submit" class="btn">Approve</button></form>
+      </div>
+      <div class="card"><div class="card-head"><h2>Rejected</h2><span class="hint">ignored by the bot until allowed again</span></div><div class="table-wrap" id="access-denied"></div></div>
     </section>
   </main>
 

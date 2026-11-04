@@ -63,6 +63,14 @@ agent review).
 (every coin), and detail cards only for BUY or HIGH-pump coins (max 3). Everything else is on the
 dashboard.
 
+**Telegram access.** The owner is `TELEGRAM_CHAT_ID`. Anyone else who messages the bot is held as
+*pending* and the owner is notified with `/approve <id>`, `/deny <id>`. Approved members receive
+the hourly report (one `TelegramDelivery` row per chat; a failing recipient never blocks the
+others) and can use `/report`, `/status`, `/vmc`, `/help`. Only the owner can `/run`, `/users`,
+`/approve`, `/deny`, `/remove`. Denied chats are ignored; groups cannot request access. State lives
+in `AppState` key `telegram.access` (`src/telegram/access.service.ts`). Sharing reports with other
+people is the "redistribution" decision in `intend.md` (#3): confirm the data provider's terms.
+
 ## Storage and retention
 Snapshot rows cost ~870 bytes (with indexes); the full website listing is ~8k coins, about
 7 MB per hour. Rules (`src/pipeline/retention.service.ts`):

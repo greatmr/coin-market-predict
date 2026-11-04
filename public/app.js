@@ -37,6 +37,18 @@ function put(node, ...children) {
   node.replaceChildren(...children.flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false));
 }
 
+async function apiPost(path, body) {
+  const r = await fetch(`/api/${path}`, { method: "POST", headers: { accept: "application/json", "content-type": "application/json" }, body: JSON.stringify(body) });
+  const text = await r.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { /* not JSON */ }
+  if (!r.ok) {
+    const m = data && data.message;
+    throw new Error(Array.isArray(m) ? m.join(", ") : m || `HTTP ${r.status}`);
+  }
+  return data;
+}
+
 async function api(path) {
   const r = await fetch(`/api/${path}`, { headers: { accept: "application/json" } });
   if (!r.ok) {
@@ -1276,7 +1288,7 @@ function closeDrawer() {
 
 /* ============================== Router & refresh ============================== */
 
-const TABS = ["overview", "signals", "screen", "market", "collection", "vmc", "paper"];
+const TABS = ["overview", "signals", "screen", "market", "collection", "vmc", "paper", "access"];
 const showError = (id) => (e) => {
   console.error(e);
   const box = $(id);
@@ -1290,7 +1302,91 @@ async function loadTab(tab) {
   else if (tab === "collection") await loadCollection().catch(showError("runs"));
   else if (tab === "vmc") await loadVmc().catch(showError("vmc"));
   else if (tab === "paper") await loadPaper().catch(showError("paper"));
+  else if (tab === "access") await loadAccess().catch(showError("access-pending"));
   else if (tab === "overview" && S.overview && S.overview.funnel) await Promise.all([loadRecs().catch(showError("recs")), loadTopSignals().catch(showError("top-signals"))]);
+}
+
+/* ============================== Telegram access ============================== */
+
+let accessBusy = false;
+
+async function changeAccess(action, chatId, doneMsg) {
+  if (accessBusy) return;
+  accessBusy = true;
+  try {
+    const r = await apiPost(`telegram/access/${action}`, { chatId });
+    await loadAccess();
+    if (action === "approve" && r && r.notified === false) showAccessNote("warning", `${doneMsg} — but Telegram would not deliver the welcome message. They must open the bot and press Start to receive reports.`);
+    else showAccessNote("ok", doneMsg);
+  } catch (e) {
+    showAccessNote("error", `Could not change access: ${e.message}`);
+  } finally {
+    accessBusy = false;
+  }
+}
+
+function showAccessNote(kind, text) {
+  put($("access-note"), el("div", { class: kind === "error" ? "error" : "banner-note" }, text));
+}
+
+const MISSED_STATE = {
+  pending: { label: "Queued", dot: "accent" },
+  retrying: { label: "Retrying", dot: "warning" },
+  gave_up: { label: "Gave up", dot: "critical" },
+  not_queued: { label: "Not sent", dot: "" },
+};
+
+/** Send / retry, then show the outcome and refresh; delivery may still be finishing, so refresh again shortly. */
+async function deliveryAction(path, body, okMsg) {
+  if (accessBusy) return;
+  accessBusy = true;
+  try {
+    const r = await apiPost(path, body);
+    const d = r.delivery;
+    const outcome = d ? `${d.sent} sent${d.failed ? `, ${d.failed} failed` : ""}${d.deferred ? `, ${d.deferred} will retry` : ""}` : r.reason || ((r.queued ?? r.requeued) ? "sending in the background" : "nothing to send");
+    showAccessNote(d && d.failed ? "warning" : "ok", `${okMsg}: ${outcome}.`);
+  } catch (e) {
+    showAccessNote("error", `Could not send: ${e.message}`);
+  } finally {
+    accessBusy = false;
+  }
+  await loadAccess().catch(() => undefined);
+  setTimeout(() => void loadAccess().catch(() => undefined), 6000);
+}
+
+async function loadAccess() {
+  const [a, missed] = await Promise.all([api("telegram/access"), api("telegram/missing")]);
+  $("count-access").textContent = fmtInt(a.pending.length + missed.rows.length);
+  const label = (r) => `${r.label}`;
+  put($("access-missed"), table([
+    { label: "Report hour", render: (r) => fmtTime(r.slotTime) },
+    { label: "Person", render: (r) => el("span", null, el("strong", null, label(r)), " ", el("span", { class: "hint" }, `id ${r.chatId}`)) },
+    { label: "State", render: (r) => statusLabel((MISSED_STATE[r.state] || {}).dot || "", (MISSED_STATE[r.state] || {}).label || r.state) },
+    { label: "Parts", render: (r) => (r.partCount ? `${r.partsSent}/${r.partCount}` : "—") },
+    { label: "Why", render: (r) => (r.state === "not_queued" ? "no copy was queued for this person (e.g. approved later)" : r.lastError || (r.state === "pending" ? "waiting to be sent" : "")) },
+    { label: "Next try", render: (r) => (r.nextAttemptAt ? fmtTime(r.nextAttemptAt) : r.state === "gave_up" ? "manual" : "") },
+    { label: "", render: (r) => el("button", { type: "button", class: "btn", disabled: !a.canManage, onclick: () => void (r.state === "not_queued" ? deliveryAction("telegram/send", { runId: r.runId, chatIds: [r.chatId] }, `Sent ${fmtTime(r.slotTime)} report to ${r.label}`) : deliveryAction("telegram/retry", { runId: r.runId, chatId: r.chatId }, `Retried ${r.label}`)) }, r.state === "not_queued" ? "Send" : "Retry") },
+  ], missed.rows, { empty: missed.mode === "live" ? "No missed reports in the last 6 hours." : `Telegram is ${missed.mode}: nothing is sent.` }));
+  $("missed-retry-all").disabled = !a.canManage || !missed.rows.some((r) => r.state !== "not_queued");
+  $("send-latest-all").disabled = !a.canManage || missed.mode !== "live";
+  const act = (label, cls, fn) => el("button", { type: "button", class: `btn${cls ? ` ${cls}` : ""}`, disabled: !a.canManage, onclick: fn }, label);
+  const who = (r) => el("span", null, el("strong", null, r.label), " ", el("span", { class: "hint" }, `id ${r.chatId}`));
+  const when = { label: "Since", render: (r) => (r.at ? fmtTime(r.at) : "") };
+  if (!a.canManage) put($("access-note"), el("div", { class: "error" }, "Read-only: set DASHBOARD_BASIC_AUTH (or keep HOST on 127.0.0.1) to approve or reject from the dashboard."));
+  else if (a.mode !== "live" || !a.commandsEnabled) put($("access-note"), el("div", { class: "banner-note" }, `Telegram is ${a.mode === "live" ? "live" : a.mode}${a.commandsEnabled ? "" : " and bot commands are off"}: new people can only ask for access when the app runs with TELEGRAM_MODE=live and TELEGRAM_COMMANDS_ENABLED=true.`));
+  else put($("access-note"));
+  put($("access-pending"), table([
+    { label: "Person", render: who }, when,
+    { label: "", render: (r) => el("div", { class: "row-actions" }, act("Approve", "primary", () => changeAccess("approve", r.chatId, `Approved ${r.label}.`)), act("Reject", "danger", () => changeAccess("reject", r.chatId, `Rejected ${r.label}.`))) },
+  ], a.pending, { empty: "No pending requests. Ask the person to open your bot and send /start." }));
+  put($("access-members"), table([
+    { label: "Person", render: who }, when,
+    { label: "", render: (r) => el("div", { class: "row-actions" }, r.chatId && r.chatId !== "—" ? el("button", { type: "button", class: "btn", disabled: !a.canManage || missed.mode !== "live", onclick: () => void deliveryAction("telegram/send", { chatIds: [r.chatId] }, `Sent latest report to ${r.label}`) }, "Send latest report") : null, r.owner ? el("span", { class: "hint" }, "always allowed") : act("Remove", "danger", () => changeAccess("remove", r.chatId, `Removed ${r.label}.`))) },
+  ], [{ chatId: a.owner || "—", label: "Owner", at: null, owner: true }, ...a.members].map((r) => r), { empty: "No members." }));
+  put($("access-denied"), table([
+    { label: "Chat id", render: (r) => r.chatId },
+    { label: "", render: (r) => act("Allow again", "", () => changeAccess("approve", r.chatId, `Approved ${r.chatId}.`)) },
+  ], a.denied.map((chatId) => ({ chatId })), { empty: "Nobody rejected." }));
 }
 
 async function loadTopSignals() {
@@ -1347,6 +1443,7 @@ async function tick() {
     const changed = await refreshOverview();
     if (changed || ["overview", "collection"].includes(S.tab)) await loadTab(S.tab);
     else if (S.tab === "signals") await loadSignals().catch(() => undefined);
+    if (S.tab !== "access") void api("telegram/access").then((a) => { $("count-access").textContent = fmtInt(a.pending.length + (a.missingCount || 0)); }).catch(() => undefined);
   } catch (e) {
     console.error(e);
     put($("run-strip"), el("div", { class: "error" }, `Could not reach the API: ${e.message}`));
@@ -1391,6 +1488,13 @@ function wire() {
   let marketTimer = null;
   $("market-search").addEventListener("input", () => { clearTimeout(marketTimer); marketTimer = setTimeout(() => { S.market.page = 0; void loadMarket().catch(showError("market-table")); }, 250); });
   for (const id of ["market-scope", "market-rows"]) $(id).addEventListener("change", () => { S.market.page = 0; void loadMarket().catch(showError("market-table")); });
+  $("missed-retry-all").addEventListener("click", () => void deliveryAction("telegram/retry", {}, "Retried all missed"));
+  $("send-latest-all").addEventListener("click", () => void deliveryAction("telegram/send", {}, "Sent latest report to everyone"));
+  $("access-add").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const id = $("access-add-id").value.trim();
+    if (id) void changeAccess("approve", id, `Approved ${id}.`).then(() => { $("access-add-id").value = ""; });
+  });
   $("drawer-close").addEventListener("click", closeDrawer);
   $("drawer-backdrop").addEventListener("click", closeDrawer);
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("drawer").hidden) closeDrawer(); });
@@ -1408,6 +1512,7 @@ async function start() {
     S.cfg = await api("config");
     renderHeader();
     await refreshOverview();
+    void api("telegram/access").then((a) => { $("count-access").textContent = fmtInt(a.pending.length + (a.missingCount || 0)); }).catch(() => undefined);
   } catch (e) {
     $("banner").hidden = false;
     $("banner").textContent = `Failed to load the dashboard: ${e.message}`;
