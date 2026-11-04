@@ -54,6 +54,15 @@ provider/asset/slot/quote), `PipelineRun` (unique per kind/slot/provider) + `Pip
 | `publish` | Signals, paper positions, outcomes |
 | `notify` | Telegram report (dry run by default); retention runs afterwards |
 
+**Progress.** Each stage logs `[███░░░░░░] n/9 stage · done in Xs`, and `PipelineRun.currentStage`
+plus `PipelineStage` rows drive the dashboard's step bar (polled every 5 s while a run is active).
+Results and the Telegram report appear only when the run finishes (typically 4–5 min, mostly the
+agent review).
+
+**Telegram report.** One compact message: header, one-sentence agent summary, the watchlist table
+(every coin), and detail cards only for BUY or HIGH-pump coins (max 3). Everything else is on the
+dashboard.
+
 ## Storage and retention
 Snapshot rows cost ~870 bytes (with indexes); the full website listing is ~8k coins, about
 7 MB per hour. Rules (`src/pipeline/retention.service.ts`):

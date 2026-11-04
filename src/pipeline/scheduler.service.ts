@@ -37,7 +37,10 @@ export class SchedulerService implements OnApplicationBootstrap, OnApplicationSh
     const delivery = CronJob.from({
       cronTime: "*/5 * * * *",
       timeZone: "UTC",
-      onTick: () => void this.telegram.deliverPending().catch((e) => this.log.warn(`telegram retry failed: ${redact(e)}`)),
+      onTick: () => {
+        void this.telegram.deliverPending().catch((e) => this.log.warn(`telegram retry failed: ${redact(e)}`));
+        void this.pipeline.resumeIfInterrupted().then((r) => r && r.status !== "skipped" && this.log.log(`resumed interrupted run ${r.slot}: ${r.status}`)).catch((e) => this.log.warn(`resume failed: ${redact(e)}`));
+      },
       start: true,
     });
     this.registry.addCronJob("telegram-delivery", delivery);

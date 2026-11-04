@@ -140,7 +140,15 @@ function hhmm(iso: string, tz: string): string {
   return formatInZone(new Date(iso), tz).slice(11, 16);
 }
 
-export const RESEARCH_NOTE = "Research only, not financial advice.\nNo orders placed · prices checked hourly.";
+export const RESEARCH_NOTE = "Research only, not financial advice · no orders placed";
+
+const MAX_DETAIL_CARDS = 3;
+
+/** First sentence of the agents' summary, capped: the full text lives on the dashboard. */
+function shortSummary(text: string, max = 160): string {
+  const first = text.split(/(?<=[.!?])\s/)[0] ?? text;
+  return first.length <= max ? first : `${first.slice(0, max - 1).trimEnd()}…`;
+}
 
 function card(r: ReportRow, i: number, tz: string): string {
   const s = r.scenario;
@@ -181,12 +189,16 @@ export function formatReport(r: ReportInput): string[] {
   header.push(
     `📦 ${cov.collected}${cov.universeSize ? `/${cov.universeSize}` : ""} coins checked (${escapeHtml(cov.label)}${cov.stale ? `, ${cov.stale} stale` : ""}) · ${r.eligible} eligible`,
   );
-  if (r.summary) header.push(`💬 ${escapeHtml(r.summary)}`);
+  if (r.summary) header.push(`💬 ${escapeHtml(shortSummary(r.summary))}`);
 
   const blocks: string[] = [header.join("\n")];
   if (r.recommendations?.length) {
     blocks.push(recTable(r.recommendations));
-    r.recommendations.forEach((row, i) => blocks.push(recCard(row, i, r.timezone)));
+    // The table already lists every coin; full detail only for the few worth acting on or watching closely.
+    const focus = r.recommendations.filter((x) => x.recommendation === "buy" || x.pumpChance === "high").slice(0, MAX_DETAIL_CARDS);
+    focus.forEach((row) => blocks.push(recCard(row, r.recommendations!.indexOf(row), r.timezone)));
+    const rest = r.recommendations.length - focus.length;
+    if (rest > 0) blocks.push(`<i>+${rest} more in the table above · full detail on the dashboard</i>`);
   } else if (r.rows.length === 0) {
     blocks.push("✅ <b>No qualifying signals this hour.</b>\nNothing passed screening and review — that is normal.");
   } else {
@@ -239,28 +251,26 @@ export function recTable(rows: RecommendationRow[]): string {
   return [
     `<b>🔥 Pump watchlist</b> · strategy + agents`,
     `<pre>${escapeHtml(lines.join("\n"))}</pre>`,
-    `<i>3d = price change over the last 72h · VMC = 24h volume/market cap vs its 6-month average · Pump = strategy chance (heuristic, not a probability) · Agent = agents' own view · Rec = combined</i>`,
+    `<i>3d = 72h change · VMC = volume/mcap vs 6-mo avg · Pump = heuristic, not a probability</i>`,
   ].join("\n");
 }
 
 function recCard(r: RecommendationRow, i: number, tz: string): string {
   const span = r.threeDaySpanHours >= 70 || r.threeDayChange === null ? "3d" : `${r.threeDaySpanHours}h`;
+  const agents = r.agentRecommendation ? AGENT_SHORT[r.agentRecommendation] : "not reviewed";
   const lines = [
     `<b>${i + 1}. ${escapeHtml(r.symbol)}</b> · ${escapeHtml(r.name)}`,
-    `${REC_LABEL[r.recommendation]} · ${PUMP_LABEL[r.pumpChance]} pump chance`,
-    `🤖 Agents: ${r.agentRecommendation ? `<b>${AGENT_SHORT[r.agentRecommendation]}</b>${r.agentOrigin === "fixture_agent" ? " (offline stand-in)" : ""}` : "not reviewed"}`,
-    `💵 ${usdPrice(r.price)} · ${span} ${escapeHtml(tablePct(r.threeDayChange))} · Cap ${compactUsd(r.marketCap)}`,
-    `📊 VMC ${r.vmcCurrent === null ? "n/a" : r.vmcCurrent.toFixed(3)}${r.vmcBaseline !== null ? ` vs ${r.vmcBaseline.toFixed(3)} 6-mo avg (${escapeHtml(tableMultiple(r.vmcMultiple))})` : " · no 6-mo baseline yet"}`,
+    `${REC_LABEL[r.recommendation]} · ${PUMP_LABEL[r.pumpChance]} · agents ${agents}${r.agentOrigin === "fixture_agent" ? " (offline stand-in)" : ""}`,
+    `💵 ${usdPrice(r.price)} · ${span} ${escapeHtml(tablePct(r.threeDayChange))} · Cap ${compactUsd(r.marketCap)} · VMC ${escapeHtml(tableMultiple(r.vmcMultiple))}`,
   ];
-  for (const reason of r.pumpReasons.slice(0, 3)) lines.push(`• ${escapeHtml(reason)}`);
-  if (r.agentReason) lines.push(`🤖 ${escapeHtml(r.agentReason.slice(0, 220))}`);
   if (r.scenario) {
     const exp = r.scenario.expiresAt ? ` by ${hhmm(r.scenario.expiresAt, tz)}` : "";
-    lines.push(`▶️ Enter ≥ ${usdPrice(r.scenario.entryPrice)}${exp}`);
-    lines.push(`⛔ Stop ≤ ${usdPrice(r.scenario.stopPrice)} · 🎯 ${usdPrice(r.scenario.targetPrice)}`);
+    lines.push(`▶️ ≥ ${usdPrice(r.scenario.entryPrice)}${exp} · ⛔ ${usdPrice(r.scenario.stopPrice)} · 🎯 ${usdPrice(r.scenario.targetPrice)}`);
   }
-  lines.push(`⚖️ ${escapeHtml(r.recommendationReason.slice(0, 200))}`);
-  if (r.risk.length) lines.push(`⚠️ ${escapeHtml(riskText(r.risk))}`);
+  lines.push(`💡 ${escapeHtml((r.agentReason ?? r.recommendationReason).slice(0, 140))}`);
+  // "no liquidity data" is true of every hourly-only row, so it is noise here.
+  const risks = r.risk.filter((f) => f !== "no_liquidity_data");
+  if (risks.length) lines.push(`⚠️ ${escapeHtml(riskText(risks))}`);
   return lines.join("\n");
 }
 

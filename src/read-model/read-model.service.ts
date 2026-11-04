@@ -222,6 +222,9 @@ export class ReadModelService {
       this.prisma.pipelineRun.findFirst({ where: { providerId }, orderBy: [{ slotTime: "desc" }, { startedAt: "desc" }], include: { stages: { orderBy: { startedAt: "asc" } } } }),
       this.latestRunId(),
     ]);
+    // A "running" run with no live lease holder was orphaned by a stopped process.
+    const lease = latest?.status === "running" ? await this.prisma.jobLease.findUnique({ where: { name: "hourly-pipeline" } }) : null;
+    const interrupted = latest?.status === "running" && (!lease || lease.expiresAt < new Date());
     const published = publishedId ? await this.prisma.pipelineRun.findUnique({ where: { id: publishedId }, include: { stages: { orderBy: { startedAt: "asc" } } } }) : null;
     let funnel: Record<string, unknown> | null = null;
     if (published) {
@@ -266,7 +269,7 @@ export class ReadModelService {
     }
     return plain<Record<string, unknown>>({
       readiness: await this.predictionStatus(),
-      latestRun: latest ? { id: latest.id, slotTime: latest.slotTime, status: latest.status, currentStage: latest.currentStage, startedAt: latest.startedAt, finishedAt: latest.finishedAt, stages: latest.stages, metrics: latest.metrics, coverage: latest.coverage, error: latest.error } : null,
+      latestRun: latest ? { id: latest.id, slotTime: latest.slotTime, status: interrupted ? "interrupted" : latest.status, currentStage: latest.currentStage, startedAt: latest.startedAt, finishedAt: latest.finishedAt, stages: latest.stages, metrics: latest.metrics, coverage: latest.coverage, error: latest.error } : null,
       funnel,
     });
   }
@@ -490,9 +493,13 @@ export class ReadModelService {
     return plain<Record<string, unknown>[]>(rows);
   }
 
+  /**
+   * Newest run whose deterministic strategy results exist (screen succeeded). Agents, VMC and
+   * publish may still be running or skipped: the panel shows strategy results as soon as they exist.
+   */
   async latestRunId(): Promise<string | null> {
     const r = await this.prisma.pipelineRun.findFirst({
-      where: { providerId: this.providerId, stages: { some: { stage: "publish", status: "succeeded" } } },
+      where: { providerId: this.providerId, stages: { some: { stage: "screen", status: "succeeded" } } },
       orderBy: [{ slotTime: "desc" }, { startedAt: "desc" }],
       select: { id: true },
     });

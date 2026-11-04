@@ -170,12 +170,18 @@ describe("Telegram pump watchlist table", () => {
     expect(t).toMatch(/not a probability/);
   });
 
-  it("follows the table with a card per coin and keeps messages within Telegram limits", () => {
-    const parts = formatReport(input(Array.from({ length: 10 }, (_, i) => row(i))));
+  it("follows the table with cards only for buy/high-pump coins, in one short message", () => {
+    const rows = Array.from({ length: 10 }, (_, i) => row(i, i < 5 ? {} : { pumpChance: "medium", recommendation: "watch", agentRecommendation: null }));
+    const parts = formatReport({ ...input(rows), summary: "First sentence here. A second very long sentence that should be dropped." });
+    const text = parts.join("\n");
+    expect(parts).toHaveLength(1);
     expect(parts[0]).toContain("<pre>");
-    expect(parts.join("\n")).toMatch(/✅ BUY \(paper, on entry trigger\) · 🔥 HIGH pump chance/);
-    expect(parts.join("\n")).toMatch(/📊 VMC 0\.157 vs 0\.023 6-mo avg \(6\.8x\)/);
-    expect(parts.join("\n")).toMatch(/Coin &lt;1&gt;/);
-    for (const m of parts) expect(m.length).toBeLessThanOrEqual(4096);
+    expect(text.match(/<b>\d+\. /g)).toHaveLength(3);
+    expect(text).toMatch(/✅ BUY \(paper, on entry trigger\) · 🔥 HIGH · agents BUY/);
+    expect(text).toMatch(/VMC 6\.8x/);
+    expect(text).toMatch(/\+7 more in the table above/);
+    expect(text).toContain("First sentence here.");
+    expect(text).not.toContain("second very long");
+    for (const m of parts) expect(m.length).toBeLessThanOrEqual(2500);
   });
 });

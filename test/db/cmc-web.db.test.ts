@@ -145,13 +145,17 @@ describe("website source into PostgreSQL (synthetic transport)", () => {
     expect(outside[0]).toMatchObject({ asset: { symbol: "CMC20" }, strategy: { inUniverse: false, reasons: ["below_min_market_cap"] } });
   });
 
-  it("does not select a half-finished screen as the latest published prediction run", async () => {
+  it("selects a run for the panel once its strategy screen succeeded, while agents are still running", async () => {
     const { prisma } = await setup();
     await prisma.provider.create({ data: { id: "coinmarketcap_web", name: "web", accessMethod: "website", isLive: true } });
     const run = await prisma.pipelineRun.create({ data: { kind: "hourly", providerId: "coinmarketcap_web", slotTime: NOW, startedAt: NOW, status: "running", currentStage: "analyze", isLiveData: true, stages: { create: { stage: "screen", status: "succeeded", startedAt: NOW } } } });
     const read = app!.get(ReadModelService);
-    expect(await read.latestRunId()).toBeNull();
+    expect(await read.latestRunId()).toBe(run.id);
     expect((await read.signals({ limit: 50 })).readiness).toMatchObject({ state: "running", stage: "analyze", runId: run.id });
+    // Before the screen succeeds nothing is selected, and a run with no live lease shows as interrupted.
+    await prisma.pipelineStage.updateMany({ where: { runId: run.id }, data: { status: "running" } });
+    expect(await read.latestRunId()).toBeNull();
+    expect((await read.overview()).latestRun).toMatchObject({ status: "interrupted" });
     await prisma.provider.create({ data: { id: "fixture", name: "fixture", accessMethod: "fixture", isLive: false } });
     await prisma.pipelineRun.create({ data: { kind: "hourly", providerId: "fixture", slotTime: NOW, startedAt: NOW, status: "succeeded", isLiveData: false } });
     expect(await read.runs(10)).toHaveLength(1);

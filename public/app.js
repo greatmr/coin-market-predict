@@ -178,6 +178,7 @@ const RUN_STATUS = {
   partial: { label: "Partial", dot: "warning" },
   failed: { label: "Failed", dot: "critical" },
   running: { label: "Running", dot: "accent" },
+  interrupted: { label: "Interrupted", dot: "warning" },
   missed: { label: "Missed", dot: "" },
   skipped: { label: "Skipped", dot: "" },
 };
@@ -542,11 +543,20 @@ function renderRunStrip(ov) {
   const parts = [];
   if (run.status === "running") {
     parts.push(el("div", { class: "state" }, runStatus("running", true), el("span", null, `${STAGE[run.currentStage] || "Starting"} stage`)));
+    const order = Object.keys(STAGE);
+    const doneStages = (run.stages || []).filter((st) => st.status === "succeeded").length;
+    const step = Math.max(order.indexOf(run.currentStage) + 1, doneStages, 1);
+    parts.push(el("div", { class: "progress" }, el("div", { class: "label" }, `Step ${step} of ${order.length} · ${STAGE[run.currentStage] || "Starting"} · ${fmtDuration(Date.now() - new Date(run.startedAt))} elapsed — results and the Telegram report appear when the run finishes`), meter((doneStages / order.length) * 100, { wide: true, suffix: "%", title: "Pipeline progress (completed stages)" })));
     const h = run.metrics && run.metrics.history;
     if (run.currentStage === "history" && h && h.needed) {
       parts.push(el("div", { class: "progress" }, el("div", { class: "label" }, `Fetching genuine hourly history: ${fmtInt(h.attempted)} of ${fmtInt(h.needed)} coins`), meter((h.attempted / h.needed) * 100, { wide: true, suffix: "%", title: "History backfill progress" })));
     }
+    const screenDone = (run.stages || []).some((st) => st.stage === "screen" && st.status === "succeeded");
+    if (screenDone) parts.push(el("div", { class: "meta" }, "Strategy results are already live below; VMC baselines and agent review are still filling in (they can be skipped)."));
     parts.push(el("div", { class: "meta" }, `Slot ${fmtTime(run.slotTime)} · started ${fmtAgo(run.startedAt)}`));
+  } else if (run.status === "interrupted") {
+    parts.push(el("div", { class: "state" }, runStatus("interrupted"), el("span", null, `${STAGE[run.currentStage] || "Run"} stage stopped — the app was restarted mid-run`)));
+    parts.push(el("div", { class: "meta" }, "It resumes automatically within 5 minutes while the app is running. Strategy results from completed stages stay available."));
   } else {
     parts.push(el("div", { class: "state" }, runStatus(run.status), el("span", null, `Last run · slot ${fmtTime(run.slotTime)}`)));
     parts.push(el("div", { class: "meta" }, `Finished ${fmtAgo(run.finishedAt)}${run.startedAt && run.finishedAt ? ` · took ${fmtDuration(new Date(run.finishedAt) - new Date(run.startedAt))}` : ""}`));
@@ -1316,6 +1326,22 @@ async function refreshOverview() {
   return changed;
 }
 
+/** While a run is active, poll the cheap overview every 5s so the progress bar moves. */
+let fastTimer = null;
+function watchRun() {
+  const running = S.overview && S.overview.latestRun && S.overview.latestRun.status === "running";
+  if (running && !fastTimer) {
+    fastTimer = setInterval(async () => {
+      try {
+        const was = S.publishedRunId;
+        await refreshOverview();
+        const still = S.overview.latestRun && S.overview.latestRun.status === "running";
+        if (!still || S.publishedRunId !== was) { clearInterval(fastTimer); fastTimer = null; await loadTab(S.tab); }
+      } catch { /* the 30s tick reports API errors */ }
+    }, 5_000);
+  }
+}
+
 async function tick() {
   try {
     const changed = await refreshOverview();
@@ -1387,7 +1413,8 @@ async function start() {
     $("banner").textContent = `Failed to load the dashboard: ${e.message}`;
   }
   selectTab(location.hash.slice(1) || "overview", false);
-  setInterval(() => void tick(), 30_000);
+  setInterval(() => { void tick().then(watchRun); }, 30_000);
+  watchRun();
 }
 
 void start();

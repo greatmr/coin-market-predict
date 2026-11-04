@@ -20,6 +20,21 @@ import { RetentionService } from "./retention.service.js";
 
 export const PIPELINE_LEASE = "hourly-pipeline";
 const LEASE_TTL_MS = 10 * 60_000;
+/** Text progress bar for the run log: `[████░░░░░] 4/9`. */
+export function progressBar(done: number, total: number, width = 9): string {
+  const filled = Math.round((Math.min(done, total) / total) * width);
+  return `[${"█".repeat(filled)}${"░".repeat(width - filled)}] ${done}/${total}`;
+}
+
+/** Upper bound for the non-essential VMC baseline stage: a slow provider must not hold the run. */
+const VMC_STAGE_TIMEOUT_MS = 3 * 60_000;
+
+function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const limit = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} timed out after ${Math.round(ms / 1000)}s`)), ms); });
+  return Promise.race([work, limit]).finally(() => clearTimeout(timer));
+}
+
 export const STAGES = ["discover", "collect", "history", "features", "screen", "vmc", "analyze", "publish", "notify"] as const;
 type Stage = (typeof STAGES)[number];
 
@@ -96,15 +111,23 @@ export class PipelineService {
           data: { kind, slotTime: slot, providerId, status: "running", startedAt: now, isLiveData: this.ingestion.source.info.isLive },
         });
     const runId = run.id;
+    // We hold the pipeline lease, so any other run still marked "running" belongs to a process that died.
+    await this.prisma.pipelineRun.updateMany({
+      where: { providerId, status: "running", id: { not: runId } },
+      data: { status: "failed", finishedAt: now, error: "interrupted: the process stopped before this run finished" },
+    });
     const done = new Set((await this.prisma.pipelineStage.findMany({ where: { runId, status: "succeeded" } })).map((s) => s.stage));
     const stages: RunOutcome["stages"] = {};
     const metrics: Record<string, unknown> = { ...((run.metrics as Record<string, unknown>) ?? {}) };
 
     const stage = async <T>(name: Stage, fn: () => Promise<T>, o: { retries?: number; skipIfDone?: boolean } = {}): Promise<T | undefined> => {
+      const step = STAGES.indexOf(name) + 1;
       if ((o.skipIfDone ?? true) && done.has(name)) {
         stages[name] = "skipped (already done)";
+        this.log.log(`${progressBar(step, STAGES.length)} ${name} · already done`);
         return undefined;
       }
+      this.log.log(`${progressBar(step - 1, STAGES.length)} ${name} · started`);
       await this.prisma.pipelineRun.update({ where: { id: runId }, data: { currentStage: name } });
       const started = Date.now();
       await this.prisma.pipelineStage.upsert({
@@ -122,6 +145,7 @@ export class PipelineService {
           });
           metrics[`${name}Ms`] = Date.now() - started;
           stages[name] = "succeeded";
+          this.log.log(`${progressBar(step, STAGES.length)} ${name} · done in ${((Date.now() - started) / 1000).toFixed(1)}s`);
           return result;
         } catch (err) {
           lastErr = err;
@@ -185,7 +209,7 @@ export class PipelineService {
         const ids = [...new Set([...ranked.filter((r) => r.shortlisted).map((r) => r.assetId), ...recommended.map((r) => r.assetId)])];
         const cmc = await this.screening.cmcIds(providerId, ids);
         if (!cmc.size) return { skipped: "source asset ids are not CoinMarketCap ids" };
-        return this.vmc.ensureBaselines([...cmc.values()]);
+        return withTimeout(this.vmc.ensureBaselines([...cmc.values()]), VMC_STAGE_TIMEOUT_MS, "VMC baselines");
       }).catch((err) => this.log.warn(`VMC baselines unavailable this run: ${redact(err)}`));
 
       const analysis = await stage("analyze", async () => {
@@ -274,6 +298,18 @@ export class PipelineService {
       await this.prisma.pipelineRun.update({ where: { id: runId }, data: { status: "failed", finishedAt: new Date(), error: redact(err).slice(0, 2000), metrics: metrics as never } });
       return { runId, slot: slot.toISOString(), status: "failed", reason: redact(err).slice(0, 300), stages };
     }
+  }
+
+  /**
+   * Resume the current slot's run if its process died (status still "running" but no live lease
+   * holder). runSlot returns "skipped" while another instance really holds the lease.
+   */
+  async resumeIfInterrupted(): Promise<RunOutcome | null> {
+    if (this.inProcess) return null;
+    const slot = slotOf(this.clock.now());
+    const cur = await this.prisma.pipelineRun.findUnique({ where: { kind_slotTime_providerId: { kind: "hourly", slotTime: slot, providerId: this.providerId } } });
+    if (cur?.status !== "running") return null;
+    return this.runSlot(slot);
   }
 
   /**
