@@ -27,9 +27,9 @@ export function testConfig(overrides: Record<string, string> = {}): AppConfig {
   return loadConfig({
     DATABASE_URL: testDbUrl(),
     SCHEDULER_ENABLED: "false",
-    AGENT_PROVIDER: "fixture",
     TELEGRAM_MODE: "dry_run",
     DATA_SOURCE: "fixture",
+    TIER1_EXPORT_DIR: "var/test-exports",
     ...overrides,
   } as NodeJS.ProcessEnv);
 }

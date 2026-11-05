@@ -1,49 +1,48 @@
+import { existsSync, statSync } from "node:fs";
 import { NestFactory } from "@nestjs/core";
-import { AGENT_RUNNER, type AgentRunner } from "./agents/runner.js";
 import { AppModule } from "./app.module.js";
 import { loadConfigOrExit, RedactingLogger } from "./bootstrap.js";
-import { addHours, slotOf } from "./common/time.js";
+import { slotOf } from "./common/time.js";
 import { describeConfig } from "./config/config.js";
 import { redact } from "./config/redact.js";
-import { BacktestService } from "./evaluation/backtest.service.js";
 import { IngestionService } from "./ingestion/ingestion.service.js";
 import { PipelineService } from "./pipeline/pipeline.service.js";
 import { PrismaService } from "./prisma/prisma.service.js";
 import { ReadModelService } from "./read-model/read-model.service.js";
-import { formatReport } from "./telegram/format.js";
+import { parseDocumentPart } from "./telegram/attachment.js";
+import { formatTier1Report } from "./telegram/format.js";
 import { ReportService } from "./telegram/report.service.js";
 import { TelegramService } from "./telegram/telegram.service.js";
-import { VmcService } from "./vmc/vmc.service.js";
+import { parseCmcHistoryCsv } from "./tier1/csv-import.js";
+import { DailyService } from "./tier1/daily.service.js";
+import { isCmcIdProvider } from "./tier1/providers.js";
+import { VenuesService } from "./tier1/venues.service.js";
 
-const HELP = `Coins Predicts CLI
+const HELP = `Coins Predicts CLI — Two-Tier VMC strategy (docs/strategy-two-tier-vmc.md)
 
   config:check                 Validate configuration (secrets shown only as set/not set)
   run-once [--slot ISO] [--force] [--kind manual]
-                               Run the hourly pipeline for the current (or given) slot.
-                               --kind manual creates a separate run row (e.g. to compare agents)
-  discover                     Run universe discovery now
-  seed-fixtures [--hours N]    Insert N hours of SYNTHETIC fixture history (fixture source only)
-  telegram:preview [--fake]    Print the Telegram report for the latest run (or a fake-data preview)
-  telegram:test                Verify bot token + chat and send one test message
+                               Run the hourly pipeline for the current (or given) slot:
+                               collect → LBank pairs → daily rows → Tier 1 scan → venues → export → Telegram
+  discover                     Run listing discovery now
+  tier1:scan [--batch ID] [--no-export]
+                               Reprocess a saved crawl batch (default: latest) without crawling,
+                               then export it (PDF p.18 dry run over saved data)
+  tier1:export [--batch ID]    Re-export a scanned batch (CSV per sheet + XLSX + manifest)
+  tier1:trace --id CMC_ID [--batch ID] [--json]
+                               Full calculation trace for one asset (30 daily rows, windows, rules)
+  tier1:batches                Recent crawl batches with scan and export status
+  lbank:status                 The stored LBank Spot markets list: fetched when, next automatic refresh
+  lbank:refresh                Fetch the LBank Spot markets list now (normally every
+                               LBANK_PAIRS_REFRESH_DAYS), then recompute and re-export the latest batch
+  daily:import-csv --id CMC_ID --file history.csv
+                               Import a CSV downloaded from the coin's CMC "Historical Data" page
+                               as completed daily rows (manual source, revisions kept)
+  telegram:preview [--batch ID] [--fake]
+                               Print the Telegram summary (latest batch, or a fake-data layout)
+  telegram:test [--sample]     Verify bot token + chat and send one test message
   telegram:deliver             Send pending live Telegram deliveries
-  backtest [--final-test] [--min-history H]
-                               Walk-forward backtest on stored history
   source:reset [--provider ID] Clear a suspended/open circuit breaker after you resolved the cause
-  agent:check                  Show agent runner availability (no model call)
-
-Volume / Market Cap baseline (docs/volume-mcap.md; needs VMC_ASSET_IDS):
-  vmc:probe                    Verify selected CMC source (website: no key; API: plan/endpoints)
-  vmc:sync-assets              Resolve configured CMC ids using the selected source
-  vmc:daily [--full]           Backfill/refresh completed daily history
-  vmc:baseline                 Recalculate six-month baselines from stored daily rows
-  vmc:weekly                   vmc:daily then vmc:baseline (scheduled weekly)
-  vmc:hourly-backfill [--force] One-time backfill of the last 72 hourly quotes
-  vmc:hourly                   Collect current quotes for this hour
-  vmc:run-all                  sync-assets, weekly, hourly-backfill, hourly
-  vmc:import-csv --id <cmcId> --file <csv> [--symbol S --name N]
-                               Import a CSV downloaded manually from the coin's CMC
-                               "Historical Data" page (Download CSV); no key, no crawling
-  vmc:compare [--format table|json] [--out file]   Print/write the comparison
 `;
 
 function arg(name: string): string | undefined {
@@ -60,7 +59,6 @@ async function main() {
   const cfg = loadConfigOrExit({ ...process.env, SCHEDULER_ENABLED: "false" });
   if (cmd === "config:check") {
     process.stdout.write(`${JSON.stringify(describeConfig(cfg), null, 2)}\n`);
-    if (process.env.ANTHROPIC_API_KEY) process.stdout.write("note: ANTHROPIC_API_KEY is set in this shell but is NOT passed to agents (subscription token only).\n");
     return;
   }
   if (cmd === "telegram:preview" && process.argv.includes("--fake")) {
@@ -69,88 +67,89 @@ async function main() {
   }
 
   const ctx = await NestFactory.createApplicationContext(AppModule.forRoot(cfg, { http: false }), { logger: new RedactingLogger() });
+  const out = (v: unknown) => process.stdout.write(`${typeof v === "string" ? v : JSON.stringify(v, null, 2)}\n`);
   try {
     switch (cmd) {
       case "run-once": {
         const slot = arg("--slot") ? new Date(arg("--slot")!) : undefined;
         const r = await ctx.get(PipelineService).runSlot(slot, { force: process.argv.includes("--force"), kind: arg("--kind") ?? "hourly" });
-        process.stdout.write(`${JSON.stringify(r, null, 2)}\n`);
+        out(r);
         if (r.status === "failed") process.exitCode = 1;
         break;
       }
       case "discover": {
         const r = await ctx.get(IngestionService).discover(new Date());
-        process.stdout.write(`${JSON.stringify({ status: r.status, assetsSeen: r.assetsSeen, newAssets: r.newAssets, complete: r.coverageComplete, sourceTotal: r.sourceTotal }, null, 2)}\n`);
+        out({ status: r.status, assetsSeen: r.assetsSeen, newAssets: r.newAssets, complete: r.coverageComplete, sourceTotal: r.sourceTotal });
         break;
       }
-      case "seed-fixtures": {
-        if (cfg.DATA_SOURCE !== "fixture") throw new Error("seed-fixtures only works with DATA_SOURCE=fixture (never invents live data)");
-        const hours = Number(arg("--hours") ?? "72");
-        const ing = ctx.get(IngestionService);
-        await ing.discover(new Date());
-        const current = slotOf(new Date());
-        let n = 0;
-        for (let h = hours; h >= 1; h--) {
-          const r = await ing.collect(addHours(current, -h), null, new Date(), { fixtureBackfill: true });
-          n += r.collected;
-        }
-        process.stdout.write(`seeded ${hours} hours of SYNTHETIC fixture history (${n} snapshots, flagged fixture_backfill)\n`);
+      case "tier1:scan": {
+        const r = await ctx.get(PipelineService).reprocess(arg("--batch"), { export: !process.argv.includes("--no-export") });
+        out(r.skipped ? r : { batchId: r.batchId, queueStatus: r.scan?.queueStatus, counts: r.scan?.counts, warnings: r.scan?.warnings, export: r.export });
+        if (r.skipped || r.export?.status === "failed") process.exitCode = 1;
+        break;
+      }
+      case "tier1:export": {
+        const batchId = arg("--batch") ?? (await ctx.get(ReadModelService).latestScanBatchId());
+        if (!batchId) throw new Error("no scanned batch yet; run `npm run cli -- run-once` first");
+        const r = await ctx.get(PipelineService).exportBatch(batchId);
+        out(r);
+        if ("skipped" in r || r.status === "failed") process.exitCode = 1;
+        break;
+      }
+      case "tier1:trace": {
+        const id = Number(arg("--id"));
+        if (!Number.isSafeInteger(id) || id <= 0) throw new Error("usage: tier1:trace --id <CMC id> [--batch <batch id>] [--json]");
+        const t = await ctx.get(ReadModelService).assetTrace(id, arg("--batch"));
+        if (!t) throw new Error(`no Tier 1 record for CMC id ${id}`);
+        out(process.argv.includes("--json") ? t : renderTrace(t));
+        break;
+      }
+      case "lbank:status": {
+        out(await ctx.get(VenuesService).lbankListStatus(cfg.DATA_SOURCE) ?? { list: null, note: "no complete LBank Spot markets list yet; it is fetched by the next run or `lbank:refresh`" });
+        break;
+      }
+      case "lbank:refresh": {
+        const r = await ctx.get(PipelineService).refreshLbankPairs();
+        out("skipped" in r ? r : { lbank: r.lbank, batchId: r.batchId, queueStatus: r.scan?.queueStatus ?? null, counts: r.scan?.counts ?? null, export: r.export?.status ?? null });
+        if ("skipped" in r || !r.lbank.usable) process.exitCode = 1;
+        break;
+      }
+      case "tier1:batches": {
+        const rows = await ctx.get(ReadModelService).batches(24);
+        out(rows.map((b) => {
+          const s = b.scan as { status?: string; queueStatus?: string; counts?: Record<string, number>; exportStatus?: string } | null;
+          return `${String(b.slotTime)}  ${String(b.status).padEnd(10)} collected ${String(b.collected).padStart(5)}  scan ${s?.status ?? "-"} ${s?.queueStatus ?? ""} queue ${s?.counts?.queue ?? "-"} eligible ${s?.counts?.eligible ?? "-"} review ${s?.counts?.needsReview ?? "-"} export ${s?.exportStatus ?? "-"}  ${String(b.id)}`;
+        }).join("\n"));
+        break;
+      }
+      case "daily:import-csv": {
+        const file = arg("--file");
+        const id = Number(arg("--id"));
+        if (!file || !Number.isSafeInteger(id) || id < 1) throw new Error("usage: daily:import-csv --id <CMC id> --file <downloaded.csv>");
+        if (!isCmcIdProvider(cfg.DATA_SOURCE)) throw new Error(`DATA_SOURCE=${cfg.DATA_SOURCE} does not use CMC ids`);
+        const { readFileSync } = await import("node:fs");
+        const { basename } = await import("node:path");
+        const text = readFileSync(file, "utf8");
+        const parsed = parseCmcHistoryCsv(text, id, new Date());
+        const { sha256 } = await import("./common/decimal.js");
+        const counts = await ctx.get(DailyService).upsertRows(cfg.DATA_SOURCE, parsed.rows, { source: "manual_csv_import", params: { file: basename(file), cmcId: String(id) }, responseSha256: sha256(text), retrievedAt: new Date(), batchId: null });
+        out({ cmcId: id, provider: cfg.DATA_SOURCE, rows: parsed.rows.length, range: { first: parsed.rows[0]?.dateUtc ?? null, last: parsed.rows.at(-1)?.dateUtc ?? null }, skippedIncompleteDay: parsed.skippedIncomplete, skippedUnparseable: parsed.skippedUnparseable, ...counts, note: "Rows apply from the next scan; run `tier1:scan` to reprocess the latest batch now." });
         break;
       }
       case "telegram:preview": {
-        const runId = await ctx.get(ReadModelService).latestRunId();
-        if (!runId) throw new Error("no completed run yet; run `npm run cli -- run-once` first, or use --fake");
-        const parts = await ctx.get(ReportService).build(runId, "preview", null);
-        process.stdout.write(`${parts.join("\n\n----- next message -----\n\n")}\n`);
-        break;
-      }
-      case "vmc:probe":
-      case "vmc:sync-assets":
-      case "vmc:daily":
-      case "vmc:baseline":
-      case "vmc:weekly":
-      case "vmc:hourly-backfill":
-      case "vmc:hourly":
-      case "vmc:run-all": {
-        const vmc = ctx.get(VmcService);
-        if (vmc.assetIds.length === 0 && cmd !== "vmc:probe") throw new Error("VMC_ASSET_IDS is empty: configure explicit CoinMarketCap ids (e.g. VMC_ASSET_IDS=1,1027,2)");
-        const steps: Array<() => Promise<unknown>> =
-          cmd === "vmc:probe" ? [() => vmc.probe()]
-          : cmd === "vmc:sync-assets" ? [() => vmc.syncAssets()]
-          : cmd === "vmc:daily" ? [() => vmc.dailyHistory({ full: process.argv.includes("--full") })]
-          : cmd === "vmc:baseline" ? [() => vmc.baseline()]
-          : cmd === "vmc:weekly" ? [() => vmc.weekly()]
-          : cmd === "vmc:hourly-backfill" ? [() => vmc.hourlyBackfill({ force: process.argv.includes("--force") })]
-          : cmd === "vmc:hourly" ? [() => vmc.hourly()]
-          : [() => vmc.syncAssets(), () => vmc.weekly(), () => vmc.hourlyBackfill(), () => vmc.hourly()];
-        const results = [];
-        for (const s of steps) results.push(await s());
-        process.stdout.write(`${JSON.stringify(results.flat(), null, 2)}\n`);
-        if (results.flat().some((r) => (r as { status?: string }).status === "failed")) process.exitCode = 1;
-        break;
-      }
-      case "vmc:import-csv": {
-        const file = arg("--file");
-        const id = Number(arg("--id"));
-        if (!file || !Number.isInteger(id) || id < 1) throw new Error("usage: vmc:import-csv --id <cmcId> --file <downloaded.csv> [--symbol LTC --name Litecoin]");
-        const { readFileSync } = await import("node:fs");
-        const { basename } = await import("node:path");
-        const r = await ctx.get(VmcService).importCsv({ cmcId: id, text: readFileSync(file, "utf8"), fileName: basename(file), symbol: arg("--symbol"), name: arg("--name") });
-        process.stdout.write(`${JSON.stringify(r, null, 2)}\n`);
-        const detail = await ctx.get(PrismaService).vmcAssetResult.findFirst({ where: { runId: r.runId ?? "" } });
-        if (detail) process.stdout.write(`${JSON.stringify(detail.detail, null, 2)}\n`);
-        if (r.status === "failed") process.exitCode = 1;
-        break;
-      }
-      case "vmc:compare": {
-        const fmt = (arg("--format") as "table" | "json" | undefined) ?? cfg.VMC_OUTPUT_FORMAT;
-        process.stdout.write(`${await ctx.get(VmcService).writeComparison(fmt, arg("--out") ?? cfg.VMC_OUTPUT_FILE)}\n`);
+        const batchId = arg("--batch") ?? (await ctx.get(ReadModelService).latestScanBatchId());
+        if (!batchId) throw new Error("no scanned batch yet; run `npm run cli -- run-once` first, or use --fake");
+        const parts = (await ctx.get(ReportService).build(batchId)).map((p) => {
+          const d = parseDocumentPart(p);
+          return d ? `[attachment] ${d.filename} (${existsSync(d.path) ? `${Math.round(statSync(d.path).size / 1024)} KB` : "file missing"})\n${d.caption}` : p;
+        });
+        out(parts.join("\n\n----- next message -----\n\n"));
         break;
       }
       case "telegram:test": {
         const tg = ctx.get(TelegramService);
         const v = await tg.verify();
-        process.stdout.write(`${JSON.stringify(v, null, 2)}\n`);
+        out(v);
         if (!v.ok) {
           process.exitCode = 1;
           break;
@@ -158,35 +157,20 @@ async function main() {
         const msgs = process.argv.includes("--sample") ? fakePreview(cfg.DISPLAY_TIMEZONE) : ["<b>Coins Predicts</b> — test message. Telegram delivery is configured."];
         for (const m of msgs) {
           const r = await tg.sendTest(m);
-          process.stdout.write(`${JSON.stringify(r.ok ? { sent: true } : { sent: false, error: r.error })}\n`);
+          out(r.ok ? { sent: true } : { sent: false, error: r.error });
           if (!r.ok) process.exitCode = 1;
         }
         break;
       }
-      case "telegram:deliver": {
-        process.stdout.write(`${JSON.stringify(await ctx.get(TelegramService).deliverPending())}\n`);
+      case "telegram:deliver":
+        out(await ctx.get(TelegramService).deliverPending());
         break;
-      }
-      case "backtest": {
-        const min = arg("--min-history");
-        const r = await ctx.get(BacktestService).run({ includeFinalTest: process.argv.includes("--final-test"), minHistoryHours: min ? Number(min) : undefined });
-        process.stdout.write(`${JSON.stringify(r, null, 2)}\n`);
-        break;
-      }
       case "source:reset": {
         const prisma = ctx.get(PrismaService);
         const provider = arg("--provider") ?? cfg.DATA_SOURCE;
         if (!["fixture", "coinmarketcap", "coinmarketcap_web", "coingecko"].includes(provider)) throw new Error("unknown source provider");
-        await prisma.sourceHealth.updateMany({
-          where: { providerId: provider },
-          data: { state: "closed", consecutiveFailures: 0, consecutiveDenials: 0, suspendedReason: null, openedAt: null, retryAfterUntil: null },
-        });
-        process.stdout.write(`circuit reset for ${provider}\n`);
-        break;
-      }
-      case "agent:check": {
-        const r = ctx.get<AgentRunner>(AGENT_RUNNER);
-        process.stdout.write(`${JSON.stringify({ provider: r.provider, configured: cfg.AGENT_PROVIDER, ...r.availability() }, null, 2)}\n`);
+        await prisma.sourceHealth.updateMany({ where: { providerId: provider }, data: { state: "closed", consecutiveFailures: 0, consecutiveDenials: 0, suspendedReason: null, openedAt: null, retryAfterUntil: null } });
+        out(`circuit reset for ${provider}`);
         break;
       }
       default:
@@ -198,25 +182,59 @@ async function main() {
   }
 }
 
+/** Human-readable calculation trace (PDF p.20 #2). */
+function renderTrace(t: Record<string, unknown>): string {
+  const r = t.record as Record<string, unknown>;
+  const cur = t.current as { label: string; formula: string; status: string };
+  const daily = t.daily as { asOfDate: string; latestCompletedDate: string; used: Array<{ dateUtc: string; volumeUsd: string | null; marketCapUsd: string | null; vmc: string | null; closeUsd: string | null; valid: boolean | null; revision: number | null; invalidReasons: string[] }> };
+  const windows = t.windows as Array<{ days: number; role: string; formula: string; comparison: string | null }>;
+  const elig = t.eligibility as { status: string; reasons: string[]; assetClass: string; classSource: string };
+  const lb = t.lbank as { status: string; reason: string | null; pairs: Array<{ marketPair: string; mapping: string; trading: string }> };
+  const batch = t.batch as { id: string; slotTime: string; crawledAt: string; status: string; isLive: boolean };
+  const lines = [
+    `${r.symbol} · ${r.name} · CMC id ${r.cmcId}${batch.isLive ? "" : "   [SYNTHETIC fixture data]"}`,
+    `batch ${batch.id} · slot ${batch.slotTime} · crawled ${batch.crawledAt} · ${batch.status}`,
+    `rank ${r.rank ?? "n/a"} · cap ${r.capUsd ?? "n/a"} USD · volume 24h ${r.volume24hUsd ?? "n/a"} USD · price ${r.priceUsd ?? "n/a"} USD · age ${r.ageDays ?? "n/a"} days`,
+    "",
+    `Current observation (${cur.status}): ${cur.label}`,
+    `  ${cur.formula}`,
+    "",
+    `Completed UTC daily rows used (as-of ${daily.asOfDate}; newest = ${daily.latestCompletedDate}):`,
+    "  date        volume_usd            market_cap_usd          vmc                      close        rev",
+    ...daily.used.map((d) => `  ${d.dateUtc}  ${(d.volumeUsd ?? "—").padEnd(20)}  ${(d.marketCapUsd ?? "—").padEnd(22)}  ${(d.vmc ?? (d.valid === false ? `invalid: ${d.invalidReasons.join(",")}` : "missing")).slice(0, 24).padEnd(24)} ${(d.closeUsd ?? "—").slice(0, 12).padEnd(12)} ${d.revision ?? "-"}`),
+    "",
+    "Windows:",
+    ...windows.flatMap((w) => [`  ${w.days}d (${w.role})`, `    ${w.formula}`, ...(w.comparison ? [`    ${w.comparison}`] : [])]),
+    "",
+    `Stars ${r.stars} · eligibility ${elig.status}${elig.reasons.length ? ` (${elig.reasons.join(", ")})` : ""} · class ${elig.assetClass} [${elig.classSource}]`,
+    `LBank ${lb.status}${lb.reason ? ` (${lb.reason})` : ""}: ${lb.pairs.map((p) => `${p.marketPair} ${p.mapping}/${p.trading}`).join("; ") || "no pairs"}`,
+    `queue ${r.inQueue ? `#${r.queueOrder}` : "no"} · flags ${[...(r.flags as string[]), ...(r.venueFlags as string[])].join(", ") || "none"}`,
+    `ruleset ${r.rulesetVersion} · config ${r.configVersion} · inputs ${r.inputsHash} · computed ${r.computedAt}`,
+  ];
+  return lines.join("\n");
+}
+
 function fakePreview(tz: string): string[] {
   const now = new Date();
-  return formatReport({
+  return formatTier1Report({
     generatedAt: now,
     slotTime: slotOf(now),
+    crawledAt: now,
     timezone: tz,
     providerName: "Fake preview data (NOT real)",
     isLive: false,
     attribution: null,
-    coverage: { label: "partial", collected: 2000, universeSize: 8049, coveragePct: 24.8, stale: 3 },
-    oldestObservedAt: now.toISOString(),
-    agentStatus: "preview",
-    summary: "LAYOUT PREVIEW with invented numbers — not a real report.",
-    screened: 2000,
-    eligible: 812,
+    batchStatus: "COMPLETE",
+    batchReasons: [],
+    queueStatus: "PUBLISHED",
+    counts: { assets: 8041, eligible: 212, needsReview: 341, excluded: 7488, queue: 2 },
+    needsReviewWithYes: 14,
+    lbankUnverifiedWithYes: 11,
     rows: [
-      { symbol: "SPRK", name: "Early Spark (fake)", status: "candidate", signalType: "advance", price: 0.8312, marketCap: 748e6, volume24h: 12.1e6, volumeWindow: "rolling_24h", score: 62.4, horizonHours: 24, entry: "", invalidation: "", exit: "", risk: ["thin_history", "no_liquidity_data"], sourceUrl: "fixture://coins/fx-early-spark", observedAt: now.toISOString(), scenario: { entryPrice: 0.8395, stopPrice: 0.7807, targetPrice: 0.9654, trailPct: 0.05, trailActivatePct: 0.08, maxHoldHours: 24, expiresAt: new Date(now.getTime() + 6 * 3_600_000).toISOString() } },
-      { symbol: "SRG", name: "Surge Protocol (fake)", status: "watch", signalType: "move_underway", price: 3.21, marketCap: 963e6, volume24h: 45e6, volumeWindow: "rolling_24h", score: 55, horizonHours: 24, entry: "", invalidation: "", exit: "", risk: ["extreme_1h_move"], sourceUrl: "fixture://coins/fx-surge-protocol", observedAt: now.toISOString(), scenario: { entryPrice: 3.274, stopPrice: 3.045, targetPrice: 3.765, trailPct: 0.05, trailActivatePct: 0.08, maxHoldHours: 24, expiresAt: new Date(now.getTime() + 6 * 3_600_000).toISOString() } },
+      { order: 1, cmcId: 990001, symbol: "FAKE1", stars: 2, pass: { d3: "YES", d7: "NO", d30: "YES" }, multiple: { d3: 2, d7: 1.333, d30: 4 }, currentVmc: 0.2, capUsd: 1e8, lbankPairs: ["FAKE1/USDT"] },
+      { order: 2, cmcId: 990002, symbol: "FAKE2", stars: 1, pass: { d3: "NO", d7: "N/A", d30: "YES" }, multiple: { d3: 1.2, d7: null, d30: 1.9 }, currentVmc: 0.031, capUsd: 4e7, lbankPairs: ["FAKE2/USDT", "FAKE2/BTC"] },
     ],
+    warnings: [],
   });
 }
 

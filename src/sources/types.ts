@@ -1,3 +1,5 @@
+import type { VenuePair } from "../tier1/lbank.js";
+
 /**
  * Source-independent adapter contract. Every adapter must:
  *  - label its access method explicitly;
@@ -50,6 +52,7 @@ export interface RawObservation {
   name: string;
   symbol: string;
   sourceUrl: string;
+  /** Provider update time of the quote. */
   observedAt: Date | null;
   price: number | null;
   /** Provider-reported circulating market cap. */
@@ -68,8 +71,16 @@ export interface RawObservation {
   depthPlus2PctUsd?: number | null;
   depthMinus2PctUsd?: number | null;
   liquiditySource?: string | null;
-  /** Classification categories reported alongside the observation (e.g. CMC tags). */
+  /** Classification categories reported alongside the observation (e.g. mapped CMC tags). */
   categories?: string[];
+  /** Provider rank (CMC `cmcRank`); null when the source gives none. */
+  rank?: number | null;
+  /** Provider first-listing date (CMC `dateAdded`). */
+  dateAdded?: Date | null;
+  /** Raw provider tags (CMC `tags`). */
+  tags?: string[];
+  slug?: string | null;
+  platform?: { chain: string; address: string } | null;
 }
 
 export interface CollectResult {
@@ -93,8 +104,66 @@ export interface MarketDataSource {
   readonly info: ProviderInfo;
   discover(): Promise<DiscoveryResult>;
   collect(opts: CollectOptions): Promise<CollectResult>;
-  /** Actual historical samples only; callers retain source times and never fill gaps. */
-  history?(asset: SourceAsset, from: Date, to: Date): Promise<RawObservation[]>;
 }
 
 export const MARKET_DATA_SOURCE = Symbol("MARKET_DATA_SOURCE");
+
+// ---------------------------------------------------------------------------------------------
+// Tier 1 inputs that the existing crawler collects in addition to the hourly listing
+// (docs/tier1-input-mapping.md gaps G4–G7).
+// ---------------------------------------------------------------------------------------------
+
+/** One completed UTC day as published by the source; numbers keep their exact source text. */
+export interface DailySourceRow {
+  cmcId: number;
+  dateUtc: string;
+  volume: string | null;
+  marketCap: string | null;
+  open: string | null;
+  high: string | null;
+  low: string | null;
+  close: string | null;
+  /** Source-level problems (wrong currency, misaligned period, unparseable field). */
+  invalidReasons: string[];
+  periodStart: Date | null;
+  periodEnd: Date | null;
+  sourceCloseAt: Date | null;
+  sourceFields: Record<string, unknown>;
+}
+
+export interface DailyFetch {
+  rows: DailySourceRow[];
+  /** Rows for the open (incomplete) day or later, which are never stored. */
+  incompleteSkipped: number;
+  /** Rows outside the requested date range (the website returns some). */
+  outOfRange: number;
+  source: string;
+  params: Record<string, string>;
+  responseSha256: string | null;
+  retrievedAt: Date;
+}
+
+export interface VenueFetch {
+  pairs: VenuePair[];
+  /** Pair count the source reports for the request (null = unknown). */
+  expectedCount: number | null;
+  complete: boolean;
+  requests: number;
+  source: string;
+  params: Record<string, string>;
+  responseSha256: string[];
+  retrievedAt: Date;
+  notes: string[];
+}
+
+export interface Tier1Source {
+  readonly providerId: string;
+  /** Completed daily rows for one asset between two UTC dates (inclusive). */
+  dailyHistory(asset: { cmcId: number; slug: string | null }, from: string, to: string, now: Date): Promise<DailyFetch>;
+  /** Every LBank Spot pair the feed publishes, with the CMC id of each base asset. */
+  lbankSpotPairs(at: Date): Promise<VenueFetch>;
+  /** One asset's CMC Markets spot pairs across exchanges. */
+  assetMarkets(asset: { cmcId: number; slug: string | null }, at: Date): Promise<VenueFetch>;
+}
+
+export const TIER1_SOURCE = Symbol("TIER1_SOURCE");

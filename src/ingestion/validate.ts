@@ -28,6 +28,12 @@ export interface SnapshotDraft {
   depthPlus2PctUsd: number | null;
   depthMinus2PctUsd: number | null;
   liquiditySource: string | null;
+  /** Provider rank (CMC `cmcRank`). */
+  rank: number | null;
+  /** Provider first-listing date (CMC `dateAdded`). */
+  dateAdded: Date | null;
+  /** Raw provider tags, sanitized. */
+  tags: string[];
   qualityFlags: string[];
   completeness: number;
   freshnessSeconds: number | null;
@@ -136,6 +142,12 @@ export function validateObservation(raw: RawObservation, opts: ValidateOptions):
     }
   }).length;
 
+  const rank = typeof raw.rank === "number" && Number.isSafeInteger(raw.rank) && raw.rank > 0 ? raw.rank : null;
+  if (rank === null) nullReasons.rank = raw.rank === undefined ? "source does not report a rank" : "not reported for this asset";
+  const dateAdded = raw.dateAdded instanceof Date && Number.isFinite(raw.dateAdded.getTime()) ? raw.dateAdded : null;
+  if (dateAdded === null) nullReasons.dateAdded = raw.dateAdded === undefined ? "source does not report a listing date" : "not reported for this asset";
+  const tags = [...new Set((raw.tags ?? []).filter((t) => typeof t === "string").map((t) => sanitizeText(t, 64)).filter(Boolean))].slice(0, 200);
+
   const fdv = finitePositive(raw.fullyDilutedValuation);
   if (fdv === null) nullReasons.fullyDilutedValuation = "not reported by source";
 
@@ -170,6 +182,9 @@ export function validateObservation(raw: RawObservation, opts: ValidateOptions):
     providerChangePct7d: finiteOrNull(raw.changePct7d ?? null),
     ...liquidity,
     liquiditySource: raw.liquiditySource ?? null,
+    rank,
+    dateAdded,
+    tags,
     qualityFlags: flags,
     completeness: present / CORE_FIELDS.length,
     freshnessSeconds,

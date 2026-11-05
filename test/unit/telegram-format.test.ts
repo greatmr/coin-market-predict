@@ -1,103 +1,104 @@
 import { describe, expect, it } from "vitest";
-import { compactUsd, escapeHtml, formatReport, riskText, TELEGRAM_LIMIT, usdPrice, type ReportInput, type ReportRow } from "../../src/telegram/format.js";
+import { type CoinDetailInput, escapeHtml, formatCoinDetail, formatTier1Report, pack, queueTable, TELEGRAM_LIMIT, type QueueRow, type Tier1ReportInput } from "../../src/telegram/format.js";
 
-const row = (i: number, over: Partial<ReportRow> = {}): ReportRow => ({
-  symbol: `T${i}`,
-  name: `Token <${i}> & co`,
-  status: i % 2 ? "watch" : "candidate",
-  signalType: "advance",
-  price: 1.2345 + i,
-  marketCap: 1e8 * (i + 1),
-  volume24h: 1.2e7,
-  volumeWindow: "rolling_24h",
-  score: 50 + i,
-  horizonHours: 24,
-  entry: "Enter only if an hourly snapshot prints ≥ 1.25",
-  invalidation: "Invalidate if an hourly snapshot prints ≤ 1.16",
-  exit: "Take profit at ≥ 1.43",
-  risk: ["thin_history", "no_liquidity_data"],
-  sourceUrl: `https://example.invalid/coins/t${i}?a=1&b=2`,
-  observedAt: "2026-11-03T12:03:00.000Z",
-  scenario: { entryPrice: 1.25, stopPrice: 1.1625, targetPrice: 1.4375, trailPct: 0.05, trailActivatePct: 0.08, maxHoldHours: 24, expiresAt: "2026-11-03T18:00:00.000Z" },
-  ...over,
+const row = (i: number, extra: Partial<QueueRow> = {}): QueueRow => ({
+  order: i, cmcId: 990000 + i, symbol: `C${i}`, stars: 2, pass: { d3: "YES", d7: "NO", d30: "YES" }, multiple: { d3: 2, d7: 1.3333, d30: 4 }, currentVmc: 0.2, capUsd: 1e8, lbankPairs: [`C${i}/USDT`], ...extra,
 });
-
-const input = (rows: ReportRow[], over: Partial<ReportInput> = {}): ReportInput => ({
-  generatedAt: new Date("2026-11-03T12:10:00Z"),
-  slotTime: new Date("2026-11-03T12:00:00Z"),
-  timezone: "Asia/Tehran",
-  providerName: "Test <Provider>",
-  isLive: true,
-  attribution: "Data: Test",
-  coverage: { label: "partial", collected: 2000, universeSize: 8049, coveragePct: 24.85, stale: 3 },
-  oldestObservedAt: "2026-11-03T12:03:00.000Z",
-  agentStatus: "completed",
-  summary: "Two assets reviewed.",
-  screened: 2000,
-  eligible: 800,
-  rows,
-  ...over,
+const input = (o: Partial<Tier1ReportInput> = {}): Tier1ReportInput => ({
+  generatedAt: new Date("2026-11-05T07:10:00Z"), slotTime: new Date("2026-11-05T07:00:00Z"), crawledAt: new Date("2026-11-05T07:07:31Z"), timezone: "Asia/Tehran",
+  providerName: "CoinMarketCap website", isLive: true, attribution: "Data: CoinMarketCap", batchStatus: "COMPLETE", batchReasons: [], queueStatus: "PUBLISHED",
+  counts: { assets: 8041, eligible: 300, needsReview: 250, excluded: 7491, queue: 2 }, needsReviewWithYes: 0, lbankUnverifiedWithYes: 0, rows: [row(1), row(2, { stars: 1, pass: { d3: "NO", d7: "N/A", d30: "YES" }, multiple: { d3: 1.2, d7: null, d30: 1.9 } })], warnings: [], ...o,
 });
+const balanced = (msg: string) => ["pre", "b", "i"].every((t) => msg.split(`<${t}>`).length === msg.split(`</${t}>`).length);
 
-function balanced(msg: string) {
-  for (const tag of ["pre", "b", "i"]) if (msg.split(`<${tag}>`).length !== msg.split(`</${tag}>`).length) return false;
-  return true;
-}
-
-/** Visible text width per line once HTML tags are removed. */
-const visibleLines = (m: string) => m.replace(/<[^>]+>/g, "").replace(/&(amp|lt|gt);/g, "x").split("\n");
-
-describe("Telegram report formatting (mobile)", () => {
+describe("Telegram Tier 1 summary (mobile)", () => {
   it("escapes untrusted text for HTML parse mode", () => {
-    expect(escapeHtml("<script>&")).toBe("&lt;script&gt;&amp;");
-    const [msg] = formatReport(input([row(1)]));
-    expect(msg).toContain("Token &lt;1&gt; &amp; co");
-    expect(msg).not.toContain("<script>");
+    expect(escapeHtml("<b>&")).toBe("&lt;b&gt;&amp;");
+    const parts = formatTier1Report(input({ rows: [row(1, { symbol: "<X&Y>" })] }));
+    expect(parts.join("")).toContain("&lt;X&amp;Y");
+    expect(parts.every(balanced)).toBe(true);
   });
 
-  it("puts local time first and shows coverage, freshness context and a short research note", () => {
-    const [msg] = formatReport(input([row(1)]));
-    expect(msg).toMatch(/🕒 15:40 IRST · data hour 12:00 UTC/);
-    expect(msg).toMatch(/2000\/8049 coins checked \(partial, 3 stale\) · 800 eligible/);
-    expect(msg).toMatch(/Research only, not financial advice/);
+  it("shows batch time, counts and a phone-width queue table that keeps mixed results visible", () => {
+    const msg = formatTier1Report(input()).join("\n");
+    expect(msg).toMatch(/Tier 1 VMC screen/);
+    expect(msg).toMatch(/batch 2026-11-05T07:00 UTC · crawled 07:07 UTC/);
+    expect(msg).toMatch(/8041 coins · ✅ 300 eligible · 🔎 250 need review · ⛔ 7491 excluded/);
+    const table = /<pre>([\s\S]*?)<\/pre>/.exec(msg)![1]!;
+    const lines = table.split("\n");
+    expect(lines[0]).toMatch(/^#\s+Coin\s+YES\s+3d\s+7d\s+30d\s+VMC$/);
+    expect(lines.every((l) => l.length <= 44)).toBe(true);
+    expect(lines[1]).toMatch(/^1\s+C1\s+\*\*\s+2\.00\*\s+1\.33\s+4\.00\*\s+20\.0%$/);
+    expect(lines[2]).toMatch(/n\/a/);
+    expect(msg).toMatch(/LBank Spot: C1: C1\/USDT/);
+    expect(msg).not.toMatch(/\b(buy|sell|signal)\b/i);
   });
 
-  it("renders each token as a short card with every required field", () => {
-    const [msg] = formatReport(input([row(0)]));
-    for (const re of [/<b>1\. T0<\/b>/, /🟢 Candidate · early move/, /💵 \$1\.23 {2}· {2}Cap \$100\.0M/, /Vol 24h \$12\.0M/, /Score 50\/100/, /Enter if ≥ \$1\.25 by 21:30/, /Stop if ≤ \$1\.16/, /Target \$1\.44 · trail 5\.0% after \+8\.0%/, /Max hold 24h/, /short history, no liquidity data/]) {
-      expect(msg).toMatch(re);
-    }
+  it("withholds the queue for an incomplete batch or an unavailable LBank feed (p.18)", () => {
+    const inc = formatTier1Report(input({ batchStatus: "INCOMPLETE", batchReasons: ["missing_ranks:3"], queueStatus: "WITHHELD_INCOMPLETE_BATCH" })).join("\n");
+    expect(inc).toMatch(/Review Queue withheld/);
+    expect(inc).toMatch(/Batch INCOMPLETE: missing_ranks:3/);
+    expect(inc).not.toContain("<pre>");
+    const lb = formatTier1Report(input({ queueStatus: "WITHHELD_LBANK_UNAVAILABLE" })).join("\n");
+    expect(lb).toMatch(/LBank pair feed is unavailable/);
   });
 
-  it("keeps lines short enough for a phone (no wide tables)", () => {
-    for (const m of formatReport(input(Array.from({ length: 6 }, (_, i) => row(i))))) {
-      expect(m).not.toContain("<pre>");
-      for (const line of visibleLines(m)) expect([...line].length).toBeLessThanOrEqual(64);
-    }
+  it("publishes an honest empty queue, points to coins needing review, and labels test data", () => {
+    const msg = formatTier1Report(input({ isLive: false, rows: [], counts: { assets: 1301, eligible: 40, needsReview: 30, excluded: 1231, queue: 0 }, queueStatus: "EMPTY", needsReviewWithYes: 4, lbankUnverifiedWithYes: 3 })).join("\n");
+    expect(msg).toMatch(/TEST DATA/);
+    expect(msg).toMatch(/Review Queue empty/);
+    expect(msg).toMatch(/4 more coin\(s\) met a window but need review first \(3 with an unverified LBank pair\)/);
   });
 
-  it("publishes an honest no-signal report and labels test data", () => {
-    const parts = formatReport(input([], { isLive: false }));
-    expect(parts).toHaveLength(1);
-    expect(parts[0]).toMatch(/No qualifying signals this hour/);
-    expect(parts[0]).toMatch(/TEST DATA/);
+  it("/coin renders the dashboard drawer in phone-width messages", () => {
+    const days = Array.from({ length: 30 }, (_, i) => ({
+      dateUtc: `2026-10-${String(30 - i).padStart(2, "0")}`, volumeUsd: "1500000", marketCapUsd: "296608247.3582", vmc: "0.005057", closeUsd: "112.4", valid: true, invalidReasons: [], revision: 1,
+    }));
+    days[4] = { ...days[4]!, volumeUsd: null as never, marketCapUsd: null as never, vmc: null as never, closeUsd: null as never, valid: null as never, revision: null as never };
+    const t: CoinDetailInput = {
+      record: { cmcId: 1659, symbol: "<GNO>", name: "Gno & sis", rank: 107, capUsd: "296608247.3582", volume24hUsd: "1966994.8645", priceUsd: "112.3725", currentVmc: "0.006631625661", currentStatus: "OK", observedAt: "2026-11-05T13:05:03.000Z", crawledAt: "2026-11-05T13:07:10.000Z", dateAdded: "2017-05-01T00:00:00.000Z", ageDays: "3475.4", stars: 2, inQueue: true, queueOrder: 3, flags: [], venueFlags: ["UPBIT_TOP_VENUE"], lbankStatus: "VERIFIED" },
+      batch: { slotTime: "2026-11-05T13:00:00.000Z", isLive: true },
+      eligibility: { status: "ELIGIBLE", reasons: [], assetClass: "regular", classSource: "cmc_tags" },
+      current: { formula: "current_vmc = …" },
+      windows: [
+        { days: 3, mean: "0.004166774497", reason: null, pass: { status: "YES", multiple: "1.5915", reason: null } },
+        { days: 7, mean: null, reason: "DAILY_ROW_MISSING", pass: { status: "N/A", multiple: null, reason: "DAILY_ROW_MISSING" } },
+        { days: 14, mean: "0.003036", reason: null, pass: null },
+        { days: 30, mean: "0.002778", reason: null, pass: { status: "YES", multiple: "2.3870", reason: null } },
+      ],
+      daily: { asOfDate: "2026-11-05", used: days },
+      lbank: {
+        status: "VERIFIED", reason: null,
+        pairs: [{ marketPair: "GNO/USDT", mapping: "OK", trading: "TRADING", tradingSource: "listing", volumeUsd: "123456", evidence: [] }, { marketPair: "GNOX/USDT", mapping: "AMBIGUOUS", trading: "TRADING", tradingSource: "listing", volumeUsd: "10", evidence: ["LBank base GNOX ≠ CMC symbol GNO"] }],
+        crawl: { status: "COMPLETE", finishedAt: "2026-11-05T12:26:30.715Z", fetchedCount: 899 },
+        decisions: [], tasks: [{ marketPair: "GNOX/USDT", kind: "SYMBOL_MISMATCH", status: "OPEN" }],
+      },
+      venues: { review: "PENDING", flags: ["UPBIT_TOP_VENUE"], summary: { dataStatus: "AVAILABLE", observedAt: "2026-11-05T13:10:00.000Z", pairsUsed: 34, expectedCount: 120, exchanges: [{ name: "Upbit", volumeUsd: "900000", volumePercent: "45.12" }, { name: "Binance", volumeUsd: "500000", volumePercent: "25" }] } },
+      reviews: [{ revision: 2, reviewer: "tester", reviewedAt: "2026-11-05T13:20:00.000Z", venueDecision: "ACCEPT", eventDay: "FIRST", finalDecision: "PLAN_READY", planStatus: "COMPLETE" }],
+    };
+    const parts = formatCoinDetail(t);
+    const all = parts.join("\n");
+    expect(all).toContain("&lt;GNO&gt;</b> · Gno &amp; sis · CMC 1659");
+    expect(all).toMatch(/ELIGIBLE<\/b> · ★★☆ \(2 of 3 windows\) · Review Queue #3/);
+    expect(all).toMatch(/\$2\.0M ÷ \$296\.6M = <b>0\.663%<\/b>/);
+    expect(all).toMatch(/7d N\/A: a completed day is missing/);
+    expect(all).toMatch(/10-26 {2}missing/);
+    expect(all).toMatch(/GNO\/USDT · mapping OK · tradable \(listed\)/);
+    expect(all).toMatch(/↳ LBank base GNOX ≠ CMC symbol GNO/);
+    expect(all).toMatch(/Open mapping tasks: GNOX\/USDT \(symbol mismatch\)/);
+    expect(all).toMatch(/r2 · 11-05 13:20 UTC · tester · PLAN_READY \(COMPLETE\) · venue ACCEPT · day FIRST/);
+    expect(all).not.toMatch(/\b(buy|sell)\b/i);
+    for (const pre of all.match(/<pre>[\s\S]*?<\/pre>/g) ?? []) for (const line of pre.replace(/<\/?pre>/g, "").split("\n")) expect(line.length).toBeLessThanOrEqual(44);
+    expect(parts.every((p) => p.length <= TELEGRAM_LIMIT && balanced(p))).toBe(true);
+    // Column headers line up with the values below them.
+    const daily = /<pre>(date[\s\S]*?)<\/pre>/.exec(all)![1]!.split("\n");
+    expect(daily[0]!.indexOf("VMC") + 3).toBe(daily[1]!.indexOf("%") + 1);
   });
 
-  it("splits long reports under the Telegram limit without breaking tags", () => {
-    const parts = formatReport(input(Array.from({ length: 30 }, (_, i) => row(i))));
+  it("splits long content under the Telegram limit without breaking tags", () => {
+    const parts = pack(Array.from({ length: 30 }, (_, i) => `<b>block ${i}</b> ${"x".repeat(300)}`));
     expect(parts.length).toBeGreaterThan(1);
-    for (const p of parts) {
-      expect(p.length).toBeLessThanOrEqual(TELEGRAM_LIMIT);
-      expect(balanced(p)).toBe(true);
-    }
-  });
-
-  it("labels moves already underway and humanizes values", () => {
-    expect(formatReport(input([row(1, { signalType: "move_underway" })]))[0]).toMatch(/move already underway/);
-    expect(usdPrice(100123.4)).toBe("$100,123");
-    expect(usdPrice(0.000012345)).toBe("$0.0000123");
-    expect(compactUsd(1.55e12)).toBe("$1.55T");
-    expect(riskText(["volume_exceeds_market_cap"])).toBe("volume > market cap");
-    expect(riskText([])).toBe("none flagged");
+    expect(parts.every((p) => p.length <= TELEGRAM_LIMIT && balanced(p))).toBe(true);
+    expect(queueTable(Array.from({ length: 30 }, (_, i) => row(i + 1))).split("\n").length).toBe(31);
   });
 });

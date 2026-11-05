@@ -1,0 +1,7 @@
+{
+  "version": "2026-11-05.1",
+  "updatedAt": "2026-11-05T07:00:00.000Z",
+  "description": "Tier 1 manual overrides (docs/strategy-two-tier-vmc.md §4, PDF p.9 and p.18). classOverrides resolve ambiguous classifications: class is eligible | stablecoin | tokenized. lbankMappingOverrides confirm or reject the CMC-id mapping of one LBank Spot pair: decision is MAPPING_CONFIRMED | MAPPING_REJECTED. Every entry needs cmcId, reason, addedBy and addedAt (YYYY-MM-DD); providerId is optional (default: every provider). Bump version and updatedAt on every change; scans record both.",
+  "classOverrides": [],
+  "lbankMappingOverrides": []
+}

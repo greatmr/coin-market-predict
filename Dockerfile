@@ -15,9 +15,7 @@ RUN DATABASE_URL=postgresql://build:build@localhost:5432/build npx prisma genera
 
 FROM node:24-bookworm-slim AS runtime
 ENV NODE_ENV=production \
-    COINS_RUNTIME_DIR=/app/runtime \
-    COINS_PUBLIC_DIR=/app/public \
-    COINS_STATE_DIR=/app/var/agent
+    COINS_PUBLIC_DIR=/app/public
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tini \
     && rm -rf /var/lib/apt/lists/*
@@ -25,11 +23,12 @@ COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --chown=node:node package.json prisma.config.ts ./
 COPY --chown=node:node prisma ./prisma
-# Production runtime instructions and skills the Agent SDK loads explicitly.
-COPY --chown=node:node runtime ./runtime
+# Versioned Tier 1 classification / LBank mapping overrides (TIER1_OVERRIDES_FILE).
+COPY --chown=node:node config ./config
 COPY --chown=node:node public ./public
 COPY --chown=node:node docker/entrypoint.sh ./docker/entrypoint.sh
-RUN mkdir -p /app/var/agent && chown -R node:node /app/var && chmod 0755 /app/docker/entrypoint.sh
+# var/exports holds the per-batch CSV/XLSX exports (TIER1_EXPORT_DIR); mount a volume to keep them.
+RUN mkdir -p /app/var/exports && chown -R node:node /app/var && chmod 0755 /app/docker/entrypoint.sh
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s \

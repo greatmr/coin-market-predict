@@ -3,7 +3,6 @@ import { z } from "zod";
 
 /** Environment variables that hold secrets. Values are never logged or exposed. */
 export const SECRET_KEYS = [
-  "CLAUDE_CODE_OAUTH_TOKEN",
   "TELEGRAM_BOT_TOKEN",
   "CMC_API_KEY",
   "COINGECKO_API_KEY",
@@ -36,13 +35,13 @@ const schema = z
     SOURCE_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(500).default(10),
     SOURCE_MONTHLY_REQUEST_BUDGET: z.coerce.number().int().min(1).default(9000),
     SOURCE_MAX_MARKET_PAGES_PER_RUN: z.coerce.number().int().min(1).max(200).default(10),
-    /** Coins per run whose genuine hourly history may be fetched (one chart request each). 0 disables. */
-    SOURCE_HISTORY_BOOTSTRAP_MAX_ASSETS: z.coerce.number().int().min(0).max(20_000).default(1500),
-    /** Wall-clock budget for the history stage so an hourly run finishes inside its hour. */
-    SOURCE_HISTORY_BOOTSTRAP_MAX_MINUTES: z.coerce.number().min(1).max(50).default(35),
     DISCOVERY_INTERVAL_HOURS: z.coerce.number().int().min(1).default(24),
     CMC_WEB_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(60).default(30),
-    CMC_WEB_MONTHLY_REQUEST_BUDGET: z.coerce.number().int().min(1).default(9000),
+    /**
+     * Local politeness budget for the website collector (all routes). Tier 1 needs about one daily
+     * history request per screen candidate per UTC day on top of the hourly listing and LBank pairs.
+     */
+    CMC_WEB_MONTHLY_REQUEST_BUDGET: z.coerce.number().int().min(1).default(30_000),
     CMC_WEB_MAX_RETRIES: z.coerce.number().int().min(0).max(6).default(2),
     CMC_WEB_CACHE_SECONDS: z.coerce.number().int().min(0).max(300).default(60),
     /**
@@ -54,114 +53,74 @@ const schema = z
     SCHEDULER_ENABLED: bool.default(true),
     PIPELINE_CRON: z.string().default("7 * * * *"),
     MISSED_RUN_POLICY: z.enum(["current_slot", "skip"]).default("current_slot"),
-    SNAPSHOT_WINDOW: z.coerce.number().int().min(2).max(48).default(3),
-    STALE_AFTER_MINUTES: z.coerce.number().int().min(5).default(90),
-    SHORTLIST_SIZE: z.coerce.number().int().min(0).max(25).default(6),
-    /** Coins listed as pump recommendations (dashboard, MCP, Telegram table); the top SHORTLIST_SIZE go to the agents. */
-    RECOMMENDATIONS_MAX: z.coerce.number().int().min(1).max(25).default(10),
-    MIN_VOLUME_24H_USD: z.coerce.number().min(0).default(250_000),
-    MIN_MARKET_CAP_USD: z.coerce.number().min(0).default(5_000_000),
-    /** Consecutive hourly snapshots required before a signal may be "candidate". */
-    CANDIDATE_MIN_HISTORY: z.coerce.number().int().min(2).default(25),
+    /** The crawler's documented batch interval (hourly PIPELINE_CRON), PDF p.12. */
+    CRAWL_EXPECTED_INTERVAL_MINUTES: z.coerce.number().int().min(1).max(1440).default(60),
+    /** Quote age beyond which the current observation is stale; default 2 × the crawl interval (p.12). */
+    MAX_QUOTE_AGE_MINUTES: z.coerce.number().int().min(1).optional(),
     RETENTION_SNAPSHOT_DAYS: z.coerce.number().int().min(0).default(0),
     /**
-     * After N days: snapshots of coins outside the strategy floors are thinned to the first
-     * snapshot of each UTC day, and recomputable per-coin feature/screening rows are pruned.
-     * Strategy-universe snapshots, signals and paper trades are kept. 0 = keep all detail.
+     * After N days: snapshots of coins outside the Tier 1 rank band are thinned to the first
+     * snapshot of each UTC day, and scan rows excluded only by rank/cap to the first batch of each
+     * UTC day. 0 = keep all detail.
      */
     RETENTION_DETAIL_DAYS: z.coerce.number().int().min(0).default(30),
 
-    AGENT_PROVIDER: z.enum(["fixture", "claude", "off"]).default("fixture"),
-    CLAUDE_CODE_OAUTH_TOKEN: optionalSecret,
-    AGENT_MODEL_ANALYST: z.string().default("claude-sonnet-5-5"),
-    AGENT_MODEL_REVIEWER: z.string().default("claude-sonnet-5-5"),
-    AGENT_MODEL_ESCALATION: z.string().default("claude-opus-5-5"),
-    AGENT_MODEL_COORDINATOR: z.string().default("claude-haiku-5-5"),
-    AGENT_RUN_BUDGET_USD: z.coerce.number().min(0).default(1.5),
-    AGENT_DAILY_BUDGET_USD: z.coerce.number().min(0).default(20),
-    AGENT_TIMEOUT_SECONDS: z.coerce.number().int().min(10).default(240),
+    // --- Two-Tier VMC strategy, Tier 1 (docs/strategy-two-tier-vmc.md) --------------------
+    /** Completed UTC days requested per daily-history refresh (≥ 30 needed; extra days catch revisions). */
+    TIER1_DAILY_LOOKBACK_DAYS: z.coerce.number().int().min(30).max(120).default(35),
+    TIER1_DAILY_MAX_ASSETS_PER_RUN: z.coerce.number().int().min(0).max(20_000).default(1500),
+    TIER1_DAILY_MAX_MINUTES: z.coerce.number().min(1).max(50).default(30),
+    /** An asset whose latest completed day was not returned is retried after this many hours. */
+    TIER1_DAILY_RETRY_HOURS: z.coerce.number().min(0).max(48).default(3),
+    /**
+     * LBank Spot markets list (CMC exchange page, Markets section): fetched once, then again when
+     * the stored list is this many days old, or on demand (dashboard / `lbank:refresh`). D2.
+     */
+    LBANK_PAIRS_REFRESH_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+    /** Beyond this age the stored list is stale: LBank status UNKNOWN and the queue is withheld. */
+    LBANK_PAIRS_MAX_AGE_DAYS: z.coerce.number().int().min(1).max(400).default(35),
+    /**
+     * false (operator decision D1): a pair in the LBank list counts as tradable. true: every listed
+     * pair also needs a reviewer's "Verified tradable" (the stricter assumption A7).
+     */
+    LBANK_REQUIRE_MANUAL_VERIFICATION: bool.default(false),
+    /** CMC Markets venue rows are refreshed at most this often per review candidate. */
+    TIER1_VENUE_REFRESH_HOURS: z.coerce.number().min(1).max(168).default(24),
+    TIER1_VENUE_MAX_ASSETS_PER_RUN: z.coerce.number().int().min(0).max(2000).default(60),
+    TIER1_OVERRIDES_FILE: z.string().default("config/tier1-overrides.json"),
+    TIER1_EXPORT_DIR: z.string().default("var/exports"),
+    EXPORT_RETENTION_DAYS: z.coerce.number().int().min(0).default(7),
 
     TELEGRAM_MODE: z.enum(["disabled", "dry_run", "live"]).default("dry_run"),
     TELEGRAM_BOT_TOKEN: optionalSecret,
     TELEGRAM_CHAT_ID: z.string().trim().optional(),
-    /** Answer /report, /status, /vmc, /run, /help from TELEGRAM_CHAT_ID (web server only). */
+    /** Answer /report, /status, /vmc, /run, /help (web server only). */
     TELEGRAM_COMMANDS_ENABLED: bool.default(true),
+    /** Review Queue rows in the Telegram report. */
+    TELEGRAM_QUEUE_ROWS: z.coerce.number().int().min(1).max(30).default(10),
+    /** xlsx: attach the batch's Excel workbook to each Telegram report (not for withheld queues); none: text only. */
+    TELEGRAM_ATTACH_EXPORT: z.enum(["none", "xlsx"]).default("xlsx"),
 
     MCP_HTTP_ENABLED: bool.default(true),
     MCP_READ_TOKEN: optionalSecret,
     MCP_WRITE_TOKEN: optionalSecret,
     DASHBOARD_BASIC_AUTH: optionalSecret,
-
-    // --- Volume / Market Cap baseline collection (CMC brief) ---------------------------
-    /** Explicit CoinMarketCap numeric ids. Empty = nothing is monitored (no implicit universe). */
-    VMC_ASSET_IDS: z
-      .string()
-      .optional()
-      .transform((v, ctx) => {
-        const ids = (v ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-        for (const id of ids) if (!/^[1-9]\d{0,9}$/.test(id)) ctx.addIssue({ code: "custom", message: `VMC_ASSET_IDS: "${id}" is not a CoinMarketCap numeric id` });
-        return [...new Set(ids.map(Number))];
-      }),
-    /** cmc_web = coin pages + their public website data endpoints, no Pro API key. */
-    VMC_SOURCE: z.enum(["fixture", "cmc", "cmc_web"]).default("fixture"),
-    /** Plan the operator says the key is on; verified at runtime with /v1/key/info + probes. */
-    CMC_PLAN: z.enum(["basic", "builder", "startup", "growth", "professional", "enterprise"]).default("basic"),
-    /** eod_quote = /v3 quotes/historical interval=daily; ohlcv = /v2 ohlcv/historical daily. Never mixed. */
-    VMC_DAILY_CONVENTION: z.enum(["eod_quote", "ohlcv"]).default("eod_quote"),
-    VMC_BASELINE_MONTHS: z.coerce.number().int().min(1).max(24).default(6),
-    VMC_MIN_BASELINE_COVERAGE: z.coerce.number().min(0).max(1).default(0.95),
-    VMC_DAILY_REFRESH_LOOKBACK_DAYS: z.coerce.number().int().min(1).max(60).default(14),
-    VMC_EOD_MAX_OFFSET_MINUTES: z.coerce.number().int().min(1).max(720).default(60),
-    VMC_RECENT_WINDOW_HOURS: z.coerce.number().int().min(1).max(720).default(72),
-    VMC_STALE_AFTER_MINUTES: z.coerce.number().int().min(5).default(90),
-    VMC_SCHEDULER_ENABLED: bool.default(false),
-    VMC_HOURLY_CRON: z.string().default("5 * * * *"),
-    VMC_BASELINE_CRON: z.string().default("30 1 * * 1"),
-    VMC_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(1600).default(20),
-    VMC_MAX_RETRIES: z.coerce.number().int().min(0).max(6).default(3),
-    VMC_LATEST_BATCH_SIZE: z.coerce.number().int().min(1).max(250).default(100),
-    VMC_MONTHLY_CREDIT_BUDGET: z.coerce.number().int().min(1).default(10_000),
-    VMC_OUTPUT_FORMAT: z.enum(["table", "json"]).default("table"),
-    /** Optional file the comparison is written to after each hourly run (in addition to API/CLI). */
-    VMC_OUTPUT_FILE: z.string().optional(),
-
-    PAPER_FEE_BPS: z.coerce.number().int().min(0).max(500).default(10),
-    PAPER_SLIPPAGE_BPS: z.coerce.number().int().min(0).max(1000).default(30),
   })
   .superRefine((c, ctx) => {
-    if (c.VMC_SOURCE === "cmc_web" && c.VMC_DAILY_CONVENTION !== "ohlcv") {
-      ctx.addIssue({ code: "custom", path: ["VMC_DAILY_CONVENTION"], message: "VMC_SOURCE=cmc_web requires VMC_DAILY_CONVENTION=ohlcv (website daily history semantics)" });
-    }
     if (c.TELEGRAM_MODE === "live" && (!c.TELEGRAM_BOT_TOKEN || !c.TELEGRAM_CHAT_ID)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["TELEGRAM_MODE"],
-        message: "TELEGRAM_MODE=live requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID",
-      });
+      ctx.addIssue({ code: "custom", path: ["TELEGRAM_MODE"], message: "TELEGRAM_MODE=live requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID" });
     }
     if (c.DATA_SOURCE === "coingecko" && !c.COINGECKO_API_KEY) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["DATA_SOURCE"],
-        message: "DATA_SOURCE=coingecko requires COINGECKO_API_KEY (free Demo key from CoinGecko)",
-      });
-    }
-    if (c.VMC_SOURCE === "cmc" && !c.CMC_API_KEY) {
-      ctx.addIssue({ code: "custom", path: ["VMC_SOURCE"], message: "VMC_SOURCE=cmc requires CMC_API_KEY (a CoinMarketCap API key, not the Claude token)" });
+      ctx.addIssue({ code: "custom", path: ["DATA_SOURCE"], message: "DATA_SOURCE=coingecko requires COINGECKO_API_KEY (free Demo key from CoinGecko)" });
     }
     if (c.DATA_SOURCE === "coinmarketcap" && !c.CMC_API_KEY) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["DATA_SOURCE"],
-        message: "DATA_SOURCE=coinmarketcap requires CMC_API_KEY (free Basic key from CoinMarketCap)",
-      });
+      ctx.addIssue({ code: "custom", path: ["DATA_SOURCE"], message: "DATA_SOURCE=coinmarketcap requires CMC_API_KEY (free Basic key from CoinMarketCap)" });
     }
     if (!isLoopback(c.HOST) && !c.DASHBOARD_BASIC_AUTH) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["DASHBOARD_BASIC_AUTH"],
-        message: "Binding to a non-loopback HOST requires DASHBOARD_BASIC_AUTH",
-      });
+      ctx.addIssue({ code: "custom", path: ["DASHBOARD_BASIC_AUTH"], message: "Binding to a non-loopback HOST requires DASHBOARD_BASIC_AUTH" });
+    }
+    if (c.LBANK_PAIRS_MAX_AGE_DAYS < c.LBANK_PAIRS_REFRESH_DAYS) {
+      ctx.addIssue({ code: "custom", path: ["LBANK_PAIRS_MAX_AGE_DAYS"], message: "must be at least LBANK_PAIRS_REFRESH_DAYS" });
     }
     if (c.MCP_READ_TOKEN && c.MCP_READ_TOKEN.length < 24) {
       ctx.addIssue({ code: "custom", path: ["MCP_READ_TOKEN"], message: "must be at least 24 characters" });
@@ -169,7 +128,8 @@ const schema = z
     if (c.MCP_WRITE_TOKEN && c.MCP_WRITE_TOKEN.length < 24) {
       ctx.addIssue({ code: "custom", path: ["MCP_WRITE_TOKEN"], message: "must be at least 24 characters" });
     }
-  });
+  })
+  .transform((c) => ({ ...c, MAX_QUOTE_AGE_MINUTES: c.MAX_QUOTE_AGE_MINUTES ?? 2 * c.CRAWL_EXPECTED_INTERVAL_MINUTES }));
 
 export type AppConfig = z.infer<typeof schema>;
 

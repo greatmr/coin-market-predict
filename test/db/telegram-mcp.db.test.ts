@@ -1,8 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it } from "vitest";
-import { addHours, slotOf } from "../../src/common/time.js";
-import { IngestionService } from "../../src/ingestion/ingestion.service.js";
+import { slotOf } from "../../src/common/time.js";
 import { McpService } from "../../src/mcp/mcp.service.js";
 import { PipelineService } from "../../src/pipeline/pipeline.service.js";
 import { MAX_DELIVERY_ATTEMPTS, TelegramService } from "../../src/telegram/telegram.service.js";
@@ -96,59 +95,34 @@ describe("MCP server", () => {
     return client;
   }
 
-  it("separates read and write capabilities and validates inputs", async () => {
+  it("exposes read-only Tier 1 tools, validates inputs and offers no write tool", async () => {
     ctx = await makeApp();
     await resetDb(ctx.prisma);
-    const ing = ctx.app.get(IngestionService);
-    await ing.discover(new Date());
-    for (let h = 30; h >= 1; h--) await ing.collect(addHours(slotOf(new Date()), -h), null, new Date(), { fixtureBackfill: true });
     await ctx.app.get(PipelineService).runSlot();
 
     const reader = await connect("read");
     const readTools = (await reader.listTools()).tools.map((t) => t.name);
-    expect(readTools).toEqual(expect.arrayContaining(["list_assets", "get_coverage", "get_snapshots", "get_features", "get_signals", "get_run_status"]));
+    expect(readTools).toEqual(expect.arrayContaining(["get_scan_summary", "get_scan_results", "get_asset_trace", "list_batches", "get_mapping_tasks", "get_coverage", "get_snapshots", "list_assets", "get_run_status"]));
+    const writer = await connect("write");
+    expect((await writer.listTools()).tools.map((t) => t.name).sort()).toEqual([...readTools].sort());
     expect(readTools).not.toContain("publish_signal_report");
 
     const cov = await reader.callTool({ name: "get_coverage", arguments: {} });
     expect(JSON.stringify(cov.structuredContent)).toMatch(/"isLiveData":false/);
-    const bad = await reader.callTool({ name: "get_snapshots", arguments: { assetId: "not-a-uuid" } });
+    const queue = await reader.callTool({ name: "get_scan_results", arguments: { sheet: "queue", limit: 5 } });
+    expect(JSON.stringify(queue.structuredContent)).toMatch(/"inQueue":true/);
+    const trace = await reader.callTool({ name: "get_asset_trace", arguments: { cmcId: 990001 } });
+    expect(JSON.stringify(trace.structuredContent)).toMatch(/mean_3d = \(0\.1 \+ 0\.1 \+ 0\.1\) \/ 3 = 0\.1/);
+    const bad = await reader.callTool({ name: "get_asset_trace", arguments: { cmcId: "990001" } });
     expect(bad.isError).toBe(true);
-
-    const writer = await connect("write");
-    expect((await writer.listTools()).tools.map((t) => t.name)).toContain("publish_signal_report");
-    const asset = await ctx.prisma.asset.findFirstOrThrow({ where: { symbol: "SPRK" } });
-    const res = await writer.callTool({
-      name: "publish_signal_report",
-      arguments: {
-        assessment: {
-          assetId: asset.id,
-          status: "candidate",
-          signalType: "advance",
-          horizonHours: 24,
-          score: 70,
-          evidence: [],
-          counterevidence: [],
-          dataQuality: { assessment: "good", issues: [], missing: [] },
-          entryTrigger: "x",
-          invalidation: "y",
-          exitConditions: { target: "t", trailing: "tr", maxHoldingHours: 24 },
-          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
-          rationale: "external",
-        },
-      },
-    });
-    expect(JSON.stringify(res.structuredContent)).toMatch(/"status":"watch".*"cappedFromCandidate":true/);
-    const stored = await ctx.prisma.signal.findFirstOrThrow({ where: { origin: "external_mcp" } });
-    expect(stored.status).toBe("watch");
   });
 });
 
 describe("Telegram bot commands", () => {
-  it("serves only the configured chat and answers /help, /report, /run with readable cards", async () => {
+  it("serves only the configured chat and answers /help, /report, /run, /status, /vmc", async () => {
     const { TelegramBotService } = await import("../../src/telegram/telegram-bot.service.js");
     const { ReportService } = await import("../../src/telegram/report.service.js");
     const { ReadModelService } = await import("../../src/read-model/read-model.service.js");
-    const { VmcService } = await import("../../src/vmc/vmc.service.js");
     const { TelegramAccessService } = await import("../../src/telegram/access.service.js");
     const { TelegramAdminService } = await import("../../src/telegram/admin.service.js");
     const sf = scriptedFetch([{ status: 200, body: { ok: true, result: { message_id: 1 } } }]);
@@ -156,26 +130,34 @@ describe("Telegram bot commands", () => {
     await resetDb(ctx.prisma);
     const tg = ctx.app.get(TelegramService);
     tg.sleep = async () => undefined;
-    const bot = new TelegramBotService(ctx.cfg, sf.f, ctx.prisma, tg, ctx.app.get(ReportService), ctx.app.get(ReadModelService), ctx.app.get(PipelineService), ctx.app.get(VmcService), ctx.app.get(TelegramAccessService), ctx.app.get(TelegramAdminService));
+    const bot = new TelegramBotService(ctx.cfg, sf.f, ctx.prisma, tg, ctx.app.get(ReportService), ctx.app.get(ReadModelService), ctx.app.get(PipelineService), ctx.app.get(TelegramAccessService), ctx.app.get(TelegramAdminService));
 
     expect((await bot.handle("999", "/report", { label: "@guest", isPrivate: true }))[0]).toMatch(/This bot is private/);
     expect((await bot.handle("186142556", "/help"))[0]).toMatch(/\/report — latest hourly report/);
     expect((await bot.handle("186142556", "/report"))[0]).toMatch(/No report yet/);
 
-    const ing = ctx.app.get(IngestionService);
-    await ing.discover(new Date());
-    for (let h = 30; h >= 1; h--) await ing.collect(addHours(slotOf(new Date()), -h), null, new Date(), { fixtureBackfill: true });
     const run = await bot.handle("186142556", "/run");
-    expect(run[0]).toMatch(/Coins Predicts — hourly report/);
+    expect(run[0]).toMatch(/Tier 1 VMC screen/);
     expect(run[0]).toMatch(/TEST DATA/);
-    // The pump watchlist is a compact monospace table (operator request) that still fits a phone.
-    expect(run[0]).toMatch(/🔥 Pump watchlist/);
     const table = /<pre>([\s\S]*?)<\/pre>/.exec(run.join("\n"));
     expect(table).not.toBeNull();
-    expect(table![1]!.split("\n")[0]).toMatch(/^Coin\s+3d\s+MCap\s+VMC\s+Pump\s+Agent\s+Rec$/);
+    expect(table![1]!.split("\n")[0]).toMatch(/^#\s+Coin\s+YES\s+3d\s+7d\s+30d\s+VMC$/);
     for (const line of table![1]!.split("\n")) expect(line.length).toBeLessThanOrEqual(44);
-    expect((await bot.handle("186142556", "/status"))[0]).toMatch(/Recent runs/);
-    expect((await bot.handle("186142556", "/vmc"))[0]).toMatch(/not configured/);
+    expect(run.join("\n")).not.toMatch(/\bbuy\b/i);
+    expect((await bot.handle("186142556", "/status"))[0]).toMatch(/Recent runs[\s\S]*|Tier 1: batch COMPLETE/);
+    expect((await bot.handle("186142556", "/vmc"))[0]).toMatch(/Usage/);
+    expect((await bot.handle("186142556", "/vmc 990001"))[0]).toMatch(/YNY[\s\S]*3d mean[\s\S]*2\.00x YES/);
+    expect((await bot.handle("186142556", "/vmc TWIN"))[0]).toMatch(/Several coins use the symbol TWIN/);
+    expect((await bot.handle("186142556", "/coin"))[0]).toMatch(/Usage: \/coin/);
+    const coin = (await bot.handle("186142556", "/coin yny")).join("\n");
+    expect(coin).toMatch(/YNY<\/b> · Yes No Yes Labs \(fixture\) · CMC 990001/);
+    expect(coin).toMatch(/TEST DATA/);
+    expect(coin).toMatch(/3d {2}\s*10\.000%\s+2\.00x {2}YES/);
+    expect(coin).toMatch(/Completed UTC days used/);
+    expect(coin).toMatch(/LBank Spot pairs<\/b> · VERIFIED/);
+    expect(coin).toMatch(/YNY\/USDT · mapping OK · tradable \(feed\)/);
+    expect((await bot.handle("186142556", "/coin TWIN"))[0]).toMatch(/Several coins use the symbol TWIN:[\s\S]*\/coin 990005[\s\S]*\/coin 990006/);
+    expect((await bot.handle("186142556", "/coin NOPE"))[0]).toMatch(/No coin with the symbol NOPE/);
     expect(sf.calls.every((c) => !c.url.includes("getUpdates"))).toBe(true);
   });
 });
@@ -190,13 +172,12 @@ describe("Telegram access for other people", () => {
     const { TelegramAdminService } = await import("../../src/telegram/admin.service.js");
     const { ReportService } = await import("../../src/telegram/report.service.js");
     const { ReadModelService } = await import("../../src/read-model/read-model.service.js");
-    const { VmcService } = await import("../../src/vmc/vmc.service.js");
     const sf = scriptedFetch(script, rule);
     ctx = await makeApp({ TELEGRAM_MODE: "live", TELEGRAM_BOT_TOKEN: BOT, TELEGRAM_CHAT_ID: OWNER }, sf.f);
     await resetDb(ctx.prisma);
     const tg = ctx.app.get(TelegramService);
     tg.sleep = async () => undefined;
-    const bot = new TelegramBotService(ctx.cfg, sf.f, ctx.prisma, tg, ctx.app.get(ReportService), ctx.app.get(ReadModelService), ctx.app.get(PipelineService), ctx.app.get(VmcService), ctx.app.get(TelegramAccessService), ctx.app.get(TelegramAdminService));
+    const bot = new TelegramBotService(ctx.cfg, sf.f, ctx.prisma, tg, ctx.app.get(ReportService), ctx.app.get(ReadModelService), ctx.app.get(PipelineService), ctx.app.get(TelegramAccessService), ctx.app.get(TelegramAdminService));
     return { bot, tg, calls: sf.calls, access: ctx.app.get(TelegramAccessService) };
   }
   const ok = { status: 200, body: { ok: true, result: { message_id: 1 } } };
@@ -288,7 +269,12 @@ describe("Telegram outage recovery and manual sending", () => {
     const advance = (ms: number) => (now += ms);
     await ctx.app.get(TelegramAccessService).approve(MEMBER);
     await ctx.prisma.provider.create({ data: { id: "fixture", name: "f", accessMethod: "fixture", isLive: false } });
-    const run = await ctx.prisma.pipelineRun.create({ data: { kind: "hourly", slotTime: slotOf(new Date()), providerId: "fixture", status: "partial", startedAt: new Date(), isLiveData: false } });
+    const slotTime = slotOf(new Date());
+    const run = await ctx.prisma.pipelineRun.create({ data: { kind: "hourly", slotTime, providerId: "fixture", status: "partial", startedAt: new Date(), isLiveData: false } });
+    // A scanned (empty) batch behind the run, so a fresh copy of its report can be built.
+    const batch = await ctx.prisma.crawlBatch.create({ data: { providerId: "fixture", slotTime, pipelineRunId: run.id, isLive: false, startedAt: new Date(), finishedAt: new Date(), crawledAt: new Date(), status: "COMPLETE", collected: 0, fieldCounts: {} } });
+    await ctx.prisma.pipelineRun.update({ where: { id: run.id }, data: { metrics: { batchId: batch.id } } });
+    await ctx.prisma.scanRun.create({ data: { batchId: batch.id, providerId: "fixture", isLive: false, rulesetVersion: "vmc-tier1-1", configVersion: "test", overridesVersion: "none", startedAt: new Date(), finishedAt: new Date(), status: "succeeded", asOf: new Date(), queueStatus: "EMPTY", counts: { assets: 0, eligible: 0, needsReview: 0, excluded: 0, queue: 0 } } });
     return { tg, admin: ctx.app.get(TelegramAdminService), calls: sf.calls, script, runId: run.id, advance };
   }
   const rowFor = (runId: string, chatId: string) => ctx!.prisma.telegramDelivery.findFirstOrThrow({ where: { runId, chatId, mode: "live" } });

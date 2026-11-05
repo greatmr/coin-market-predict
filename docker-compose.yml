@@ -43,24 +43,22 @@ services:
       PORT: 3000
       RUN_MIGRATIONS: "true"
       # Secrets are mounted at runtime, never baked into the image.
-      CLAUDE_CODE_OAUTH_TOKEN_FILE: /run/secrets/claude_code_oauth_token
       TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
     secrets:
-      - claude_code_oauth_token
       - telegram_bot_token
     ports:
       - "127.0.0.1:${APP_PORT:-3000}:3000"
     volumes:
-      - coins_agent_state:/app/var
+      # Per-batch CSV/XLSX exports (var/exports). The database keeps every result regardless.
+      - coins_app_var:/app/var
 
 secrets:
-  # Create these files locally (they are git- and docker-ignored). Empty files are allowed:
-  # the app then reports the integration as "not configured".
-  claude_code_oauth_token:
-    file: ./secrets/claude_code_oauth_token
+  # Create this file locally (git- and docker-ignored). An empty file is allowed: the app then
+  # reports Telegram as "not configured".
   telegram_bot_token:
     file: ./secrets/telegram_bot_token
 
 volumes:
   coins_pgdata:
-  coins_agent_state:
+  # Replaces the retired agent-state volume `coins_agent_state` (left in place, not deleted).
+  coins_app_var:

@@ -1,16 +1,20 @@
-import { BadRequestException, Body, Controller, Get, Inject, NotFoundException, Param, Post, Query, Req } from "@nestjs/common";
-import type { Request } from "express";
+import { basename } from "node:path";
+import { BadRequestException, Body, Controller, Get, Inject, NotFoundException, Param, Post, Query, Req, Res } from "@nestjs/common";
+import type { Request, Response } from "express";
 import { CronTime } from "cron";
 import { z } from "zod";
-import { AGENT_RUNNER, type AgentRunner } from "../agents/runner.js";
 import { APP_CONFIG, type AppConfig } from "../config/config.js";
-import { FEATURES } from "../features/registry.js";
+import { PipelineService } from "../pipeline/pipeline.service.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { ReadModelService } from "../read-model/read-model.service.js";
-import { LOOPBACK, assertTrustedWrite } from "./write-guard.js";
-import { ScreeningService } from "../screening/screening.service.js";
 import { TelegramAccessService, isChatId } from "../telegram/access.service.js";
 import { TelegramAdminService } from "../telegram/admin.service.js";
+import { RULES, RULESET_VERSION } from "../tier1/constants.js";
+import { loadOverrides } from "../tier1/overrides.js";
+import { ReviewInputError, ReviewService } from "../tier1/review.service.js";
+import { CANDLE_STATES, EVENT_DAYS, FINAL_DECISIONS, JUDGMENTS, MARKET_REGIMES, VENUE_DECISIONS } from "../tier1/review-rules.js";
+import { VenuesService } from "../tier1/venues.service.js";
+import { LOOPBACK, assertTrustedWrite } from "./write-guard.js";
 
 function parse<T>(schema: z.ZodType<T>, v: unknown): T {
   const r = schema.safeParse(v);
@@ -19,6 +23,7 @@ function parse<T>(schema: z.ZodType<T>, v: unknown): T {
 }
 
 const uuid = z.string().uuid();
+const cmcIdParam = z.coerce.number().int().positive().max(2_000_000_000);
 
 function nextCronRun(expr: string): string | null {
   try {
@@ -28,18 +33,197 @@ function nextCronRun(expr: string): string | null {
   }
 }
 
-/** JSON API for the dashboard (reads, plus Telegram access management). The dashboard never talks to MCP. */
+/** JSON API for the dashboard. Reads go through the read model; writes need JSON, same origin and loopback or Basic auth. */
 @Controller("api")
 export class DashboardController {
   constructor(
     private readonly read: ReadModelService,
     private readonly prisma: PrismaService,
-    private readonly screening: ScreeningService,
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
-    @Inject(AGENT_RUNNER) private readonly runner: AgentRunner,
+    private readonly reviews: ReviewService,
+    private readonly pipeline: PipelineService,
+    private readonly venues: VenuesService,
     private readonly access: TelegramAccessService,
     private readonly admin: TelegramAdminService,
   ) {}
+
+  private async guarded<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err instanceof ReviewInputError) throw new BadRequestException(err.issues.join("; "));
+      throw err;
+    }
+  }
+
+  @Get("config")
+  async config() {
+    const provider = await this.prisma.provider.findUnique({ where: { id: this.cfg.DATA_SOURCE } });
+    let overrides: { version: string; count: number } | { error: string };
+    try {
+      const o = loadOverrides(this.cfg.TIER1_OVERRIDES_FILE);
+      overrides = { version: o.version, count: o.count };
+    } catch (err) {
+      overrides = { error: err instanceof Error ? err.message : String(err) };
+    }
+    return {
+      timezone: this.cfg.DISPLAY_TIMEZONE,
+      dataSource: this.cfg.DATA_SOURCE,
+      isLiveData: provider?.isLive ?? this.cfg.DATA_SOURCE !== "fixture",
+      providerName: provider?.name ?? this.cfg.DATA_SOURCE,
+      attribution: provider?.attribution ?? null,
+      telegramMode: this.cfg.TELEGRAM_MODE,
+      schedulerEnabled: this.cfg.SCHEDULER_ENABLED,
+      pipelineCron: this.cfg.PIPELINE_CRON,
+      nextRunAt: this.cfg.SCHEDULER_ENABLED ? nextCronRun(this.cfg.PIPELINE_CRON) : null,
+      strategy: {
+        name: "Two-Tier VMC strategy (Tier 1 CMC screen → Tier 2 human chart review)",
+        rulesetVersion: RULESET_VERSION,
+        rules: RULES,
+        crawlIntervalMinutes: this.cfg.CRAWL_EXPECTED_INTERVAL_MINUTES,
+        maxQuoteAgeMinutes: this.cfg.MAX_QUOTE_AGE_MINUTES,
+        dailyLookbackDays: this.cfg.TIER1_DAILY_LOOKBACK_DAYS,
+        venueRefreshHours: this.cfg.TIER1_VENUE_REFRESH_HOURS,
+        lbank: { refreshDays: this.cfg.LBANK_PAIRS_REFRESH_DAYS, maxAgeDays: this.cfg.LBANK_PAIRS_MAX_AGE_DAYS, requireManualVerification: this.cfg.LBANK_REQUIRE_MANUAL_VERIFICATION },
+        overrides,
+      },
+      review: { venueDecisions: VENUE_DECISIONS, eventDays: EVENT_DAYS, judgments: JUDGMENTS, candleStates: CANDLE_STATES, marketRegimes: MARKET_REGIMES, finalDecisions: FINAL_DECISIONS },
+      retention: { snapshotDays: this.cfg.RETENTION_SNAPSHOT_DAYS, detailDays: this.cfg.RETENTION_DETAIL_DAYS, exportDays: this.cfg.EXPORT_RETENTION_DAYS },
+      canWrite: !!this.cfg.DASHBOARD_BASIC_AUTH || LOOPBACK.has(this.cfg.HOST),
+    };
+  }
+
+  @Get("overview")
+  overview() {
+    return this.read.overview();
+  }
+
+  @Get("scan")
+  scan(@Query() q: unknown) {
+    const p = parse(
+      z.object({
+        sheet: z.enum(["queue", "eligible", "needs_review", "excluded", "all"]).default("queue"),
+        batchId: uuid.optional(),
+        search: z.string().trim().max(64).optional(),
+        limit: z.coerce.number().int().min(1).max(2000).default(200),
+        offset: z.coerce.number().int().min(0).max(100_000).default(0),
+      }),
+      q,
+    );
+    return this.read.scanSheet({ sheet: p.sheet, batchId: p.batchId, search: p.search || undefined, limit: p.limit, offset: p.offset });
+  }
+
+  @Get("assets/:cmcId/trace")
+  async trace(@Param("cmcId") id: string, @Query() q: unknown) {
+    const p = parse(z.object({ batchId: uuid.optional() }), q);
+    const t = await this.read.assetTrace(parse(cmcIdParam, id), p.batchId);
+    if (!t) throw new NotFoundException("no Tier 1 record for this CMC id");
+    return t;
+  }
+
+  @Get("assets/:cmcId/snapshots")
+  snapshots(@Param("cmcId") id: string, @Query("hours") hours?: string) {
+    return this.read.snapshots(parse(cmcIdParam, id), parse(z.coerce.number().int().min(1).max(720).optional(), hours) ?? 72);
+  }
+
+  @Get("assets")
+  assets(@Query() q: unknown) {
+    const p = parse(z.object({ search: z.string().max(64).optional(), limit: z.coerce.number().int().min(1).max(200).default(50), offset: z.coerce.number().int().min(0).default(0) }), q);
+    return this.read.listAssets({ search: p.search, limit: p.limit, offset: p.offset });
+  }
+
+  @Get("batches")
+  batches() {
+    return this.read.batches(48);
+  }
+
+  @Get("health")
+  async health() {
+    const [coverage, runs] = await Promise.all([this.read.coverage(), this.read.runs(24)]);
+    return { coverage, runs };
+  }
+
+  @Get("runs")
+  runs() {
+    return this.read.runs(48);
+  }
+
+  @Get("exports")
+  exportsList() {
+    return this.read.exportsList(48);
+  }
+
+  @Get("exports/:batchId/:file")
+  async exportFile(@Param("batchId") batchId: string, @Param("file") file: string, @Res() res: Response) {
+    const path = await this.read.exportFile(parse(uuid, batchId), parse(z.string().regex(/^[a-z_]+\.(csv|xlsx|json)$/), file));
+    if (!path) throw new NotFoundException("export file not found");
+    res.download(path, `${batchId.slice(0, 8)}_${basename(path)}`);
+  }
+
+  @Get("mapping-tasks")
+  mappingTasks(@Query() q: unknown) {
+    const p = parse(z.object({ status: z.enum(["OPEN", "RESOLVED", "ALL"]).default("OPEN") }), q);
+    return this.read.mappingTasks(p.status, 200);
+  }
+
+  @Get("reviews")
+  reviewsList(@Query() q: unknown) {
+    const p = parse(z.object({ cmcId: cmcIdParam }), q);
+    return this.reviews.list(this.cfg.DATA_SOURCE, p.cmcId);
+  }
+
+  @Get("reviews/:id/export")
+  async reviewExport(@Param("id") id: string) {
+    const r = await this.reviews.exportReview(parse(uuid, id));
+    if (!r) throw new NotFoundException();
+    return r;
+  }
+
+  /** Append a review revision (Tier 1 venue/event-day decision and/or Tier 2 chart review + trade plan). */
+  @Post("reviews")
+  createReview(@Body() body: unknown, @Req() req: Request) {
+    assertTrustedWrite(req, this.cfg);
+    return this.guarded(() => this.reviews.create(body));
+  }
+
+  /** Append an LBank venue decision (tradability verification or mapping evidence). */
+  @Post("venue-decisions")
+  venueDecision(@Body() body: unknown, @Req() req: Request) {
+    assertTrustedWrite(req, this.cfg);
+    return this.guarded(() => this.reviews.decideVenue(body, this.cfg.DATA_SOURCE));
+  }
+
+  /** Recompute a stored batch (default: the latest) and re-export it; never crawls. */
+  @Post("scan/rescan")
+  async rescan(@Body() body: unknown, @Req() req: Request) {
+    assertTrustedWrite(req, this.cfg);
+    const b = parse(z.object({ batchId: uuid.optional() }), body ?? {});
+    const r = await this.pipeline.reprocess(b.batchId);
+    if (r.skipped) return { ok: false, reason: r.skipped };
+    return { ok: true, batchId: r.batchId, queueStatus: r.scan?.queueStatus, counts: r.scan?.counts, export: r.export?.status };
+  }
+
+  /** The stored LBank Spot markets list: fetch time, age, next automatic refresh, last attempt. */
+  @Get("lbank")
+  async lbankList() {
+    return { list: await this.venues.lbankListStatus(this.cfg.DATA_SOURCE), refreshDays: this.cfg.LBANK_PAIRS_REFRESH_DAYS, maxAgeDays: this.cfg.LBANK_PAIRS_MAX_AGE_DAYS, requireManualVerification: this.cfg.LBANK_REQUIRE_MANUAL_VERIFICATION };
+  }
+
+  /** Fetch the LBank Spot markets list now, then recompute and re-export the latest batch. */
+  @Post("lbank/refresh")
+  async lbankRefresh(@Req() req: Request) {
+    assertTrustedWrite(req, this.cfg);
+    const r = await this.pipeline.refreshLbankPairs();
+    if ("skipped" in r) return { ok: false, reason: r.skipped };
+    return { ok: r.lbank.usable, status: r.lbank.status, pairs: r.lbank.pairs, expected: r.lbank.expected, notes: r.lbank.notes, listFetchedAt: r.lbank.listFetchedAt, nextRefreshAt: r.lbank.nextRefreshAt, batchId: r.batchId, queueStatus: r.scan?.queueStatus ?? null, counts: r.scan?.counts ?? null };
+  }
+
+  @Get("deliveries")
+  deliveries() {
+    return this.read.deliveries(20);
+  }
+
+  // --- Telegram access (unchanged behaviour) -------------------------------------------------
 
   @Get("telegram/access")
   async telegramAccess() {
@@ -99,158 +283,5 @@ export class DashboardController {
       return { ok: true };
     }
     return { ok: true, removed: await this.admin.remove(chatId) };
-  }
-
-  @Get("config")
-  async config() {
-    const provider = await this.prisma.provider.findUnique({ where: { id: this.cfg.DATA_SOURCE } });
-    return {
-      timezone: this.cfg.DISPLAY_TIMEZONE,
-      dataSource: this.cfg.DATA_SOURCE,
-      isLiveData: provider?.isLive ?? this.cfg.DATA_SOURCE !== "fixture",
-      providerName: provider?.name ?? this.cfg.DATA_SOURCE,
-      attribution: provider?.attribution ?? null,
-      agentProvider: this.cfg.AGENT_PROVIDER,
-      agentAvailability: this.runner.availability(),
-      models: {
-        analyst: this.cfg.AGENT_MODEL_ANALYST,
-        reviewer: this.cfg.AGENT_MODEL_REVIEWER,
-        escalation: this.cfg.AGENT_MODEL_ESCALATION,
-        coordinator: this.cfg.AGENT_MODEL_COORDINATOR,
-      },
-      telegramMode: this.cfg.TELEGRAM_MODE,
-      snapshotWindow: this.cfg.SNAPSHOT_WINDOW,
-      staleAfterMinutes: this.cfg.STALE_AFTER_MINUTES,
-      candidateMinHistory: this.cfg.CANDIDATE_MIN_HISTORY,
-      shortlistSize: this.cfg.SHORTLIST_SIZE,
-      recommendationsMax: this.cfg.RECOMMENDATIONS_MAX,
-      schedulerEnabled: this.cfg.SCHEDULER_ENABLED,
-      pipelineCron: this.cfg.PIPELINE_CRON,
-      nextRunAt: this.cfg.SCHEDULER_ENABLED ? nextCronRun(this.cfg.PIPELINE_CRON) : null,
-      history: { maxAssetsPerRun: this.cfg.SOURCE_HISTORY_BOOTSTRAP_MAX_ASSETS, maxMinutesPerRun: this.cfg.SOURCE_HISTORY_BOOTSTRAP_MAX_MINUTES },
-      retention: { snapshotDays: this.cfg.RETENTION_SNAPSHOT_DAYS, detailDays: this.cfg.RETENTION_DETAIL_DAYS },
-      strategy: this.screening.strategy,
-      features: FEATURES,
-    };
-  }
-
-  @Get("overview")
-  overview() {
-    return this.read.overview();
-  }
-
-  @Get("recommendations")
-  recommendations(@Query() q: unknown) {
-    const p = parse(z.object({ runId: uuid.optional(), limit: z.coerce.number().int().min(1).max(25).optional() }), q);
-    return this.read.recommendations({ runId: p.runId, limit: p.limit });
-  }
-
-  @Get("health")
-  async health() {
-    const [coverage, runs] = await Promise.all([this.read.coverage(), this.read.runs(24)]);
-    return { coverage, runs };
-  }
-
-  @Get("screening")
-  screeningResults(@Query() q: unknown) {
-    const p = parse(
-      z.object({
-        runId: uuid.optional(),
-        eligibleOnly: z.enum(["true", "false"]).optional(),
-        classification: z.string().max(32).optional(),
-        search: z.string().trim().max(64).optional(),
-        limit: z.coerce.number().int().min(1).max(5000).optional(),
-        offset: z.coerce.number().int().min(0).max(100_000).optional(),
-      }),
-      q,
-    );
-    return this.read.screening({ runId: p.runId, eligibleOnly: p.eligibleOnly === "true", classification: p.classification, search: p.search || undefined, limit: p.limit ?? 100, offset: p.offset ?? 0 });
-  }
-
-  @Get("market")
-  market(@Query() q: unknown) {
-    const p = parse(
-      z.object({
-        search: z.string().trim().max(64).optional(),
-        sort: z.enum(["market_cap", "volume", "change_1h", "change_24h", "change_7d", "symbol"]).optional(),
-        dir: z.enum(["asc", "desc"]).optional(),
-        scope: z.enum(["all", "universe", "outside"]).optional(),
-        limit: z.coerce.number().int().min(1).max(500).optional(),
-        offset: z.coerce.number().int().min(0).max(100_000).optional(),
-      }),
-      q,
-    );
-    return this.read.market({ search: p.search || undefined, sort: p.sort ?? "market_cap", dir: p.dir ?? (p.sort === "symbol" ? "asc" : "desc"), scope: p.scope ?? "all", limit: p.limit ?? 100, offset: p.offset ?? 0 });
-  }
-
-  @Get("signals")
-  signals(@Query() q: unknown) {
-    const p = parse(
-      z.object({
-        runId: uuid.optional(),
-        status: z.string().max(80).optional(),
-        classification: z.string().max(32).optional(),
-        limit: z.coerce.number().int().min(1).max(200).optional(),
-      }),
-      q,
-    );
-    const status = p.status ? parse(z.array(z.enum(["candidate", "watch", "insufficient_data", "no_signal"])), p.status.split(",")) : undefined;
-    return this.read.signals({ runId: p.runId, status, classification: p.classification, limit: p.limit ?? 50 });
-  }
-
-  @Get("assets")
-  assets(@Query() q: unknown) {
-    const p = parse(
-      z.object({
-        search: z.string().max(64).optional(),
-        assetClass: z.string().max(16).optional(),
-        limit: z.coerce.number().int().min(1).max(200).optional(),
-        offset: z.coerce.number().int().min(0).optional(),
-      }),
-      q,
-    );
-    return this.read.listAssets({ search: p.search, assetClass: p.assetClass, limit: p.limit ?? 50, offset: p.offset ?? 0 });
-  }
-
-  @Get("assets/:id")
-  async asset(@Param("id") id: string) {
-    const a = await this.read.assetDetail(parse(uuid, id));
-    if (!a) throw new NotFoundException();
-    return a;
-  }
-
-  @Get("assets/:id/snapshots")
-  snapshots(@Param("id") id: string, @Query("hours") hours?: string) {
-    return this.read.snapshots(parse(uuid, id), parse(z.coerce.number().int().min(1).max(720).optional(), hours) ?? 72);
-  }
-
-  @Get("assets/:id/features")
-  features(@Param("id") id: string) {
-    return this.read.features(parse(uuid, id), 24);
-  }
-
-  @Get("runs")
-  runs() {
-    return this.read.runs(48);
-  }
-
-  @Get("runs/:id/agents")
-  agents(@Param("id") id: string) {
-    return this.read.agentExecutions(parse(uuid, id));
-  }
-
-  @Get("paper")
-  paper() {
-    return this.read.paper();
-  }
-
-  @Get("backtest")
-  backtest() {
-    return this.read.latestBacktest();
-  }
-
-  @Get("deliveries")
-  deliveries() {
-    return this.read.deliveries(20);
   }
 }

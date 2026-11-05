@@ -1,5 +1,0 @@
-{
-  "name": "coins-predicts-runtime",
-  "version": "0.1.0",
-  "description": "Runtime skills loaded explicitly by Coins Predicts production agents (market analysis, risk review, report preparation)."
-}

@@ -126,6 +126,11 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 10px
 .status-strip .meta { color: var(--ink-2); font-size: 13px; }
 .progress { flex: 1 1 260px; min-width: 200px; }
 .progress .label { font-size: 12.5px; color: var(--ink-2); margin-bottom: 4px; }
+.steps { display: flex; flex-wrap: wrap; gap: 4px; }
+.step { font-size: 11.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); background: var(--surface-2); }
+.step.done { color: var(--ink); border-color: var(--good); }
+.step.done::before { content: "✓ "; color: var(--up); }
+.step.active { color: var(--ink); border-color: var(--accent); background: var(--accent-wash); }
 
 /* ---------- Stat tiles ---------- */
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
@@ -148,13 +153,6 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 10px
 .bars .val { font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .bars .val b { color: var(--ink); font-weight: 600; }
 
-/* ---------- Meter (score 0–100) ---------- */
-.meter { display: inline-flex; align-items: center; gap: 6px; }
-.meter .m-track { width: 46px; height: 6px; border-radius: 3px; background: var(--meter-track); overflow: hidden; }
-.meter .m-fill { height: 100%; background: var(--accent); border-radius: 3px; }
-.meter.wide .m-track { width: 100%; }
-.meter.wide { display: flex; }
-
 /* ---------- Status labels and chips ---------- */
 .status { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; white-space: nowrap; }
 .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--neutral); }
@@ -169,9 +167,17 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 10px
 .chip { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); font-size: 12px; margin: 1px 3px 1px 0; white-space: nowrap; border: 1px solid var(--border); }
 .chip.strong { color: var(--ink); }
 .chip .dot { width: 7px; height: 7px; }
-.pattern { white-space: nowrap; }
-.up { color: var(--up); }
-.down { color: var(--down); }
+/* Window results: the word (YES/NO/N/A) always carries the meaning; color only reinforces it. */
+.pass { display: inline-block; padding: 1px 7px; border-radius: 6px; font-size: 12px; font-weight: 600; white-space: nowrap; border: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.pass.yes { color: var(--up); border-color: var(--good); background: var(--surface-2); }
+.pass.no { color: var(--ink-2); }
+.pass.na { color: var(--muted); border-style: dashed; font-weight: 500; }
+.stars { color: var(--accent-ink); letter-spacing: 1px; white-space: nowrap; }
+.summary-line { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 6px; }
+.formula, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; overflow-wrap: anywhere; }
+.formula { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; margin: 4px 0 10px; }
+.banner-line { margin-top: 4px; }
+.files { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12.5px; }
 
 /* ---------- Filters ---------- */
 .filters { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 2px 0 12px; }
@@ -189,37 +195,13 @@ table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nu
 th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--grid); vertical-align: middle; }
 th { color: var(--ink-2); font-weight: 550; font-size: 12px; white-space: nowrap; position: sticky; top: 0; background: var(--surface); }
 th.num, td.num { text-align: right; white-space: nowrap; }
-td .stacked { display: flex; flex-direction: column; line-height: 1.25; align-items: flex-end; }
-td .stacked span { color: var(--muted); font-size: 12px; }
-th.sortable { cursor: pointer; user-select: none; }
-th.sortable:hover { color: var(--ink); }
-th[aria-sort="ascending"]::after { content: " ↑"; }
-th[aria-sort="descending"]::after { content: " ↓"; }
 tbody tr.clickable { cursor: pointer; }
 tbody tr.clickable:hover td, tbody tr.clickable:focus-visible td { background: var(--surface-2); }
-tbody tr.highlight td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 td .coin { display: flex; align-items: center; gap: 8px; line-height: 1.25; min-width: 120px; }
 td .coin .coin-text { display: flex; flex-direction: column; min-width: 0; }
 td .coin b { font-weight: 620; }
 td .coin span { color: var(--muted); font-size: 12px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 table.kv-table td:first-child { color: var(--ink-2); width: 42%; }
-.loading { opacity: 0.55; transition: opacity 0.15s; }
-
-/* ---------- Signal cards ---------- */
-.signal-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
-.sig { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; cursor: pointer; display: flex; flex-direction: column; gap: 10px; text-align: left; width: 100%; }
-.sig:hover { border-color: var(--accent); }
-.sig .top { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
-.sig .title b { font-size: 16px; }
-.sig .title span { color: var(--muted); font-size: 12.5px; display: block; }
-.sig .row { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--ink-2); }
-.sig .row b { color: var(--ink); font-weight: 600; }
-.plan { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.plan div { background: var(--surface-2); border-radius: 8px; padding: 7px 9px; }
-.plan .k { color: var(--ink-2); font-size: 11.5px; display: block; }
-.plan .v { font-weight: 620; font-variant-numeric: tabular-nums; }
-.evidence { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 14px; font-size: 12.5px; }
-.evidence span { color: var(--ink-2); }
 
 /* ---------- Strategy checklist ---------- */
 .checks { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
@@ -230,25 +212,17 @@ table.kv-table td:first-child { color: var(--ink-2); width: 42%; }
 .checks .mark.na { color: var(--muted); }
 .checks .actual { font-variant-numeric: tabular-nums; color: var(--ink-2); white-space: nowrap; }
 
-/* ---------- Charts ---------- */
-.chart { position: relative; width: 100%; }
-.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
-.chart .grid-line { stroke: var(--grid); stroke-width: 1; }
-.chart .axis-line { stroke: var(--axis); stroke-width: 1; }
-.chart .tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
-.chart .series { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
-.chart .wash { fill: var(--accent); opacity: 0.1; stroke: none; }
-.chart .end-dot { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
-.chart .end-label { fill: var(--ink); font-size: 11.5px; font-weight: 600; }
-.chart .cross { stroke: var(--axis); stroke-width: 1; }
-.chart .cross-dot { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
-.chart .backfill { fill: var(--surface-2); }
-.chart-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 6px 0 4px; }
-.chart-head h3 { font-size: 13.5px; margin: 0; font-weight: 600; }
 .linkish { background: none; border: 0; color: var(--accent-ink); cursor: pointer; padding: 0; font-size: 12.5px; text-decoration: underline; }
-.tooltip { position: fixed; z-index: 50; pointer-events: none; background: var(--surface); color: var(--ink); border: 1px solid var(--border); box-shadow: var(--shadow); border-radius: 8px; padding: 7px 10px; font-size: 12px; min-width: 120px; }
-.tooltip .tv { font-weight: 650; font-size: 13px; font-variant-numeric: tabular-nums; }
-.tooltip .tk { color: var(--ink-2); }
+
+/* ---------- Review form ---------- */
+.review-form fieldset { border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px 12px; margin: 0 0 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 14px; }
+.review-form legend { padding: 0 6px; font-weight: 600; font-size: 13px; }
+.review-form fieldset > p, .review-form fieldset > div.small { grid-column: 1 / -1; margin: 0; }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--ink-2); min-width: 0; }
+.field input, .field select, .field textarea { padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit; font-size: 13px; min-width: 0; }
+.field textarea { resize: vertical; }
+.review-form fieldset > label.field:has(textarea) { grid-column: 1 / -1; }
+.tp-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
 /* ---------- Coin drawer ---------- */
 .drawer-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35); z-index: 20; }
@@ -263,7 +237,6 @@ table.kv-table td:first-child { color: var(--ink-2); width: 42%; }
 .notes { margin: 6px 0 0; padding-left: 18px; color: var(--ink-2); font-size: 12.5px; }
 .notes li { margin: 2px 0; }
 details summary { cursor: pointer; color: var(--ink-2); font-size: 12.5px; }
-pre.json { background: var(--surface-2); padding: 8px; border-radius: 8px; font-size: 12px; max-height: 260px; overflow: auto; white-space: pre-wrap; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 .grid-2[data-gap="top"], .card[data-gap="top"] { margin-top: 16px; }
@@ -275,8 +248,6 @@ pre.json { background: var(--surface-2); padding: 8px; border-radius: 8px; font-
 .btn.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(0.92); }
 .btn.danger { color: var(--down); }
 .banner-note { padding: 8px 12px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); color: var(--ink-2); }
+.banner-note.error { border-color: var(--critical); color: var(--ink); }
 
 .logo { flex: none; border-radius: 50%; background: var(--surface-2); object-fit: cover; vertical-align: middle; }
-.logo.fallback { display: inline-flex; align-items: center; justify-content: center; color: var(--ink-2); font-weight: 650; border: 1px solid var(--border); box-sizing: border-box; }
-.sig .title.with-logo { display: flex; align-items: center; gap: 10px; }
-.drawer-head h2 { display: flex; align-items: center; gap: 8px; }

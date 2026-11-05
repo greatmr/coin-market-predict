@@ -12,7 +12,7 @@ import type {
 
 /**
  * OPTIONAL live adapter: CoinMarketCap official API, free "Basic" plan (API key required).
- * This is an official API, not website scraping (CMC's website terms prohibit scraping).
+ * Official API alternative to the website collector (explicit opt-in with a key).
  * Docs: https://coinmarketcap.com/api/documentation/v1/
  */
 export const CMC_PROVIDER: ProviderInfo = {
@@ -36,6 +36,8 @@ const listingSchema = z.object({
   symbol: z.string(),
   slug: z.string(),
   tags: z.array(z.string()).nullable().optional(),
+  cmc_rank: z.number().int().nullable().optional(),
+  date_added: z.string().nullable().optional(),
   circulating_supply: num,
   total_supply: num,
   max_supply: num,
@@ -105,6 +107,11 @@ export function parseCmcListings(body: unknown): { observations: RawObservation[
       changePct24h: q.percent_change_24h ?? null,
       changePct7d: q.percent_change_7d ?? null,
       categories: cmcCategories(d.tags),
+      rank: d.cmc_rank && d.cmc_rank > 0 ? d.cmc_rank : null,
+      dateAdded: d.date_added && Number.isFinite(Date.parse(d.date_added)) ? new Date(d.date_added) : null,
+      tags: d.tags ?? [],
+      slug: d.slug,
+      platform: d.platform?.slug && d.platform.token_address ? { chain: d.platform.slug, address: d.platform.token_address } : null,
     });
   }
   return { observations, skipped, totalCount: res.status.total_count ?? null };

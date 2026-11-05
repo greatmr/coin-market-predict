@@ -1,41 +1,34 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { Inject, Injectable, Logger } from "@nestjs/common";
-import { AnalysisService } from "../agents/analysis.service.js";
 import { addHours, type Clock, slotOf, systemClock } from "../common/time.js";
 import { APP_CONFIG, type AppConfig } from "../config/config.js";
 import { redact } from "../config/redact.js";
-import { EvaluationService } from "../evaluation/evaluation.service.js";
-import { FeaturesService } from "../features/features.service.js";
-import { IngestionService, type CoverageReport, type HistoryBackfillReport } from "../ingestion/ingestion.service.js";
+import { IngestionService, type CoverageReport } from "../ingestion/ingestion.service.js";
 import { PrismaService } from "../prisma/prisma.service.js";
-import { byPumpChance } from "../screening/recommend.js";
-import { ScreeningService } from "../screening/screening.service.js";
-import { VmcService } from "../vmc/vmc.service.js";
 import { SourceUnavailableError } from "../sources/http/polite-client.js";
 import { ReportService } from "../telegram/report.service.js";
 import { TelegramService } from "../telegram/telegram.service.js";
+import { DailyService, type DailyRefreshReport } from "../tier1/daily.service.js";
+import { ExportService, type ExportResult } from "../tier1/export.service.js";
+import { ScanService, type ScanOutcome } from "../tier1/scan.service.js";
+import { VenuesService, type LbankCrawlReport } from "../tier1/venues.service.js";
 import { LeaseService } from "./lease.service.js";
 import { RetentionService } from "./retention.service.js";
 
 export const PIPELINE_LEASE = "hourly-pipeline";
 const LEASE_TTL_MS = 10 * 60_000;
-/** Text progress bar for the run log: `[████░░░░░] 4/9`. */
-export function progressBar(done: number, total: number, width = 9): string {
+/** Text progress bar for the run log: `[████░░░░] 4/8`. */
+export function progressBar(done: number, total: number, width = 8): string {
   const filled = Math.round((Math.min(done, total) / total) * width);
   return `[${"█".repeat(filled)}${"░".repeat(width - filled)}] ${done}/${total}`;
 }
 
-/** Upper bound for the non-essential VMC baseline stage: a slow provider must not hold the run. */
-const VMC_STAGE_TIMEOUT_MS = 3 * 60_000;
-
-function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
-  let timer: NodeJS.Timeout;
-  const limit = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} timed out after ${Math.round(ms / 1000)}s`)), ms); });
-  return Promise.race([work, limit]).finally(() => clearTimeout(timer));
-}
-
-export const STAGES = ["discover", "collect", "history", "features", "screen", "vmc", "analyze", "publish", "notify"] as const;
+/**
+ * discover → collect (existing crawler batch) → lbank (LBank Spot pairs) → daily (completed UTC
+ * rows) → scan (Tier 1) → venues (CMC Markets rows for review candidates) → export → notify.
+ */
+export const STAGES = ["discover", "collect", "lbank", "daily", "scan", "venues", "export", "notify"] as const;
 type Stage = (typeof STAGES)[number];
 
 export interface RunOutcome {
@@ -44,6 +37,7 @@ export interface RunOutcome {
   status: "succeeded" | "partial" | "failed" | "skipped";
   reason?: string;
   stages: Partial<Record<Stage, string>>;
+  batchId?: string | null;
 }
 
 @Injectable()
@@ -56,37 +50,29 @@ export class PipelineService {
     private readonly prisma: PrismaService,
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
     private readonly ingestion: IngestionService,
-    private readonly features: FeaturesService,
-    private readonly screening: ScreeningService,
-    private readonly analysis: AnalysisService,
-    private readonly evaluation: EvaluationService,
+    private readonly venues: VenuesService,
+    private readonly daily: DailyService,
+    private readonly scanner: ScanService,
+    private readonly exports: ExportService,
     private readonly reports: ReportService,
     private readonly telegram: TelegramService,
     private readonly leases: LeaseService,
     private readonly retention: RetentionService,
-    private readonly vmc: VmcService,
   ) {}
 
   get providerId() {
     return this.ingestion.source.info.id;
   }
 
-  /**
-   * Run (or resume) the pipeline for one hourly slot. Non-overlapping within the process and,
-   * through the database lease, across instances. Completed stages are skipped on resume.
-   */
-  async runSlot(slotInput?: Date, opts: { kind?: string; force?: boolean } = {}): Promise<RunOutcome> {
-    const slot = slotOf(slotInput ?? this.clock.now());
-    const kind = opts.kind ?? "hourly";
-    if (this.inProcess) return { runId: null, slot: slot.toISOString(), status: "skipped", reason: "a run is already in progress in this process", stages: {} };
+  /** Run `work` while holding the pipeline lease (no overlap within or across instances). */
+  private async exclusive<T>(work: () => Promise<T>): Promise<T | { skipped: string }> {
+    if (this.inProcess) return { skipped: "a run is already in progress in this process" };
     const holder = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
-    if (!(await this.leases.acquire(PIPELINE_LEASE, holder, LEASE_TTL_MS))) {
-      return { runId: null, slot: slot.toISOString(), status: "skipped", reason: "another instance holds the pipeline lease", stages: {} };
-    }
+    if (!(await this.leases.acquire(PIPELINE_LEASE, holder, LEASE_TTL_MS))) return { skipped: "another instance holds the pipeline lease" };
     this.inProcess = true;
     const beat = setInterval(() => void this.leases.heartbeat(PIPELINE_LEASE, holder, LEASE_TTL_MS).catch(() => undefined), 60_000);
     try {
-      return await this.execute(slot, kind, !!opts.force);
+      return await work();
     } finally {
       clearInterval(beat);
       this.inProcess = false;
@@ -94,11 +80,52 @@ export class PipelineService {
     }
   }
 
+  /** Run (or resume) the pipeline for one hourly slot. Completed stages are skipped on resume. */
+  async runSlot(slotInput?: Date, opts: { kind?: string; force?: boolean } = {}): Promise<RunOutcome> {
+    const slot = slotOf(slotInput ?? this.clock.now());
+    const r = await this.exclusive(() => this.execute(slot, opts.kind ?? "hourly", !!opts.force));
+    return "skipped" in r && typeof r.skipped === "string" ? { runId: null, slot: slot.toISOString(), status: "skipped", reason: r.skipped, stages: {} } : (r as RunOutcome);
+  }
+
+  /**
+   * Reprocess a saved crawl batch without crawling (PDF p.18 dry run over saved data): scan and,
+   * optionally, export. Results of the batch are replaced, never duplicated.
+   */
+  async reprocess(batchId?: string, opts: { export?: boolean } = {}): Promise<{ batchId: string | null; scan?: ScanOutcome; export?: ExportResult; skipped?: string }> {
+    const r = await this.exclusive(async () => {
+      const id = batchId ?? (await this.scanner.latestBatch(this.providerId))?.id ?? null;
+      if (!id) return { batchId: null, skipped: "no stored crawl batch to process" };
+      const scan = await this.scanner.scan(id, ["REPROCESSED: results recomputed from stored inputs"]);
+      const exp = opts.export === false ? undefined : await this.exports.export(id);
+      return { batchId: id, scan, export: exp };
+    });
+    return "skipped" in r && typeof r.skipped === "string" && !("batchId" in r) ? { batchId: batchId ?? null, skipped: r.skipped } : (r as { batchId: string | null });
+  }
+
+  /** Re-export a scanned batch under the pipeline lease, so it never races an hourly export. */
+  async exportBatch(batchId: string): Promise<ExportResult | { skipped: string }> {
+    return this.exclusive(() => this.exports.export(batchId));
+  }
+
+  /**
+   * Manual refresh of the LBank Spot markets list (dashboard button, `lbank:refresh`): fetch it now,
+   * then recompute and re-export the latest batch so the new list is visible at once. Runs under
+   * the pipeline lease, so it never overlaps an hourly run.
+   */
+  async refreshLbankPairs(): Promise<{ lbank: LbankCrawlReport; batchId: string | null; scan?: ScanOutcome; export?: ExportResult } | { skipped: string }> {
+    return this.exclusive(async () => {
+      const lbank = await this.venues.ensureLbankPairs(this.providerId, null, this.clock.now(), { force: true, trigger: "manual" });
+      const latest = await this.scanner.latestBatch(this.providerId);
+      if (!latest || lbank.status === "SKIPPED") return { lbank, batchId: latest?.id ?? null };
+      const scan = await this.scanner.scan(latest.id, [`LBANK_LIST_REFRESHED: manual refresh ${lbank.status} (${lbank.pairs} pairs); latest batch recomputed`]);
+      const exp = await this.exports.export(latest.id);
+      return { lbank, batchId: latest.id, scan, export: exp };
+    });
+  }
+
   private async execute(slot: Date, kind: string, force: boolean): Promise<RunOutcome> {
     const providerId = this.providerId;
     await this.ingestion.ensureProvider();
-    await this.features.ensureDefinitions();
-    await this.screening.ensureStrategy();
     const now = this.clock.now();
 
     let run = await this.prisma.pipelineRun.findUnique({ where: { kind_slotTime_providerId: { kind, slotTime: slot, providerId } } });
@@ -107,9 +134,7 @@ export class PipelineService {
     }
     run = run
       ? await this.prisma.pipelineRun.update({ where: { id: run.id }, data: { status: "running", attempt: { increment: 1 }, error: null, finishedAt: null } })
-      : await this.prisma.pipelineRun.create({
-          data: { kind, slotTime: slot, providerId, status: "running", startedAt: now, isLiveData: this.ingestion.source.info.isLive },
-        });
+      : await this.prisma.pipelineRun.create({ data: { kind, slotTime: slot, providerId, status: "running", startedAt: now, isLiveData: this.ingestion.source.info.isLive } });
     const runId = run.id;
     // We hold the pipeline lease, so any other run still marked "running" belongs to a process that died.
     await this.prisma.pipelineRun.updateMany({
@@ -139,10 +164,7 @@ export class PipelineService {
       for (let attempt = 0; attempt <= (o.retries ?? 0); attempt++) {
         try {
           const result = await fn();
-          await this.prisma.pipelineStage.update({
-            where: { runId_stage: { runId, stage: name } },
-            data: { status: "succeeded", finishedAt: new Date(), detail: summarize(result) as never },
-          });
+          await this.prisma.pipelineStage.update({ where: { runId_stage: { runId, stage: name } }, data: { status: "succeeded", finishedAt: new Date(), detail: summarize(result) as never } });
           metrics[`${name}Ms`] = Date.now() - started;
           stages[name] = "succeeded";
           this.log.log(`${progressBar(step, STAGES.length)} ${name} · done in ${((Date.now() - started) / 1000).toFixed(1)}s`);
@@ -156,131 +178,76 @@ export class PipelineService {
       stages[name] = `failed: ${redact(lastErr).slice(0, 200)}`;
       throw lastErr;
     };
+    const saveMetrics = () => this.prisma.pipelineRun.update({ where: { id: runId }, data: { metrics: metrics as never } });
+    const degraded: string[] = [];
 
     let coverage = run.coverage as unknown as CoverageReport | null;
-    let agentStatus = "not_run";
-    let summary: string | null = null;
+    let batchId: string | null = null;
     try {
       await stage("discover", async () => ((await this.ingestion.discoveryDue(now)) ? this.ingestion.discover(now) : { skipped: "not due" }));
-      const collected = await stage("collect", () => this.ingestion.collect(slot, runId, this.clock.now()), { retries: 1 });
+      const collectStarted = this.clock.now();
+      const collected = await stage("collect", () => this.ingestion.collect(slot, runId, this.clock.now()), { retries: 1 }).catch(async (err) => {
+        await this.ingestion.recordFailedBatch(slot, runId, collectStarted, err).catch(() => undefined);
+        throw err;
+      });
       if (collected) coverage = collected;
       await this.prisma.pipelineRun.update({ where: { id: runId }, data: { coverage: coverage as never } });
+      batchId = coverage?.batchId ?? (await this.prisma.crawlBatch.findUnique({ where: { providerId_slotTime: { providerId, slotTime: slot } } }))?.id ?? null;
+      if (!batchId) throw new Error("no crawl batch stored for this slot");
+      metrics.batchId = batchId;
+      const batch = await this.prisma.crawlBatch.findUniqueOrThrow({ where: { id: batchId } });
+      if (batch.status !== "COMPLETE") degraded.push(`batch ${batch.status}`);
 
-      // Genuine history for coins that cannot be screened yet. A failure here degrades those coins
-      // to warm-up (and the run to partial); it never blocks screening of the collected snapshots.
-      let historyFailed = false;
-      let history = await stage("history", () =>
-        this.ingestion.backfillHistory(slot, runId, this.clock.now(), {
-          listingRequestsPerRun: Math.max(coverage?.pagesFetched ?? 1, 1),
-          onProgress: async (p) => {
-            metrics.history = p;
-            await this.prisma.pipelineRun.update({ where: { id: runId }, data: { metrics: metrics as never } });
-          },
-        }),
-      ).catch((err) => {
-        historyFailed = true;
-        this.log.warn(`history backfill failed, continuing with collected snapshots: ${redact(err)}`);
-        return undefined;
+      // LBank Spot markets list: reused until LBANK_PAIRS_REFRESH_DAYS old, then refreshed (D2). A
+      // failed refresh keeps the previous list until LBANK_PAIRS_MAX_AGE_DAYS; it never fails the run.
+      const lbank = (await stage("lbank", () => this.venues.ensureLbankPairs(providerId, batchId!, this.clock.now(), { trigger: "schedule" }))) ?? ((await this.stageDetail(runId, "lbank")) as LbankCrawlReport | null);
+      metrics.lbank = lbank;
+      if (lbank && !lbank.usable) degraded.push(`LBank list unavailable (${lbank.status})`);
+      else if (lbank && (lbank.status === "FAILED" || lbank.status === "INCOMPLETE")) degraded.push(`LBank refresh ${lbank.status}; using the list fetched ${lbank.listFetchedAt}`);
+      await saveMetrics();
+
+      // Daily rows: partial refreshes leave affected windows N/A; never fatal.
+      let daily: DailyRefreshReport | null | undefined = await stage("daily", async () => {
+        const ctx = await this.scanner.loadContext(batchId!);
+        return this.daily.refresh(providerId, { id: batchId!, crawledAt: ctx.asOf }, this.scanner.dailyCandidates(ctx));
+      }).catch((err) => {
+        degraded.push("daily refresh failed");
+        this.log.warn(`daily refresh failed, scanning with stored rows: ${redact(err)}`);
+        return null;
       });
-      if (!history && !historyFailed) history = ((await this.prisma.pipelineStage.findUnique({ where: { runId_stage: { runId, stage: "history" } } }))?.detail ?? undefined) as HistoryBackfillReport | undefined;
-      if (history) metrics.history = history;
+      if (daily === undefined) daily = (await this.stageDetail(runId, "daily")) as DailyRefreshReport | null;
+      metrics.daily = daily;
+      if (daily && daily.status === "partial") degraded.push(`daily rows partial (${daily.remaining} candidates lack the latest completed day)`);
+      await saveMetrics();
 
-      // Features and screening are deterministic and cheap; recompute on resume (writes are idempotent).
-      const fr = (await stage("features", () => this.features.computeForSlot(providerId, slot), { skipIfDone: false }))!;
-      const ranked = (await stage("screen", () => this.screening.screen(runId, providerId, fr), { skipIfDone: false }))!;
-      metrics.observed = fr.universe.observed;
-      metrics.outsideUniverse = fr.universe.outside;
-      metrics.outsideReasons = fr.universe.outsideReasons;
-      metrics.screened = ranked.length;
-      metrics.eligible = ranked.filter((r) => r.eligible).length;
-      metrics.warming = ranked.filter((r) => r.exclusionReasons.includes("warming_up")).length;
-      metrics.shortlisted = ranked.filter((r) => r.shortlisted).length;
-      const classifications: Record<string, number> = {};
-      for (const r of ranked) if (r.eligible) classifications[r.classification] = (classifications[r.classification] ?? 0) + 1;
-      metrics.classifications = classifications;
-      metrics.market = fr.market;
-      const recommended = ranked.filter((r) => r.eligible && r.pumpChance !== "low").sort(byPumpChance).slice(0, this.cfg.RECOMMENDATIONS_MAX);
-      metrics.recommended = recommended.length;
-      metrics.pumpChances = { high: ranked.filter((r) => r.eligible && r.pumpChance === "high").length, medium: ranked.filter((r) => r.eligible && r.pumpChance === "medium").length };
-      await this.prisma.pipelineRun.update({ where: { id: runId }, data: { metrics: metrics as never } });
+      const warnings: string[] = [];
+      if (daily?.stoppedBy) warnings.push(`DAILY_REFRESH_STOPPED: ${daily.stoppedBy.replace(/_/g, " ")}; ${daily.remaining} candidates still lack ${daily.latestCompletedDate}`);
+      const scan = (await stage("scan", () => this.scanner.scan(batchId!, warnings), { skipIfDone: false }))!;
+      metrics.scan = { queueStatus: scan.queueStatus, counts: scan.counts, warnings: scan.warnings };
+      await saveMetrics();
 
-      // Six-month volume / market-cap baselines for the recommended coins, before agents read them.
-      await stage("vmc", async () => {
-        const ids = [...new Set([...ranked.filter((r) => r.shortlisted).map((r) => r.assetId), ...recommended.map((r) => r.assetId)])];
-        const cmc = await this.screening.cmcIds(providerId, ids);
-        if (!cmc.size) return { skipped: "source asset ids are not CoinMarketCap ids" };
-        return withTimeout(this.vmc.ensureBaselines([...cmc.values()]), VMC_STAGE_TIMEOUT_MS, "VMC baselines");
-      }).catch((err) => this.log.warn(`VMC baselines unavailable this run: ${redact(err)}`));
-
-      const analysis = await stage("analyze", async () => {
-        const packs = await this.screening.buildEvidence(providerId, fr, ranked.filter((r) => r.shortlisted));
-        const health = { ...(coverage ?? {}), history: history ?? null, sourceHealth: await this.prisma.sourceHealth.findUnique({ where: { providerId } }) };
-        const out = await this.analysis.analyze(runId, slot, packs, fr.market, JSON.parse(JSON.stringify(health)));
-        const packBy = new Map(packs.map((p) => [p.assetId, p]));
-        await this.prisma.$transaction(
-          out.finals.map((f) =>
-            this.prisma.signal.upsert({
-              where: { runId_assetId_strategyVersion: { runId, assetId: f.assetId, strategyVersion: this.screening.strategy.version } },
-              create: {
-                runId,
-                assetId: f.assetId,
-                slotTime: slot,
-                strategyVersion: this.screening.strategy.version,
-                status: f.status,
-                signalType: f.signalType,
-                horizonHours: f.horizonHours,
-                heuristicScore: f.heuristicScore,
-                agentScore: f.agentScore,
-                calibratedProbability: null,
-                evidence: f.evidence as never,
-                counterevidence: f.counterevidence as never,
-                dataQuality: f.dataQuality as never,
-                entryTrigger: f.entryTrigger,
-                invalidation: f.invalidation,
-                exitConditions: f.exitConditions as never,
-                scenario: packBy.get(f.assetId)!.scenario as never,
-                expiresAt: f.expiresAt,
-                rationale: f.rationale,
-                riskFlags: f.riskFlags,
-                origin: f.origin,
-                reviewOutcome: f.reviewOutcome,
-                pumpChance: f.pumpChance,
-                agentRecommendation: f.agentRecommendation,
-                agentRecommendationReason: f.agentRecommendationReason,
-                recommendation: f.recommendation,
-                recommendationReason: f.recommendationReason,
-                evidenceHash: f.evidenceHash,
-                isLiveData: this.ingestion.source.info.isLive,
-              },
-              update: {},
-            }),
-          ),
-        );
-        await this.prisma.pipelineRun.update({ where: { id: runId }, data: { modelCostUsd: out.costUsd } });
-        return { agentStatus: out.agentStatus, summary: out.summary, notes: out.notes, signals: out.finals.length };
+      await stage("venues", async () => {
+        const report = await this.venues.refreshAssetMarkets(providerId, batchId!, scan.venueCandidates, this.clock.now());
+        const annotated = await this.scanner.annotateVenues(batchId!, scan.venueCandidates.map((c) => c.cmcId));
+        return { ...report, annotated };
+      }, { skipIfDone: false }).catch((err) => {
+        degraded.push("venue refresh failed");
+        this.log.warn(`venue refresh failed: ${redact(err)}`);
       });
-      if (analysis) {
-        agentStatus = analysis.agentStatus;
-        summary = analysis.summary;
-        metrics.agentNotes = analysis.notes;
-      } else {
-        const st = await this.prisma.pipelineStage.findUnique({ where: { runId_stage: { runId, stage: "analyze" } } });
-        const d = (st?.detail ?? {}) as { agentStatus?: string; summary?: string | null };
-        agentStatus = d.agentStatus ?? "completed";
-        summary = d.summary ?? null;
-      }
 
-      await stage("publish", async () => {
-        const signals = await this.prisma.signal.findMany({ where: { runId }, select: { id: true } });
-        await this.prisma.signal.updateMany({ where: { runId, publishedAt: null }, data: { publishedAt: new Date() } });
-        const opened = await this.evaluation.openPositions(signals.map((s) => s.id));
-        const updated = await this.evaluation.updatePositions(providerId, slot);
-        const outcomes = await this.evaluation.updateOutcomes(providerId, this.screening.strategy.target, slot);
-        return { published: signals.length, paperOpened: opened, paperUpdated: updated, outcomesUpdated: outcomes };
+      const exported = await stage("export", async () => {
+        const r = await this.exports.export(batchId!);
+        if (r.status === "failed") throw new Error(`export failed: ${r.error}`);
+        return { path: r.path, files: r.files };
+      }, { skipIfDone: false }).catch((err) => {
+        degraded.push("export failed");
+        this.log.warn(redact(err));
+        return null;
       });
+      metrics.export = exported ?? null;
 
       await stage("notify", async () => {
-        const parts = await this.reports.build(runId, agentStatus, summary);
+        const parts = await this.reports.build(batchId!);
         const prep = await this.telegram.prepare(runId, parts);
         // Live sending happens independently so delivery failures never re-run analysis.
         const sent = await this.telegram.deliverPending().catch((e) => ({ error: redact(e) }));
@@ -289,21 +256,23 @@ export class PipelineService {
 
       // Storage policy runs after delivery; a retention problem never invalidates the run.
       metrics.retention = await this.retention.apply(providerId, this.clock.now()).catch((e) => ({ error: redact(e).slice(0, 300) }));
-      const partial = coverage?.label !== "complete" || historyFailed || agentStatus === "partial" || agentStatus === "unavailable";
+      metrics.degraded = degraded;
+      const partial = degraded.length > 0;
       await this.prisma.pipelineRun.update({ where: { id: runId }, data: { status: partial ? "partial" : "succeeded", finishedAt: new Date(), currentStage: null, metrics: metrics as never } });
-      // "partial" means coverage or agent review was incomplete; the run itself finished.
-      return { runId, slot: slot.toISOString(), status: partial ? "partial" : "succeeded", stages };
+      return { runId, slot: slot.toISOString(), status: partial ? "partial" : "succeeded", stages, batchId };
     } catch (err) {
       this.log.error(`run ${runId} failed: ${redact(err)}`);
-      await this.prisma.pipelineRun.update({ where: { id: runId }, data: { status: "failed", finishedAt: new Date(), error: redact(err).slice(0, 2000), metrics: metrics as never } });
-      return { runId, slot: slot.toISOString(), status: "failed", reason: redact(err).slice(0, 300), stages };
+      metrics.degraded = degraded;
+      await this.prisma.pipelineRun.update({ where: { id: runId }, data: { status: "failed", finishedAt: new Date(), currentStage: null, error: redact(err).slice(0, 2000), metrics: metrics as never } });
+      return { runId, slot: slot.toISOString(), status: "failed", reason: redact(err).slice(0, 300), stages, batchId };
     }
   }
 
-  /**
-   * Resume the current slot's run if its process died (status still "running" but no live lease
-   * holder). runSlot returns "skipped" while another instance really holds the lease.
-   */
+  private async stageDetail(runId: string, stage: Stage): Promise<unknown> {
+    return (await this.prisma.pipelineStage.findUnique({ where: { runId_stage: { runId, stage } } }))?.detail ?? null;
+  }
+
+  /** Resume the current slot's run if its process died (status still "running" but no live lease holder). */
   async resumeIfInterrupted(): Promise<RunOutcome | null> {
     if (this.inProcess) return null;
     const slot = slotOf(this.clock.now());
@@ -313,9 +282,8 @@ export class PipelineService {
   }
 
   /**
-   * Restart recovery: record hours that were missed while the app was down (they cannot be
-   * backfilled from a live source without real historical observations), then run the current
-   * slot if the policy allows and it has not completed.
+   * Restart recovery: record hours that were missed while the app was down (a missing batch is a
+   * visible gap, never filled with invented snapshots), then run the current slot if allowed.
    */
   async recoverOnStartup(): Promise<{ missedRecorded: number; ran: RunOutcome | null }> {
     const providerId = this.providerId;
@@ -336,16 +304,17 @@ export class PipelineService {
     if (cur && (cur.status === "succeeded" || cur.status === "partial")) return { missedRecorded: missed, ran: null };
     return { missedRecorded: missed, ran: await this.runSlot(current) };
   }
-
 }
 
 function summarize(v: unknown): unknown {
   if (v === undefined || v === null) return null;
-  if (v instanceof Map) return { size: v.size };
   if (Array.isArray(v)) return { count: v.length };
   if (typeof v === "object") {
     const o = v as Record<string, unknown>;
-    if ("perAsset" in o && o.perAsset instanceof Map) return { assets: o.perAsset.size, market: o.market, universe: o.universe };
+    if ("venueCandidates" in o) {
+      const { venueCandidates, ...rest } = o as { venueCandidates: unknown[] };
+      return JSON.parse(JSON.stringify({ ...rest, venueCandidates: venueCandidates.length }));
+    }
     return JSON.parse(JSON.stringify(o, (_k, val) => (typeof val === "bigint" ? Number(val) : val)));
   }
   return v;
