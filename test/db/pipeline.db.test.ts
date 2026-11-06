@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AnalysisService } from "../../src/agents/analysis.service.js";
 import { addHours, slotOf } from "../../src/common/time.js";
-import { IngestionService } from "../../src/ingestion/ingestion.service.js";
 import { LeaseService } from "../../src/pipeline/lease.service.js";
 import { PIPELINE_LEASE, PipelineService } from "../../src/pipeline/pipeline.service.js";
+import { ReadModelService } from "../../src/read-model/read-model.service.js";
+import { ScanService } from "../../src/tier1/scan.service.js";
 import { makeApp, resetDb } from "./helpers.js";
 
 let ctx: Awaited<ReturnType<typeof makeApp>>;
@@ -14,32 +14,25 @@ beforeEach(async () => {
 });
 afterEach(async () => ctx.app.close());
 
-async function seed(hours: number) {
-  const ing = ctx.app.get(IngestionService);
-  await ing.discover(new Date());
-  const cur = slotOf(new Date());
-  for (let h = hours; h >= 1; h--) await ing.collect(addHours(cur, -h), null, new Date(), { fixtureBackfill: true });
-}
-
 describe("hourly pipeline", () => {
-  it("runs end to end, persists signals and a dry-run Telegram report, and skips a completed slot", async () => {
-    await seed(30);
+  it("runs end to end (collect → LBank → daily → scan → venues → export → notify) and skips a completed slot", async () => {
     const p = ctx.app.get(PipelineService);
     const r = await p.runSlot();
     expect(["succeeded", "partial"]).toContain(r.status);
+    expect(Object.keys(r.stages)).toEqual(["discover", "collect", "lbank", "daily", "scan", "venues", "export", "notify"]);
     expect(Object.values(r.stages).every((s) => s === "succeeded")).toBe(true);
     const run = await ctx.prisma.pipelineRun.findUniqueOrThrow({ where: { id: r.runId! } });
     expect(run.isLiveData).toBe(false);
-    expect(await ctx.prisma.screeningResult.count({ where: { runId: r.runId! } })).toBeGreaterThan(20);
-    const signals = await ctx.prisma.signal.findMany({ where: { runId: r.runId! } });
-    for (const s of signals) {
-      expect(s.calibratedProbability).toBeNull();
-      expect(["agent", "fixture_agent", "deterministic"]).toContain(s.origin);
-    }
+    expect((run.metrics as { batchId?: string }).batchId).toBe(r.batchId);
+    // Item progress is live state only: it is gone once the run has finished.
+    expect(run.metrics).not.toHaveProperty("progress");
+    const ov = (await ctx.app.get(ReadModelService).overview()) as { latestRun: { progress: unknown }; schedule: { cron: string } };
+    expect(ov.latestRun.progress).toBeNull();
+    expect(ov.schedule.cron).toBeTruthy();
+    expect(await ctx.prisma.scanResult.count({ where: { batchId: r.batchId! } })).toBeGreaterThan(1000);
     const deliveries = await ctx.prisma.telegramDelivery.findMany({ where: { runId: r.runId! } });
     expect(deliveries.length).toBeGreaterThan(0);
     expect(deliveries.every((d) => d.status === "dry_run")).toBe(true);
-    expect(deliveries[0]!.text).toMatch(/TEST DATA<\/b> — synthetic prices/);
 
     const again = await p.runSlot();
     expect(again.status).toBe("skipped");
@@ -53,28 +46,33 @@ describe("hourly pipeline", () => {
     const r = await ctx.app.get(PipelineService).runSlot();
     expect(r.status).toBe("skipped");
     expect(r.reason).toMatch(/lease/);
+    expect((await ctx.app.get(PipelineService).reprocess()).skipped).toMatch(/lease/);
     await lease.release(PIPELINE_LEASE, "other-instance");
     expect(await lease.acquire(PIPELINE_LEASE, "third-instance", 1)).toBe(true);
     await new Promise((res) => setTimeout(res, 20));
     expect(await lease.acquire(PIPELINE_LEASE, "fourth-instance", 60_000)).toBe(true); // expired lease can be taken
   });
 
-  it("recovers after a failure without repeating completed stages", async () => {
-    await seed(5);
+  it("recovers after a failure without repeating completed stages or re-crawling", async () => {
     const p = ctx.app.get(PipelineService);
-    const analysis = ctx.app.get(AnalysisService);
-    const spy = vi.spyOn(analysis, "analyze").mockRejectedValueOnce(new Error("simulated crash during analysis"));
+    const spy = vi.spyOn(ctx.app.get(ScanService), "scan").mockRejectedValueOnce(new Error("simulated crash during the scan"));
     const failed = await p.runSlot();
     expect(failed.status).toBe("failed");
-    expect(failed.stages.analyze).toMatch(/failed/);
-    const collected = await ctx.prisma.marketSnapshot.count();
+    expect(failed.stages.scan).toMatch(/failed/);
+    const snapshots = await ctx.prisma.marketSnapshot.count();
+    const daily = await ctx.prisma.dailyMetricRevision.count();
+    expect(snapshots).toBeGreaterThan(0);
+    expect(daily).toBeGreaterThan(0);
 
     const resumed = await p.runSlot();
     expect(["succeeded", "partial"]).toContain(resumed.status);
     expect(resumed.runId).toBe(failed.runId);
     expect(resumed.stages.collect).toMatch(/skipped/);
-    expect(resumed.stages.analyze).toBe("succeeded");
-    expect(await ctx.prisma.marketSnapshot.count()).toBe(collected);
+    expect(resumed.stages.lbank).toMatch(/skipped/);
+    expect(resumed.stages.daily).toMatch(/skipped/);
+    expect(resumed.stages.scan).toBe("succeeded");
+    expect(await ctx.prisma.marketSnapshot.count()).toBe(snapshots);
+    expect(await ctx.prisma.dailyMetricRevision.count()).toBe(daily);
     expect((await ctx.prisma.pipelineRun.findUniqueOrThrow({ where: { id: failed.runId! } })).attempt).toBe(2);
     spy.mockRestore();
   });
@@ -89,14 +87,15 @@ describe("hourly pipeline", () => {
     expect(r.missedRecorded).toBe(3);
     expect(await ctx.prisma.pipelineRun.count({ where: { status: "missed" } })).toBe(3);
     expect(await ctx.prisma.marketSnapshot.count()).toBe(0);
+    expect(await ctx.prisma.crawlBatch.count()).toBe(0);
   });
 
   it("keeps history across application restarts", async () => {
-    await seed(3);
-    const before = await ctx.prisma.marketSnapshot.count();
+    await ctx.app.get(PipelineService).runSlot();
+    const before = { snaps: await ctx.prisma.marketSnapshot.count(), results: await ctx.prisma.scanResult.count() };
     await ctx.app.close();
     ctx = await makeApp();
-    expect(await ctx.prisma.marketSnapshot.count()).toBe(before);
-    expect(before).toBeGreaterThan(0);
+    expect({ snaps: await ctx.prisma.marketSnapshot.count(), results: await ctx.prisma.scanResult.count() }).toEqual(before);
+    expect(before.snaps).toBeGreaterThan(0);
   });
 });

@@ -3,16 +3,13 @@ import { Inject, Injectable, Logger } from "@nestjs/common";
 import { APP_CONFIG, type AppConfig } from "../config/config.js";
 import { redact } from "../config/redact.js";
 import type { Prisma } from "../generated/prisma/client.js";
-import { STATISTICAL_WARMUP_SNAPSHOTS } from "../features/registry.js";
-import { PrismaService, toNum } from "../prisma/prisma.service.js";
-import { wantsHistory } from "../screening/universe.js";
+import { PrismaService } from "../prisma/prisma.service.js";
 import { BENCHMARK_IDS, REFERENCE_IDS } from "../sources/benchmarks.js";
-import { CMC_WEB_PROVIDER } from "../sources/coinmarketcap-web/client.js";
 import type { MarketDataSource, ProviderInfo, RawObservation, SourceAsset } from "../sources/types.js";
 import { MARKET_DATA_SOURCE } from "../sources/types.js";
+import { RULES, type BatchStatus } from "../tier1/constants.js";
+import { isCmcIdProvider } from "../tier1/providers.js";
 import { classifyAsset, stricterClass, trackedExposure } from "./classify.js";
-import { addHours, HOUR_MS } from "../common/time.js";
-import { alignToHourlySlots, MAX_CONSECUTIVE_HISTORY_FAILURES, slotOffsetMs, stopsBackfill } from "./history.js";
 import { normalizeContract, sanitizeText, validateObservation, type SnapshotDraft } from "./validate.js";
 
 export interface CoverageReport {
@@ -33,29 +30,9 @@ export interface CoverageReport {
   pagesFetched: number;
   requestsUsed: number;
   notes: string[];
-}
-
-/** Hours of genuine history fetched per coin: the deepest feature look-back (vol24_zscore_72h). */
-export const HISTORY_BACKFILL_HOURS = STATISTICAL_WARMUP_SNAPSHOTS - 1;
-
-export interface HistoryBackfillReport {
-  /** `running` only in progress updates written while the stage is still fetching. */
-  status: "not_supported" | "disabled" | "not_needed" | "running" | "completed" | "partial";
-  /** Coins that would be eligible now if they had history, plus fresh BTC/ETH benchmarks. */
-  candidates: number;
-  /** Candidates missing one of the previous (SNAPSHOT_WINDOW − 1) hourly snapshots. */
-  needed: number;
-  attempted: number;
-  /** Coins that received at least one genuine historical sample in this run. */
-  backfilled: number;
-  /** Samples stored; hours that already had an observation are never overwritten. */
-  inserted: number;
-  failed: number;
-  /** Candidates still missing the required previous hours after this run. */
-  remaining: number;
-  stoppedBy: "time_budget" | "max_assets" | "request_budget_reserve" | "source_unavailable" | null;
-  hours: number;
-  notes: string[];
+  /** Crawl batch recorded for this slot (Tier 1 input boundary). */
+  batchId: string;
+  batchStatus: BatchStatus;
 }
 
 const CHUNK = 1000;
@@ -79,6 +56,15 @@ export function trackerEvidence(providerId: string, observations: RawObservation
     if (c) out.set(o.providerAssetId, [c]);
   }
   return out;
+}
+
+/** Ranks 1..max absent from, and present more than once in, a batch (assumption A12). */
+export function rankContinuity(ranks: Array<{ rank: number; n: number }>, max: number = RULES.rankMax): { missing: number[]; duplicates: number[] } {
+  const seen = new Map(ranks.map((r) => [r.rank, r.n]));
+  const missing: number[] = [];
+  for (let r = 1; r <= max; r++) if (!seen.has(r)) missing.push(r);
+  const duplicates = ranks.filter((r) => r.rank >= 1 && r.rank <= max && r.n > 1).map((r) => r.rank).sort((a, b) => a - b);
+  return { missing, duplicates };
 }
 
 @Injectable()
@@ -265,6 +251,9 @@ export class IngestionService {
       depthPlus2PctUsd: d.depthPlus2PctUsd,
       depthMinus2PctUsd: d.depthMinus2PctUsd,
       liquiditySource: d.liquiditySource,
+      rank: d.rank,
+      dateAdded: d.dateAdded,
+      tags: d.tags,
       qualityFlags: d.qualityFlags,
       completeness: d.completeness,
       freshnessSeconds: d.freshnessSeconds,
@@ -273,141 +262,127 @@ export class IngestionService {
       pipelineRunId: runId,
     }));
     let inserted = 0;
+    // First write wins: a replayed batch never duplicates or overwrites an observation.
     for (const c of chunks(rows)) inserted += (await this.prisma.marketSnapshot.createMany({ data: c, skipDuplicates: true })).count;
-
     return inserted;
   }
 
   /**
-   * Fetch genuine hourly history (one chart request per coin) for every coin that would be
-   * eligible now but lacks the previous (SNAPSHOT_WINDOW − 1) consecutive hourly snapshots:
-   * the first run, newly qualifying coins, and gaps after downtime. Benchmarks come first, then
-   * monitored VMC ids, then the most liquid coins. Bounded per run by coin count, wall-clock time
-   * and a reserve of the monthly request budget that hourly listings still need; whatever is left
-   * continues next run while every coin also accumulates its own hourly snapshots.
-   * Existing observations are never overwritten and missing hours are never filled.
+   * CMC asset identity keyed by CMC id (PDF p.10). Symbol, name, slug, tags, listing date and
+   * contract changes are logged without creating a new asset.
    */
-  async backfillHistory(
-    slot: Date,
-    runId: string,
-    collectedAt: Date,
-    opts: { listingRequestsPerRun?: number; onProgress?: (r: HistoryBackfillReport) => Promise<void> } = {},
-  ): Promise<HistoryBackfillReport> {
+  async syncCmcAssets(observations: RawObservation[], batchId: string, now: Date): Promise<{ created: number; changed: number }> {
     const providerId = this.source.info.id;
-    const report: HistoryBackfillReport = { status: "not_needed", candidates: 0, needed: 0, attempted: 0, backfilled: 0, inserted: 0, failed: 0, remaining: 0, stoppedBy: null, hours: HISTORY_BACKFILL_HOURS, notes: [] };
-    if (!this.source.history) return { ...report, status: "not_supported" };
-    const limit = this.cfg.SOURCE_HISTORY_BOOTSTRAP_MAX_ASSETS;
-    if (!limit) return { ...report, status: "disabled", notes: ["history backfill disabled (SOURCE_HISTORY_BOOTSTRAP_MAX_ASSETS=0); coins warm up from hourly collection"] };
-
-    const floors = { minMarketCapUsd: this.cfg.MIN_MARKET_CAP_USD, minVolume24hUsd: this.cfg.MIN_VOLUME_24H_USD };
-    const current = await this.prisma.marketSnapshot.findMany({
-      where: { providerId, slotTime: slot },
-      select: { assetId: true, providerAssetId: true, sourceUrl: true, observedAt: true, price: true, marketCap: true, volumeRolling24h: true, isStale: true, asset: { select: { name: true, symbol: true, assetClass: true, isBenchmark: true } } },
-    });
-    const candidates = current.filter((s) => wantsHistory(s.asset, { price: toNum(s.price), marketCap: toNum(s.marketCap), volumeRolling24h: toNum(s.volumeRolling24h), isStale: s.isStale }, floors));
-    report.candidates = candidates.length;
-
-    const prior = this.cfg.SNAPSHOT_WINDOW - 1;
-    const missing = async (ids: string[]) => {
-      const have = new Map<string, number>();
-      for (const c of chunks(ids, 5000)) {
-        const rows = await this.prisma.marketSnapshot.groupBy({
-          by: ["assetId"],
-          where: { providerId, assetId: { in: c }, slotTime: { gte: addHours(slot, -prior), lt: slot }, isStale: false, price: { gt: 0 } },
-          _count: { _all: true },
-        });
-        for (const r of rows) have.set(r.assetId, r._count._all);
+    if (!isCmcIdProvider(providerId)) return { created: 0, changed: 0 };
+    const rows = observations
+      .filter((o) => /^\d{1,10}$/.test(o.providerAssetId))
+      .map((o) => ({
+        cmcId: Number(o.providerAssetId),
+        symbol: sanitizeText(o.symbol, 32).toUpperCase(),
+        name: sanitizeText(o.name, 120),
+        slug: o.slug ? sanitizeText(o.slug, 120) : null,
+        tags: [...new Set((o.tags ?? []).map((t) => sanitizeText(t, 64)).filter(Boolean))],
+        dateAdded: o.dateAdded ?? null,
+        platformChain: o.platform?.chain ?? null,
+        platformAddress: o.platform?.address ?? null,
+      }));
+    let created = 0;
+    let changed = 0;
+    for (const batch of chunks(rows, 2000)) {
+      const existing = new Map((await this.prisma.cmcAsset.findMany({ where: { providerId, cmcId: { in: batch.map((r) => r.cmcId) } } })).map((e) => [e.cmcId, e]));
+      const fresh = batch.filter((r) => !existing.has(r.cmcId));
+      if (fresh.length) created += (await this.prisma.cmcAsset.createMany({ data: fresh.map((r) => ({ providerId, ...r, firstSeenAt: now, lastSeenAt: now, lastBatchId: batchId })), skipDuplicates: true })).count;
+      const changes: Prisma.CmcAssetChangeCreateManyInput[] = [];
+      for (const r of batch) {
+        const e = existing.get(r.cmcId);
+        if (!e) continue;
+        const diff: Array<[string, string | null, string | null]> = [];
+        if (e.symbol !== r.symbol) diff.push(["symbol", e.symbol, r.symbol]);
+        if (e.name !== r.name) diff.push(["name", e.name, r.name]);
+        if ((e.slug ?? null) !== r.slug) diff.push(["slug", e.slug, r.slug]);
+        const oldTags = [...e.tags].sort().join(","), newTags = [...r.tags].sort().join(",");
+        if (oldTags !== newTags) diff.push(["tags", oldTags, newTags]);
+        const oldDate = e.dateAdded?.toISOString() ?? null, newDate = r.dateAdded?.toISOString() ?? null;
+        if (oldDate !== newDate) diff.push(["dateAdded", oldDate, newDate]);
+        const oldPlat = e.platformAddress ? `${e.platformChain}:${e.platformAddress}` : null, newPlat = r.platformAddress ? `${r.platformChain}:${r.platformAddress}` : null;
+        if (oldPlat !== newPlat) diff.push(["platform", oldPlat, newPlat]);
+        if (!diff.length) continue;
+        changed++;
+        changes.push(...diff.map(([field, oldValue, newValue]) => ({ providerId, cmcId: r.cmcId, field, oldValue, newValue, batchId, observedAt: now })));
+        await this.prisma.cmcAsset.update({ where: { providerId_cmcId: { providerId, cmcId: r.cmcId } }, data: { symbol: r.symbol, name: r.name, slug: r.slug, tags: r.tags, dateAdded: r.dateAdded, platformChain: r.platformChain, platformAddress: r.platformAddress } });
       }
-      return new Set(ids.filter((id) => (have.get(id) ?? 0) < prior));
-    };
-    const needs = await missing(candidates.map((c) => c.assetId));
-    const vmc = new Set(this.cfg.VMC_ASSET_IDS.map(String));
-    const tier = (s: (typeof candidates)[number]) => (s.asset.isBenchmark ? 0 : vmc.has(s.providerAssetId) ? 1 : 2);
-    const todo = candidates
-      .filter((c) => needs.has(c.assetId))
-      .sort((a, b) => tier(a) - tier(b) || (toNum(b.volumeRolling24h) ?? 0) - (toNum(a.volumeRolling24h) ?? 0) || a.providerAssetId.localeCompare(b.providerAssetId));
-    report.needed = todo.length;
-    if (!todo.length) return report;
-
-    const perRun = Math.max(1, opts.listingRequestsPerRun ?? 1) + 1;
-    const monthly = providerId === CMC_WEB_PROVIDER.id ? this.cfg.CMC_WEB_MONTHLY_REQUEST_BUDGET : this.cfg.SOURCE_MONTHLY_REQUEST_BUDGET;
-    const spendable = async () => {
-      const h = await this.prisma.sourceHealth.findUnique({ where: { providerId } });
-      const now = new Date();
-      const period = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
-      const used = h?.budgetPeriodStart?.getTime() === period ? h.budgetUsed : 0;
-      const hoursLeft = Math.ceil((Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1) - now.getTime()) / HOUR_MS);
-      return monthly - used - hoursLeft * perRun;
-    };
-    const deadline = Date.now() + this.cfg.SOURCE_HISTORY_BOOTSTRAP_MAX_MINUTES * 60_000;
-    let allowance = await spendable();
-    let consecutiveFailures = 0;
-
-    for (const s of todo) {
-      if (report.attempted >= limit) { report.stoppedBy = "max_assets"; break; }
-      if (Date.now() >= deadline) { report.stoppedBy = "time_budget"; break; }
-      if (report.attempted > 0 && report.attempted % 25 === 0) allowance = await spendable();
-      if (allowance <= 0) { report.stoppedBy = "request_budget_reserve"; break; }
-      report.attempted++;
-      allowance--;
-      try {
-        const asset: SourceAsset = { providerAssetId: s.providerAssetId, name: s.asset.name, symbol: s.asset.symbol, sourceUrl: s.sourceUrl, platforms: [] };
-        const samples = await this.source.history(asset, addHours(slot, -HISTORY_BACKFILL_HOURS), new Date(slot.getTime() - 1));
-        const drafts = alignToHourlySlots(samples, slot, HISTORY_BACKFILL_HOURS, slotOffsetMs(slot, s.observedAt)).flatMap(({ slotTime, raw }) => {
-          // Freshness is judged at that hour's end; the row still records the actual retrieval time.
-          const d = validateObservation(raw, { slotTime, collectedAt: new Date(slotTime.getTime() + HOUR_MS - 1), staleAfterMinutes: this.cfg.STALE_AFTER_MINUTES });
-          if (d.price === null || d.marketCap === null || d.volumeRolling24h === null) return [];
-          d.collectedAt = collectedAt;
-          d.freshnessSeconds = Math.round((collectedAt.getTime() - raw.observedAt!.getTime()) / 1000);
-          d.qualityFlags.push("historical_backfill");
-          return [d];
-        });
-        const n = await this.persistDrafts(drafts, new Map([[s.providerAssetId, s.assetId]]), runId);
-        report.inserted += n;
-        if (n) report.backfilled++;
-        consecutiveFailures = 0;
-      } catch (err) {
-        if (stopsBackfill(err)) {
-          report.stoppedBy = "source_unavailable";
-          report.notes.push(`history backfill stopped at ${s.asset.symbol}: ${redact(err).slice(0, 180)}`);
-          break; // The source is refusing or failing: the collected current snapshots stay valid.
-        }
-        report.failed++;
-        if (report.failed <= 5) report.notes.push(`no usable history for ${s.asset.symbol}: ${redact(err).slice(0, 140)}`);
-        if (++consecutiveFailures >= MAX_CONSECUTIVE_HISTORY_FAILURES) {
-          report.stoppedBy = "source_unavailable";
-          report.notes.push(`history backfill paused after ${consecutiveFailures} consecutive failed coins`);
-          break;
-        }
-      }
-      if (opts.onProgress && report.attempted % 10 === 0) await opts.onProgress({ ...report, status: "running", remaining: report.needed - report.attempted }).catch(() => undefined);
+      if (changes.length) await this.prisma.cmcAssetChange.createMany({ data: changes });
+      await this.prisma.cmcAsset.updateMany({ where: { providerId, cmcId: { in: batch.map((r) => r.cmcId) } }, data: { lastSeenAt: now, lastBatchId: batchId } });
     }
-    if (report.failed > 5) report.notes.push(`${report.failed - 5} more coins returned no usable history`);
-    report.remaining = (await missing(todo.map((t) => t.assetId))).size;
-    report.status = report.remaining === 0 ? "completed" : "partial";
-    const summary =
-      `history backfill: ${report.backfilled}/${report.needed} coins received genuine hourly samples (${report.inserted} rows, up to ${HISTORY_BACKFILL_HOURS}h each)` +
-      (report.remaining ? `; ${report.remaining} still need history and continue next run or warm up from hourly collection` : "");
-    report.notes.push(summary);
-    if (report.stoppedBy) report.notes.push(`backfill stopped early: ${report.stoppedBy.replace(/_/g, " ")}`);
-    this.log.log(summary);
-    return report;
+    return { created, changed };
   }
 
-  /** Collect, validate, and persist one hourly slot. Idempotent per (provider, asset, slot, quote). */
-  async collect(slot: Date, runId: string | null, now: Date, opts: { fixtureBackfill?: boolean } = {}): Promise<CoverageReport> {
+  /**
+   * Crawl-batch record computed from the snapshots actually stored for the slot (PDF p.16), so a
+   * replay describes the same data. COMPLETE needs the whole listing and contiguous ranks 1–1200.
+   */
+  async recordBatch(slot: Date, runId: string | null, startedAt: Date, coverage: Pick<CoverageReport, "label" | "universeSize" | "notes">): Promise<{ id: string; status: BatchStatus }> {
+    const providerId = this.source.info.id;
+    const [stats] = await this.prisma.$queryRaw<Array<{ collected: number; crawled_at: Date | null; obs_min: Date | null; obs_max: Date | null; price: number; cap: number; vol: number; observed: number; rank: number; date_added: number; tags: number }>>`
+      SELECT count(*)::int AS collected, min("collectedAt") AS crawled_at, min("observedAt") AS obs_min, max("observedAt") AS obs_max,
+             count(price)::int AS price, count("marketCap")::int AS cap, count("volumeRolling24h")::int AS vol, count("observedAt")::int AS observed,
+             count(rank)::int AS rank, count("dateAdded")::int AS date_added, count(*) FILTER (WHERE cardinality(tags) > 0)::int AS tags
+      FROM "MarketSnapshot" WHERE "providerId" = ${providerId} AND "slotTime" = ${slot}`;
+    const collected = stats?.collected ?? 0;
+    const reasons: string[] = [];
+    let missing: number[] = [];
+    let duplicates: number[] = [];
+    if (coverage.label !== "complete") reasons.push(`source_listing_${coverage.label}`);
+    if (isCmcIdProvider(providerId)) {
+      const ranks = await this.prisma.$queryRaw<Array<{ rank: number; n: number }>>`
+        SELECT rank, count(*)::int AS n FROM "MarketSnapshot" WHERE "providerId" = ${providerId} AND "slotTime" = ${slot} AND rank BETWEEN 1 AND ${RULES.rankMax} GROUP BY rank`;
+      ({ missing, duplicates } = rankContinuity(ranks));
+      if (missing.length) reasons.push(`missing_ranks:${missing.length}`);
+      if (duplicates.length) reasons.push(`duplicate_ranks:${duplicates.length}`);
+    } else reasons.push("source_ids_are_not_cmc_ids");
+    const status: BatchStatus = collected === 0 ? "FAILED" : reasons.length ? "INCOMPLETE" : "COMPLETE";
+    if (collected === 0) reasons.push("no_observations_stored");
+    const data = {
+      pipelineRunId: runId,
+      isLive: this.source.info.isLive,
+      finishedAt: new Date(),
+      sourceUpdatedMin: stats?.obs_min ?? null,
+      sourceUpdatedMax: stats?.obs_max ?? null,
+      status,
+      statusReasons: reasons,
+      listedTotal: coverage.universeSize,
+      collected,
+      fieldCounts: { price: stats?.price ?? 0, marketCap: stats?.cap ?? 0, volume24h: stats?.vol ?? 0, observedAt: stats?.observed ?? 0, rank: stats?.rank ?? 0, dateAdded: stats?.date_added ?? 0, tags: stats?.tags ?? 0 },
+      missingRanks: missing,
+      duplicateRanks: duplicates,
+      notes: coverage.notes.slice(0, 20),
+    };
+    // The earliest stored crawl time of the slot: stable across replays because snapshots are
+    // first-write-wins, and it replaces the attempt time of an earlier FAILED record.
+    const crawledAt = stats?.crawled_at ?? startedAt;
+    const row = await this.prisma.crawlBatch.upsert({
+      where: { providerId_slotTime: { providerId, slotTime: slot } },
+      create: { providerId, slotTime: slot, startedAt, crawledAt, ...data },
+      update: stats?.crawled_at ? { ...data, crawledAt } : data,
+    });
+    return { id: row.id, status };
+  }
+
+  /** A failed crawl is a visible gap (PDF p.18); an earlier stored batch for the slot is kept. */
+  async recordFailedBatch(slot: Date, runId: string | null, startedAt: Date, err: unknown): Promise<void> {
+    const providerId = this.source.info.id;
+    const existing = await this.prisma.crawlBatch.findUnique({ where: { providerId_slotTime: { providerId, slotTime: slot } } });
+    if (existing && existing.status !== "FAILED") return;
+    const data = { pipelineRunId: runId, isLive: this.source.info.isLive, finishedAt: new Date(), status: "FAILED", statusReasons: ["collection_failed"], collected: 0, fieldCounts: {}, errors: { message: redact(err).slice(0, 1000) } };
+    await this.prisma.crawlBatch.upsert({ where: { providerId_slotTime: { providerId, slotTime: slot } }, create: { providerId, slotTime: slot, startedAt, crawledAt: startedAt, ...data }, update: data });
+  }
+
+  /** Collect, validate, and persist one hourly slot (one crawl batch). Idempotent per (provider, asset, slot, quote). */
+  async collect(slot: Date, runId: string | null, now: Date): Promise<CoverageReport> {
     const providerId = this.source.info.id;
     await this.ensureProvider();
-    if (opts.fixtureBackfill && this.source.info.isLive) throw new Error("backfill is only permitted for the synthetic fixture source");
     const result = await this.source.collect({ slot, maxPages: this.cfg.SOURCE_MAX_MARKET_PAGES_PER_RUN });
-    // Synthetic history is "collected" at the slot it represents and flagged as backfill.
-    const collectedAt = opts.fixtureBackfill ? new Date(slot.getTime() + 5 * 60_000) : now;
-
-    const drafts: SnapshotDraft[] = result.observations.map((o) => {
-      const d = validateObservation(o, { slotTime: slot, collectedAt, staleAfterMinutes: this.cfg.STALE_AFTER_MINUTES });
-      if (opts.fixtureBackfill) d.qualityFlags.push("fixture_backfill");
-      return d;
-    });
+    const drafts: SnapshotDraft[] = result.observations.map((o) => validateObservation(o, { slotTime: slot, collectedAt: now, staleAfterMinutes: this.cfg.MAX_QUOTE_AGE_MINUTES }));
     // Assets seen during collection but not yet discovered get canonical identities too. Price
     // evidence of wrapped/staked/pegged exposure can only make a classification stricter.
     const evidence = trackerEvidence(providerId, result.observations);
@@ -416,14 +391,16 @@ export class IngestionService {
       result.observations.map((o) => ({ providerAssetId: o.providerAssetId, name: o.name, symbol: o.symbol, sourceUrl: o.sourceUrl, platforms: [], categories: [...(o.categories ?? []), ...(evidence.get(o.providerAssetId) ?? [])] })),
       now,
     );
-
     const inserted = await this.persistDrafts(drafts, idMap, runId);
 
     const lastDiscovery = await this.prisma.discoveryRun.findFirst({
       where: { providerId, status: { in: ["succeeded", "partial"] } },
       orderBy: { startedAt: "desc" },
     });
-    const universeSize = lastDiscovery?.sourceTotal ?? result.universeSize ?? null;
+    // The total reported by this sweep describes the same listing as its observations. The last
+    // discovery can be up to DISCOVERY_INTERVAL_HOURS old and the source's active universe drifts
+    // by a few coins per hour, so it is only a fallback for sources that report no total.
+    const universeSize = result.universeSize ?? lastDiscovery?.sourceTotal ?? null;
     const missingFields: Record<string, number> = {};
     for (const d of drafts) for (const k of Object.keys(d.nullReasons)) missingFields[k] = (missingFields[k] ?? 0) + 1;
     const collected = drafts.length;
@@ -437,8 +414,12 @@ export class IngestionService {
           ? "partial"
           : "unknown";
     const notes = [...result.notes];
+    if (result.universeSize != null && lastDiscovery?.sourceTotal != null && result.universeSize !== lastDiscovery.sourceTotal)
+      notes.push(`source total ${result.universeSize} this slot (last discovery: ${lastDiscovery.sourceTotal})`);
     if (inserted < drafts.length) notes.push(`${drafts.length - inserted} snapshots already stored for this slot (idempotent re-run)`);
-    this.log.log(`collected ${collected} observations for ${slot.toISOString()} (${label}${coveragePct !== null ? `, ${coveragePct.toFixed(1)}%` : ""})`);
+    const batch = await this.recordBatch(slot, runId, now, { label, universeSize, notes });
+    await this.syncCmcAssets(result.observations, batch.id, now);
+    this.log.log(`collected ${collected} observations for ${slot.toISOString()} (${label}${coveragePct !== null ? `, ${coveragePct.toFixed(1)}%` : ""}; batch ${batch.status})`);
     return {
       providerId,
       isLive: this.source.info.isLive,
@@ -454,6 +435,8 @@ export class IngestionService {
       pagesFetched: result.pagesFetched,
       requestsUsed: result.requestsUsed,
       notes,
+      batchId: batch.id,
+      batchStatus: batch.status,
     };
   }
 }

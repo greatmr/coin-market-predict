@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 import { Inject, Injectable, Logger } from "@nestjs/common";
 import { type Clock, sleep as realSleep, systemClock } from "../common/time.js";
 import { APP_CONFIG, type AppConfig } from "../config/config.js";
 import { redact } from "../config/redact.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { TelegramAccessService } from "./access.service.js";
+import { parseDocumentPart, TELEGRAM_DOCUMENT_LIMIT_BYTES } from "./attachment.js";
 
 export const TELEGRAM_FETCH = Symbol("TELEGRAM_FETCH");
 export const MAX_DELIVERY_ATTEMPTS = 6;
@@ -200,16 +203,37 @@ export class TelegramService {
   }
 
   private async sendOne(chatId: string, text: string): Promise<SendResult> {
+    const doc = parseDocumentPart(text);
+    let upload: FormData | null = null;
+    if (doc) {
+      // Read the file before spacing/sending: a pruned or oversized export is a permanent failure.
+      let data: Buffer;
+      try {
+        data = await readFile(doc.path);
+      } catch {
+        return { ok: false, error: `export file ${basename(doc.path)} is no longer available (pruned after EXPORT_RETENTION_DAYS?)`, permanent: true };
+      }
+      if (data.length > TELEGRAM_DOCUMENT_LIMIT_BYTES) return { ok: false, error: `export file is ${data.length} bytes, above Telegram's 50 MB bot limit`, permanent: true };
+      upload = new FormData();
+      upload.append("chat_id", chatId);
+      if (doc.caption) {
+        upload.append("caption", doc.caption);
+        upload.append("parse_mode", "HTML");
+      }
+      upload.append("document", new Blob([new Uint8Array(data)], { type: doc.mimeType }), doc.filename);
+    }
     const wait = this.lastSentAt + MIN_SPACING_MS - this.clock.now().getTime();
     if (wait > 0) await this.sleep(wait);
     this.lastSentAt = this.clock.now().getTime();
     try {
-      const res = await this.fetchImpl(`https://api.telegram.org/bot${this.cfg.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML", link_preview_options: { is_disabled: true } }),
-        signal: AbortSignal.timeout(20_000),
-      });
+      const res = upload
+        ? await this.fetchImpl(`https://api.telegram.org/bot${this.cfg.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: upload, signal: AbortSignal.timeout(120_000) })
+        : await this.fetchImpl(`https://api.telegram.org/bot${this.cfg.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML", link_preview_options: { is_disabled: true } }),
+            signal: AbortSignal.timeout(20_000),
+          });
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean; result?: { message_id?: number }; description?: string; parameters?: { retry_after?: number } };
       if (res.ok && body.ok) return { ok: true, messageId: String(body.result?.message_id ?? "") };
       if (res.status === 429) return { ok: false, error: `429 ${body.description ?? ""}`, permanent: false, retryAfterMs: ((body.parameters?.retry_after ?? 30) + 1) * 1000 };

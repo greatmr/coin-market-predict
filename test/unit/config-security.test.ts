@@ -7,18 +7,27 @@ import { ConfigError, describeConfig, loadConfig } from "../../src/config/config
 import { redact, registerSecrets } from "../../src/config/redact.js";
 import { resolveScope } from "../../src/mcp/mcp-auth.js";
 import { defineTool, invokeTool } from "../../src/mcp/tool-def.js";
-import { FixtureMarket } from "../../src/sources/fixture/fixture-market.js";
+import { FixtureCmcMarket, FIXTURE_LISTED } from "../../src/sources/fixture/fixture-cmc.js";
 
 const base = { DATABASE_URL: "postgresql://coins:pw@localhost:5433/coins" } as NodeJS.ProcessEnv;
 
 describe("configuration", () => {
-  it("uses safe defaults: fixture data, fixture agents, Telegram dry-run, Tehran display time", () => {
+  it("uses safe defaults: fixture data, Telegram dry-run, Tehran display time, max quote age = 2 × crawl interval", () => {
     const c = loadConfig(base);
     expect(c.DATA_SOURCE).toBe("fixture");
-    expect(c.AGENT_PROVIDER).toBe("fixture");
     expect(c.TELEGRAM_MODE).toBe("dry_run");
     expect(c.DISPLAY_TIMEZONE).toBe("Asia/Tehran");
-    expect(c.SNAPSHOT_WINDOW).toBe(3);
+    expect(c.CRAWL_EXPECTED_INTERVAL_MINUTES).toBe(60);
+    expect(c.MAX_QUOTE_AGE_MINUTES).toBe(120);
+    expect(loadConfig({ ...base, CRAWL_EXPECTED_INTERVAL_MINUTES: "30" }).MAX_QUOTE_AGE_MINUTES).toBe(60);
+    expect(loadConfig({ ...base, MAX_QUOTE_AGE_MINUTES: "90" }).MAX_QUOTE_AGE_MINUTES).toBe(90);
+  });
+
+  it("ignores retired settings left in an existing .env (agents, six-month VMC, legacy floors)", () => {
+    const c = loadConfig({ ...base, AGENT_PROVIDER: "claude", VMC_SOURCE: "cmc_web", MIN_MARKET_CAP_USD: "5000000" } as NodeJS.ProcessEnv) as Record<string, unknown>;
+    expect(c.AGENT_PROVIDER).toBeUndefined();
+    expect(c.VMC_SOURCE).toBeUndefined();
+    expect(c.MIN_MARKET_CAP_USD).toBeUndefined();
   });
 
   it("refuses live Telegram without credentials and never echoes values", () => {
@@ -39,17 +48,17 @@ describe("configuration", () => {
   it("reads *_FILE secrets and masks them in diagnostics", () => {
     const dir = mkdtempSync(join(tmpdir(), "coins-"));
     const f = join(dir, "tok");
-    writeFileSync(f, "file-based-oauth-token\n");
-    const c = loadConfig({ ...base, CLAUDE_CODE_OAUTH_TOKEN_FILE: f });
-    expect(c.CLAUDE_CODE_OAUTH_TOKEN).toBe("file-based-oauth-token");
+    writeFileSync(f, "file-based-bot-token\n");
+    const c = loadConfig({ ...base, TELEGRAM_BOT_TOKEN_FILE: f });
+    expect(c.TELEGRAM_BOT_TOKEN).toBe("file-based-bot-token");
     const d = describeConfig(c);
-    expect(d.CLAUDE_CODE_OAUTH_TOKEN).toBe("<set>");
+    expect(d.TELEGRAM_BOT_TOKEN).toBe("<set>");
     expect(d.DATABASE_URL).toBe("postgresql://coins:***@localhost:5433/coins");
-    expect(JSON.stringify(d)).not.toMatch(/file-based-oauth-token/);
+    expect(JSON.stringify(d)).not.toMatch(/file-based-bot-token/);
   });
 
   it("treats empty secrets as not configured", () => {
-    expect(loadConfig({ ...base, CLAUDE_CODE_OAUTH_TOKEN: "  " }).CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(loadConfig({ ...base, CMC_API_KEY: "  " }).CMC_API_KEY).toBeUndefined();
   });
 });
 
@@ -67,6 +76,15 @@ describe("redaction", () => {
     expect(redact(undefined)).toBe("undefined");
     expect(redact(null)).toBe("null");
     expect(redact(() => 1)).toMatch(/=>/);
+  });
+
+  it("shows the network cause behind Node's generic 'fetch failed', still masking secrets", () => {
+    const timeout = Object.assign(new Error("Connect Timeout Error (attempted address: api.telegram.org:443, timeout: 10000ms)"), { name: "ConnectTimeoutError", code: "UND_ERR_CONNECT_TIMEOUT" });
+    expect(redact(new TypeError("fetch failed", { cause: timeout }))).toBe("TypeError: fetch failed (cause: ConnectTimeoutError: Connect Timeout Error (attempted address: api.telegram.org:443, timeout: 10000ms) [UND_ERR_CONNECT_TIMEOUT])");
+    const dns = Object.assign(new Error("getaddrinfo ENOTFOUND api.telegram.org"), { code: "ENOTFOUND" });
+    expect(redact(new TypeError("fetch failed", { cause: dns }))).toBe("TypeError: fetch failed (cause: Error: getaddrinfo ENOTFOUND api.telegram.org)");
+    const leaky = new TypeError("fetch failed", { cause: new Error("socket closed for https://api.telegram.org/bot123456789:AAAbbbCCCdddEEEfffGGGhhh/getUpdates") });
+    expect(redact(leaky)).not.toMatch(/AAAbbb/);
   });
 });
 
@@ -91,20 +109,21 @@ describe("MCP access boundaries", () => {
 });
 
 describe("fixture market", () => {
-  const anchor = new Date("2026-11-03T12:00:00Z");
-  it("is deterministic and clearly synthetic", () => {
-    const a = new FixtureMarket(anchor).observationsFor(anchor);
-    const b = new FixtureMarket(anchor).observationsFor(anchor);
+  const anchor = "2026-11-05";
+  const slot = new Date("2026-11-05T07:00:00Z");
+  it("is deterministic and clearly synthetic (ids ≥ 990001, names marked fixture)", () => {
+    const a = new FixtureCmcMarket(anchor).observations(slot);
+    const b = new FixtureCmcMarket(anchor).observations(slot);
     expect(a).toEqual(b);
-    expect(a.every((o) => o.providerAssetId.startsWith("fx-") && o.name.includes("(fixture)"))).toBe(true);
+    expect(a.every((o) => Number(o.providerAssetId) >= 990001 && o.name.includes("(fixture)"))).toBe(true);
+    expect(new Set(a.filter((o) => o.rank !== null).map((o) => o.rank)).size).toBe(FIXTURE_LISTED);
   });
-  it("models gaps, stale observations, missing caps and shared symbols", () => {
-    const m = new FixtureMarket(anchor);
-    expect(m.observationsFor(new Date("2026-11-03T11:00:00Z")).find((o) => o.symbol === "GAP")).toBeUndefined();
-    const now = m.observationsFor(anchor);
-    expect(now.find((o) => o.symbol === "STAL")!.observedAt!.getTime()).toBeLessThan(anchor.getTime() - 3 * 3600_000);
-    expect(now.find((o) => o.symbol === "NOCAP")!.marketCap).toBeNull();
-    expect(now.filter((o) => o.symbol === "FROG").map((o) => o.providerAssetId).sort()).toEqual(["fx-frog-one", "fx-frog-two"]);
-    expect(now.every((o) => o.volumeHourly === null)).toBe(true);
+  it("daily rows are a pure function of asset and date (refreshes never invent revisions)", () => {
+    const m = new FixtureCmcMarket(anchor);
+    expect(m.dailyRows(990001, "2026-10-01", "2026-11-04")).toEqual(new FixtureCmcMarket(anchor).dailyRows(990001, "2026-10-01", "2026-11-04"));
+    expect(m.dailyRows(990007, "2026-10-28", "2026-11-04").map((r) => r.dateUtc)).not.toContain("2026-10-31");
+    expect(m.observations(slot).find((o) => o.symbol === "STAL")!.observedAt!.getTime()).toBeLessThan(slot.getTime() - 3 * 3600_000);
+    expect(m.observations(slot).find((o) => o.symbol === "NOCAP")!.marketCap).toBeNull();
+    expect(m.observations(slot).filter((o) => o.symbol === "TWIN").map((o) => o.providerAssetId).sort()).toEqual(["990005", "990006"]);
   });
 });

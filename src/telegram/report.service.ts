@@ -1,123 +1,94 @@
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { Inject, Injectable } from "@nestjs/common";
-import { systemClock } from "../common/time.js";
 import { APP_CONFIG, type AppConfig } from "../config/config.js";
-import type { CoverageReport } from "../ingestion/ingestion.service.js";
-import { PrismaService, toNum } from "../prisma/prisma.service.js";
-import { ReadModelService } from "../read-model/read-model.service.js";
-import type { PaperScenario } from "../screening/scenario.js";
-import { formatReport, type RecommendationRow, type ReportInput } from "./format.js";
+import { PrismaService } from "../prisma/prisma.service.js";
+import type { ResolvedPair } from "../tier1/lbank.js";
+import { documentPart, XLSX_MIME } from "./attachment.js";
+import { formatTier1Report, type QueueRow, type Tier1ReportInput } from "./format.js";
 
-/** Builds the Telegram report for a run from the database (the source of truth). */
+const num = (v: { toString(): string } | null) => (v === null ? null : Number(v.toString()));
+
+/** Builds the Telegram summary of one scanned crawl batch from the database (the source of truth). */
 @Injectable()
 export class ReportService {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
-    private readonly read: ReadModelService,
   ) {}
 
-  /** Pump watchlist rows for the Telegram table (same data as the dashboard and MCP). */
-  async watchlist(runId: string): Promise<RecommendationRow[]> {
-    const rec = (await this.read.recommendations({ runId })) as { rows: Array<Record<string, any>> };
-    return rec.rows.map((r) => ({
-      symbol: r.symbol,
-      name: r.name,
-      price: r.price,
-      marketCap: r.marketCap,
-      volume24h: r.volume24h,
-      threeDayChange: r.threeDay?.change ?? null,
-      threeDaySpanHours: r.threeDay?.spanHours ?? 0,
-      vmcCurrent: r.vmc?.currentRatio ?? (r.volume24h !== null && r.marketCap ? r.volume24h / r.marketCap : null),
-      vmcBaseline: r.vmc?.baselineMean ?? null,
-      vmcMultiple: r.vmc?.multiple ?? null,
-      pumpChance: r.pumpChance,
-      pumpReasons: r.pumpReasons ?? [],
-      agentRecommendation: r.agent?.recommendation ?? null,
-      agentReason: r.agent?.reason ?? null,
-      agentOrigin: r.agent?.origin ?? null,
-      recommendation: r.recommendation,
-      recommendationReason: r.recommendationReason ?? "",
-      risk: r.riskFlags ?? [],
-      scenario: r.scenario ?? undefined,
-    }));
-  }
-
-  async buildInput(runId: string, agentStatus: string, summary: string | null): Promise<ReportInput> {
-    const run = await this.prisma.pipelineRun.findUniqueOrThrow({ where: { id: runId } });
-    const provider = await this.prisma.provider.findUniqueOrThrow({ where: { id: run.providerId } });
-    const coverage = (run.coverage ?? {}) as Partial<CoverageReport>;
-    const [screened, eligible, signals] = await Promise.all([
-      this.prisma.screeningResult.count({ where: { runId } }),
-      this.prisma.screeningResult.count({ where: { runId, eligible: true } }),
-      this.prisma.signal.findMany({
-        where: { runId, status: { in: ["candidate", "watch"] } },
-        include: { asset: { select: { symbol: true, name: true } } },
-        orderBy: [{ status: "asc" }, { heuristicScore: "desc" }],
-      }),
+  async buildInput(batchId: string): Promise<Tier1ReportInput> {
+    const [run, batch] = await Promise.all([this.prisma.scanRun.findUniqueOrThrow({ where: { batchId } }), this.prisma.crawlBatch.findUniqueOrThrow({ where: { id: batchId } })]);
+    const provider = await this.prisma.provider.findUnique({ where: { id: batch.providerId } });
+    const [queue, needsYes, unverifiedYes] = await Promise.all([
+      this.prisma.scanResult.findMany({ where: { batchId, inQueue: true }, orderBy: { queueOrder: "asc" }, take: this.cfg.TELEGRAM_QUEUE_ROWS }),
+      this.prisma.scanResult.count({ where: { batchId, eligibilityStatus: "NEEDS_REVIEW", stars: { gt: 0 } } }),
+      this.prisma.scanResult.count({ where: { batchId, eligibilityStatus: "NEEDS_REVIEW", stars: { gt: 0 }, lbankStatus: "PAIR_LISTED_UNVERIFIED" } }),
     ]);
-    const snaps = await this.prisma.marketSnapshot.findMany({
-      where: { providerId: run.providerId, slotTime: run.slotTime, assetId: { in: signals.map((s) => s.assetId) } },
-    });
-    const snapBy = new Map(snaps.map((s) => [s.assetId, s]));
-    const rows = signals.map((s) => {
-      const snap = snapBy.get(s.assetId);
-      const sc = s.scenario as unknown as PaperScenario;
-      return {
-        symbol: s.asset.symbol,
-        name: s.asset.name,
-        status: s.status,
-        signalType: s.signalType,
-        price: toNum(snap?.price),
-        marketCap: toNum(snap?.marketCap),
-        volume24h: toNum(snap?.volumeRolling24h),
-        volumeWindow: "rolling_24h",
-        score: s.heuristicScore.toNumber(),
-        horizonHours: s.horizonHours,
-        entry: sc.entryRule,
-        invalidation: sc.stopRule,
-        exit: `${sc.targetRule}; ${sc.trailingRule}; max hold ${sc.maxHoldHours}h`,
-        risk: s.riskFlags,
-        sourceUrl: snap?.sourceUrl ?? "",
-        observedAt: snap?.observedAt?.toISOString() ?? null,
-        scenario: sc.entryTriggerPrice
-          ? {
-              entryPrice: sc.entryTriggerPrice,
-              stopPrice: sc.stopPrice,
-              targetPrice: sc.targetPrice,
-              trailPct: sc.trailPct,
-              trailActivatePct: sc.trailActivatePct,
-              maxHoldHours: sc.maxHoldHours,
-              expiresAt: sc.signalExpiresAt,
-            }
-          : undefined,
-      };
-    });
-    const observed = rows.map((r) => r.observedAt).filter((x): x is string => !!x).sort();
+    const counts = (run.counts ?? {}) as Record<string, number>;
+    const rows: QueueRow[] = queue.map((r) => ({
+      order: r.queueOrder ?? 0,
+      cmcId: r.cmcId,
+      symbol: r.symbol,
+      stars: r.stars,
+      pass: { d3: r.pass3d, d7: r.pass7d, d30: r.pass30d },
+      multiple: { d3: num(r.multiple3d), d7: num(r.multiple7d), d30: num(r.multiple30d) },
+      currentVmc: num(r.currentVmc),
+      capUsd: num(r.capUsd),
+      lbankPairs: ((r.lbankPairs ?? []) as unknown as ResolvedPair[]).filter((p) => p.trading === "TRADING" && (p.mapping === "OK" || p.mapping === "CONFIRMED")).map((p) => p.marketPair),
+    }));
     return {
-      generatedAt: systemClock.now(),
-      slotTime: run.slotTime,
+      generatedAt: new Date(),
+      slotTime: batch.slotTime,
+      crawledAt: batch.crawledAt,
       timezone: this.cfg.DISPLAY_TIMEZONE,
-      providerName: provider.name,
-      isLive: provider.isLive,
-      attribution: provider.attribution,
-      coverage: {
-        label: coverage.label ?? "unknown",
-        collected: coverage.collected ?? 0,
-        universeSize: coverage.universeSize ?? null,
-        coveragePct: coverage.coveragePct ?? null,
-        stale: coverage.stale ?? 0,
-      },
-      oldestObservedAt: observed[0] ?? null,
-      agentStatus,
-      summary,
-      screened,
-      eligible,
-      rows: rows.sort((a, b) => (a.status === b.status ? b.score - a.score : a.status === "candidate" ? -1 : 1)),
-      recommendations: await this.watchlist(runId),
+      providerName: provider?.name ?? batch.providerId,
+      isLive: batch.isLive,
+      attribution: provider?.attribution ?? null,
+      batchStatus: batch.status,
+      batchReasons: batch.statusReasons,
+      queueStatus: run.queueStatus ?? "EMPTY",
+      counts: { assets: counts.assets ?? 0, eligible: counts.eligible ?? 0, needsReview: counts.needsReview ?? 0, excluded: counts.excluded ?? 0, queue: counts.queue ?? 0 },
+      needsReviewWithYes: needsYes,
+      lbankUnverifiedWithYes: unverifiedYes,
+      rows,
+      warnings: run.warnings,
     };
   }
 
-  async build(runId: string, agentStatus: string, summary: string | null): Promise<string[]> {
-    return formatReport(await this.buildInput(runId, agentStatus, summary));
+  async build(batchId: string): Promise<string[]> {
+    const input = await this.buildInput(batchId);
+    const parts = formatTier1Report(input);
+    const attachment = await this.workbookPart(batchId, input);
+    return attachment ? [...parts, attachment] : parts;
+  }
+
+  /**
+   * The batch's Excel workbook as a final report part (TELEGRAM_ATTACH_EXPORT=xlsx). Not attached
+   * when the queue is withheld (an incomplete batch or LBank list must not look complete, p.18)
+   * or when the export failed or its files were pruned.
+   */
+  private async workbookPart(batchId: string, input: Tier1ReportInput): Promise<string | null> {
+    if (this.cfg.TELEGRAM_ATTACH_EXPORT !== "xlsx" || input.queueStatus.startsWith("WITHHELD")) return null;
+    const run = await this.prisma.scanRun.findUnique({ where: { batchId }, select: { exportStatus: true, exportPath: true } });
+    if (run?.exportStatus !== "succeeded" || !run.exportPath) return null;
+    const path = resolve(run.exportPath, "workbook.xlsx");
+    if (!existsSync(path)) return null;
+    const slot = input.slotTime.toISOString().slice(0, 16).replace(":", "-");
+    const caption = [
+      `📎 <b>Tier 1 export</b> · batch ${input.slotTime.toISOString().slice(0, 16).replace("T", " ")} UTC${input.isLive ? "" : " · 🧪 TEST DATA"}`,
+      `Sheets: Review_Queue (${input.counts.queue}) · All_Eligible (${input.counts.eligible}) · Needs_Review (${input.counts.needsReview}) · Excluded (${input.counts.excluded}) · Run_Metadata`,
+      "<i>Research screen only · no orders placed</i>",
+    ].join("\n");
+    return documentPart({ path, filename: `coins-tier1_${slot}Z${input.isLive ? "" : "_SYNTHETIC"}.xlsx`, caption, mimeType: XLSX_MIME });
+  }
+
+  /** Crawl batch of a pipeline run (for re-sending a run's report). */
+  async batchOfRun(runId: string): Promise<string | null> {
+    const run = await this.prisma.pipelineRun.findUnique({ where: { id: runId } });
+    if (!run) return null;
+    const m = (run.metrics ?? {}) as { batchId?: string };
+    if (m.batchId) return m.batchId;
+    return (await this.prisma.crawlBatch.findUnique({ where: { providerId_slotTime: { providerId: run.providerId, slotTime: run.slotTime } } }))?.id ?? null;
   }
 }

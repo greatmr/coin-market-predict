@@ -1,31 +1,49 @@
-import { CmcApiError, type CmcResponse, type RawRecord } from "../../vmc/cmc-client.js";
-import { parseStatus } from "../../vmc/cmc-parse.js";
-import { parseExactJson } from "../../vmc/decimal.js";
+import { parseExactJson, sha256 } from "../../common/decimal.js";
 import { PoliteHttpClient, SourceUnavailableError } from "../http/polite-client.js";
 import type { ProviderInfo } from "../types.js";
-import { parseCoinPage, websiteData } from "./parse.js";
+import { CmcApiError } from "./errors.js";
 
 export const CMC_WEB_PROVIDER: ProviderInfo = {
   id: "coinmarketcap_web", name: "CoinMarketCap website", accessMethod: "website", isLive: true,
   baseUrl: "https://api.coinmarketcap.com", termsUrl: "https://coinmarketcap.com/terms/", attribution: "Data: CoinMarketCap",
 };
+/** Full listing: every listed coin with rank, tags, date added and the USD quote. */
 export const WEB_LISTING = "/data-api/v3/cryptocurrency/listing";
-export const WEB_DETAIL = "/data-api/v3/cryptocurrency/detail";
+/** Completed daily OHLCV with market cap (the Historical Data table). */
 export const WEB_HISTORY = "/data-api/v3.1/cryptocurrency/historical";
-export const WEB_CHART = "/data-api/v3/cryptocurrency/detail/chart";
-export type RecordWebResponse = (r: RawRecord) => Promise<string>;
-export interface CmcWebResponse extends CmcResponse {
+/** One exchange's market pairs (used for LBank Spot pairs). */
+export const WEB_EXCHANGE_PAIRS = "/data-api/v3/exchange/market-pairs/latest";
+/** One coin's market pairs (the coin page Markets table). */
+export const WEB_COIN_PAIRS = "/data-api/v3/cryptocurrency/market-pairs/latest";
+const ROUTES = new Set([WEB_LISTING, WEB_HISTORY, WEB_EXCHANGE_PAIRS, WEB_COIN_PAIRS]);
+
+export interface CmcWebResponse {
+  body: unknown;
   endpoint: string;
   params: Record<string, string>;
+  retrievedAt: Date;
+  /** SHA-256 of the exact response text (provenance without storing every body). */
+  sha256: string;
+}
+
+export interface CmcStatus {
+  errorCode: number;
+  errorMessage: string | null;
+}
+
+export function parseStatus(body: unknown): CmcStatus | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const s = (body as { status?: unknown }).status;
+  if (!s || typeof s !== "object") return null;
+  const st = s as Record<string, unknown>;
+  const code = Number(st.error_code ?? 0);
+  return { errorCode: Number.isFinite(code) ? code : -1, errorMessage: typeof st.error_message === "string" ? st.error_message : null };
 }
 
 /** CMC's website can return error_code != 0 with HTTP 200. Never ingest that as success. */
 export function webResponseStatus(res: Response, text: string): number {
   if (!res.ok) return res.status;
-  if (text.trimStart().startsWith("<")) {
-    if (/id\s*=\s*["']__NEXT_DATA__["']/.test(text)) return res.status;
-    return /captcha|cf-chl-|just a moment|access denied/i.test(text) ? 403 : res.status;
-  }
+  if (text.trimStart().startsWith("<")) return /captcha|cf-chl-|just a moment|access denied/i.test(text) ? 403 : 422;
   try {
     const s = parseStatus(parseExactJson(text));
     if (!s) return 422;
@@ -41,43 +59,31 @@ export function webResponseStatus(res: Response, text: string): number {
 export class CmcWebClient {
   private queue: Promise<unknown> = Promise.resolve();
   private readonly cache = new Map<string, { text: string; at: Date }>();
-  creditsThisRun = 0;
 
   constructor(readonly http: PoliteHttpClient, private readonly cacheMs = 60_000, private readonly now: () => Date = () => new Date()) {}
 
   get requestsMade() { return this.http.requestsMade; }
 
-  get(endpoint: string, rawParams: Record<string, string | number> = {}, record?: RecordWebResponse): Promise<CmcWebResponse> {
-    const run = this.queue.then(() => this.request(endpoint, rawParams, record));
+  get(endpoint: string, rawParams: Record<string, string | number> = {}): Promise<CmcWebResponse> {
+    const run = this.queue.then(() => this.request(endpoint, rawParams));
     this.queue = run.catch(() => undefined);
     return run;
   }
 
-  private async request(endpoint: string, rawParams: Record<string, string | number>, record?: RecordWebResponse): Promise<CmcWebResponse> {
-    const page = /^\/currencies\/[a-z0-9-]+\/$/.test(endpoint);
-    if (!page && ![WEB_LISTING, WEB_DETAIL, WEB_HISTORY, WEB_CHART].includes(endpoint)) throw new Error("Unsupported CMC website endpoint");
+  private async request(endpoint: string, rawParams: Record<string, string | number>): Promise<CmcWebResponse> {
+    if (!ROUTES.has(endpoint)) throw new Error("Unsupported CMC website endpoint");
     const params = Object.fromEntries(Object.entries(rawParams).map(([k, v]) => [k, String(v)]));
     const query = new URLSearchParams(params).toString();
-    const url = `${page ? "https://coinmarketcap.com" : CMC_WEB_PROVIDER.baseUrl}${endpoint}${query ? `?${query}` : ""}`;
+    const url = `${CMC_WEB_PROVIDER.baseUrl}${endpoint}${query ? `?${query}` : ""}`;
     const cached = this.cache.get(url);
-    let rawResponseId = "";
-    let retrievedAt = this.now();
-    const save = async (status: number, text: string, at: Date) => {
-      let code: number | null = null;
-      try { code = parseStatus(parseExactJson(text))?.errorCode ?? null; } catch { /* HTML has no JSON status. */ }
-      if (record) rawResponseId = await record({ endpoint, params, httpStatus: status, errorCode: code, creditCount: 0, retrievedAt: at, body: text });
-    };
     let text: string;
+    let retrievedAt = this.now();
     if (cached && this.now().getTime() - cached.at.getTime() < this.cacheMs) {
       text = cached.text;
       retrievedAt = cached.at;
-      await save(200, text, retrievedAt);
     } else {
       try {
-        text = await this.http.getText(url, async (res, body) => {
-          retrievedAt = this.now();
-          await save(res.status, body, retrievedAt);
-        });
+        text = await this.http.getText(url, async () => { retrievedAt = this.now(); });
       } catch (err) {
         if (err instanceof SourceUnavailableError) {
           const kind = ["denied", "suspended"].includes(err.reason) ? "auth" : err.reason === "budget_exhausted" ? "budget" : ["retry_after", "circuit_open"].includes(err.reason) || err.httpStatus === 429 ? "rate_limited" : err.httpStatus === 422 ? "invalid_response" : err.httpStatus && err.httpStatus < 500 ? "bad_request" : err.httpStatus ? "server" : "network";
@@ -89,21 +95,8 @@ export class CmcWebClient {
       if (this.cache.size >= 32) this.cache.delete(this.cache.keys().next().value!);
       if (this.cacheMs > 0) this.cache.set(url, { text, at: retrievedAt });
     }
-    return { body: page ? text : parseExactJson(text), rawResponseId, retrievedAt, creditCount: 0, endpoint, params };
-  }
-
-  /** Prefer the actual coin page; fall back to its JSON detail endpoint on layout changes. */
-  async coin(cmcId: number, slug: string | null, record?: RecordWebResponse): Promise<CmcWebResponse> {
-    if (slug && /^[a-z0-9-]+$/.test(slug)) {
-      try {
-        const r = await this.get(`/currencies/${slug}/`, {}, record);
-        return { ...r, body: parseCoinPage(String(r.body), cmcId) };
-      }
-      catch (err) {
-        if (!(err instanceof CmcApiError) || (err.kind !== "invalid_response" && err.httpStatus !== 404)) throw err;
-      }
-    }
-    const r = await this.get(WEB_DETAIL, { id: cmcId, convertId: 2781 }, record);
-    return { ...r, body: websiteData(r.body) };
+    let body: unknown;
+    try { body = parseExactJson(text); } catch { throw new CmcApiError("invalid_response", "CMC website: response is not JSON", null, null); }
+    return { body, endpoint, params, retrievedAt, sha256: sha256(text) };
   }
 }

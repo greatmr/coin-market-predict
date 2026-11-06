@@ -39,7 +39,7 @@ async function main() {
   await app.listen(cfg.PORT, cfg.HOST);
   const d = describeConfig(cfg);
   logger.log(
-    `Coins Predicts on http://${cfg.HOST}:${cfg.PORT} — data=${d.DATA_SOURCE}${cfg.DATA_SOURCE === "fixture" ? " (SYNTHETIC)" : ""}, agents=${d.AGENT_PROVIDER}, telegram=${d.TELEGRAM_MODE}, token=${d.CLAUDE_CODE_OAUTH_TOKEN}`,
+    `Coins Predicts on http://${cfg.HOST}:${cfg.PORT} — data=${d.DATA_SOURCE}${cfg.DATA_SOURCE === "fixture" ? " (SYNTHETIC)" : ""}, strategy=Two-Tier VMC (Tier 1 scan + human review), telegram=${d.TELEGRAM_MODE}, scheduler=${cfg.SCHEDULER_ENABLED ? "on" : "off"}`,
     "Bootstrap",
   );
 }

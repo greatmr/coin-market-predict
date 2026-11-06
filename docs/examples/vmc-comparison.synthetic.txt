@@ -1,9 +1,0 @@
-Volume / Market Cap comparison — generated 2026-11-03T14:42:07.654Z — SYNTHETIC FIXTURE DATA (not CoinMarketCap data)
-Current ratio = rolling 24h volume / market cap at the observation time. Baseline = mean of six months of completed daily ratios.
-Cur/Base is descriptive only (no thresholds, alerts, or recommendations).
-
-CMC ID | Symbol | Observation time UTC | Volume 24h USD      | Market cap USD       | Current ratio | Baseline mean | Baseline coverage              | Cur/Base                     | 72h window             | Data status
------- | ------ | -------------------- | ------------------- | -------------------- | ------------- | ------------- | ------------------------------ | ---------------------------- | ---------------------- | -----------
-1      | BTC    | 2026-11-03T14:24:27Z | 29790407133.14      | 1676015754513.78     | 0.01777454    | 0.01599429    | 184/184d (100.0%, full)        | 1.1113x                      | 72/72h valid           | ok
-1027   | ETH    | 2026-11-03T14:24:27Z | 9576910033.48       | 268520516461.84      | 0.03566547    | 0.03160398    | 184/184d (100.0%, full)        | 1.1285x                      | 72/72h valid           | ok
-2      | LTC    | 2026-11-03T14:24:27Z | 201294277.64        | 4319264331.22        | 0.04660383    | 0.03585882    | 184/184d (100.0%, full)        | 1.2996x                      | 72/72h valid           | ok

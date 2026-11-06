@@ -120,17 +120,24 @@ export class TelegramAdminService {
     return { requeued, delivery: requeued ? await this.deliverSoon() : null };
   }
 
-  /** Send a fresh copy of a run's report (default: the latest) to chosen recipients (default: all). */
+  /** Send a fresh copy of a run's report (default: the latest scanned batch) to chosen recipients (default: all). */
   async sendReport(opts: { runId?: string; chatIds?: string[] }) {
-    const runId = opts.runId ?? (await this.read.latestRunId());
-    if (!runId) return { queued: 0, delivery: null, reason: "no report available yet" };
+    const runId = opts.runId ?? (await this.latestReportedRunId());
+    const batchId = runId ? await this.reports.batchOfRun(runId) : null;
+    if (!runId || !batchId || !(await this.prisma.scanRun.findUnique({ where: { batchId } }))) return { queued: 0, delivery: null, reason: "no report available yet" };
     const known = new Set((await this.recipients()).map((r) => r.chatId));
     const chats = (opts.chatIds ?? [...known]).filter((c) => known.has(c));
     if (!chats.length) return { queued: 0, delivery: null, reason: "no valid recipients" };
-    const analyze = await this.prisma.pipelineStage.findUnique({ where: { runId_stage: { runId, stage: "analyze" } } });
-    const d = (analyze?.detail ?? {}) as { agentStatus?: string; summary?: string | null };
-    const parts = await this.reports.build(runId, d.agentStatus ?? "unavailable", d.summary ?? null);
+    const parts = await this.reports.build(batchId);
     const queued = await this.telegram.queueCopy(runId, parts, chats);
     return { runId, queued, delivery: await this.deliverSoon() };
+  }
+
+  /** Newest pipeline run whose crawl batch was scanned. */
+  private async latestReportedRunId(): Promise<string | null> {
+    const batchId = await this.read.latestScanBatchId();
+    if (!batchId) return null;
+    const batch = await this.prisma.crawlBatch.findUnique({ where: { id: batchId } });
+    return batch?.pipelineRunId ?? null;
   }
 }

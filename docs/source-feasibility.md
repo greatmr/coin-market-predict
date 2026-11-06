@@ -1,31 +1,58 @@
 # Market-data source feasibility
 
-Website access verified 2026-11-03. The plan/terms comparison below is retained from the
-previous assessment; it is separate from the current collector's technical capabilities.
+Website access verified 2026-11-03 (listing, daily history) and 2026-11-05 (LBank and asset
+market pairs). The plan/terms comparison below is retained from the earlier assessment; it is
+separate from the current collector's technical capabilities.
 
 ## Current implementation
 
 The earlier claim that CoinMarketCap could not be crawled was a source-policy conclusion,
-not a technical finding. On 2026-11-03, direct requests successfully retrieved the coin page's
-embedded Next.js data and its website listing, daily history and seven-day chart endpoints.
-The project now supports the operator-requested website collector explicitly:
+not a technical finding. The project supports the operator-requested website collector
+explicitly (`DATA_SOURCE=coinmarketcap_web`, no key, no browser runtime). It is the only live
+source that supplies everything Tier 1 of the Two-Tier VMC strategy needs:
 
-- `DATA_SOURCE=coinmarketcap_web`: the full website listing (all ~8k coins, one `limit=10000`
-  request per hour) into the analysis pipeline, plus seven-day chart history for coins that would
-  be eligible but lack the previous hourly snapshots.
-- `VMC_SOURCE=cmc_web`, `VMC_DAILY_CONVENTION=ohlcv`: coin pages, daily OHLCV baseline inputs,
-  hourly chart backfill and current rolling-24h volume / market-cap snapshots.
-- `fixture` remains the offline default. The official CoinMarketCap and CoinGecko adapters
-  remain available as separate keyed sources.
+| Tier 1 input (PDF p.8) | Website route (see [architecture.md § CMC website collection](architecture.md#cmc-website-collection)) |
+|---|---|
+| Rank, circulating cap, rolling-24h volume, price, update time, date added, tags | hourly listing, one `limit=10000` request |
+| Completed UTC daily volume and market cap (30 days needed) | `v3.1/cryptocurrency/historical`, `interval=1d`, one request per screen candidate per UTC day |
+| LBank Spot pairs mapped by CMC base-asset id (the Markets section of `coinmarketcap.com/exchanges/lbank/?type=spot`) | `v3/exchange/market-pairs/latest?slug=lbank&category=spot`, pages of 500; fetched once, then every 30 days or on demand |
+| Asset venue rows (Upbit-dominant / single-venue flags) | `v3/cryptocurrency/market-pairs/latest`, top 100 spot pairs, review candidates only |
 
-No browser runtime or `nest-crawler` dependency is necessary. Website endpoints are not the
-supported Pro API contract and can change. This implementation does not imply any change in
-CMC's website terms; source selection is explicit. See [the implemented routes, request
-behavior and commands](volume-mcap.md#9-no-key-website-crawler-and-manual-csv-import).
+What none of these routes supply: an LBank **trading status** (open / suspended / delisted) or
+the date a pair was listed. By operator decision D1 a pair in CMC's LBank Spot markets list counts
+as tradable (a reviewer can mark it not tradable); `LBANK_REQUIRE_MANUAL_VERIFICATION=true`
+instead requires a human check of every listed pair (strategy document, A7, D1, D2).
 
-The supplied historical request's `interval=3d` failed with application error `500`,
-`Unexpected value: 3d`, despite HTTP 200. `interval=1d` returned daily OHLCV data. The collector
-also filters responses to the requested UTC date window because CMC returned extra dates.
+Other sources:
+- `fixture` remains the offline default: a synthetic market (CMC-shaped ids ≥ 990001) with
+  daily rows, LBank pairs (with an explicit trading status, to exercise the VERIFIED path) and
+  venue rows, labelled SYNTHETIC everywhere.
+- The official CoinMarketCap (`coinmarketcap`) and CoinGecko (`coingecko`) adapters remain as
+  keyed **listing** sources. They implement no `Tier1Source`, so with them every VMC window is
+  N/A (`DAILY_ROW_MISSING`) and every LBank status UNKNOWN: coins land in Needs Review and the
+  queue is withheld. They are not a complete Tier 1 source.
+- Manual CSV: `npm run cli -- daily:import-csv --id <cmcId> --file <download.csv>` imports the
+  "Download CSV" export of a coin's CMC Historical Data page as completed daily rows (the open
+  day is skipped; revisions are kept).
+
+Website endpoints are not the supported Pro API contract and can change. This implementation does
+not imply any change in CMC's website terms; source selection is explicit.
+
+### Official CMC API (reference for a future keyed Tier 1 adapter)
+Verified from the CMC API reference on 2026-11-03; not implemented for Tier 1. Header
+`X-CMC_PRO_API_KEY` (never in a query string).
+
+| Purpose | Endpoint | Plan availability (docs) |
+|---|---|---|
+| Daily rows (end-of-day quote) | `GET /v3/cryptocurrency/quotes/historical?interval=daily` (first quote of each UTC day → completed previous day; `volume_24h`, `market_cap`) | Basic: daily 1 year |
+| Daily rows (OHLCV) | `GET /v2/cryptocurrency/ohlcv/historical?time_period=daily` | Startup+ documented; Basic ambiguous — probe first |
+| Exchange market pairs | `GET /v1/exchange/market-pairs/latest` | plan-dependent (not verified) |
+| Asset market pairs | `GET /v2/cryptocurrency/market-pairs/latest` | plan-dependent (not verified) |
+| Identity | `GET /v1/cryptocurrency/map` | all plans, no credits |
+
+The two daily conventions differ (rolling-24h volume sampled after midnight vs the completed
+day's volume) and must never be mixed in one window. Errors: 401 auth, 402 billing, 403 plan
+(1006), 429 rate limits (1008 per-minute; 1009/1010 daily/monthly exhaustion — not retried).
 
 ## Comparison
 
@@ -59,28 +86,32 @@ also filters responses to the requested UTC date window because CMC returned ext
 Not verified (pages rendered behind bot challenges or missing): CMC commercial API user
 agreement details, Binance main terms, CoinCap free tier.
 
-## Selecting a source
+## Request volume (website collector)
+| Activity | Requests |
+|---|---|
+| Hourly listing | 1 per hour (~720/month) |
+| LBank Spot pairs | 2 requests per fetch (~900 pairs, overlapping pages), once every `LBANK_PAIRS_REFRESH_DAYS` (30) plus manual refreshes |
+| Daily rows | ~1 per screen candidate per UTC day (non-excluded coins, roughly 500–1,100), plus retries after `TIER1_DAILY_RETRY_HOURS` for coins whose latest day was not yet published |
+| Venue rows | ≤ `TIER1_VENUE_MAX_ASSETS_PER_RUN` per run, each candidate at most every `TIER1_VENUE_REFRESH_HOURS` |
 
-Use `coinmarketcap_web` / `cmc_web` for the requested no-key website collection, or use the
-existing official adapters with their keys. Choose monitored VMC numeric ids explicitly.
-Requests, page limits and budgets bound coverage; every collector reports partial coverage
-when it has not collected all reported assets. The website collector reads the complete listing
-each hour; the official free API tiers remain partial by design. Market-analysis history accumulates hourly;
-the separate VMC workflow can backfill its daily baseline and recent hourly comparison.
+At 30 requests/minute, 1,000 daily-history requests take about 33 minutes, so the first run
+after a cold start spreads its daily refresh over two or three runs
+(`TIER1_DAILY_MAX_MINUTES=30`); windows stay N/A until their days arrive. The local budget
+`CMC_WEB_MONTHLY_REQUEST_BUDGET` (default 30,000) stops daily-history and venue requests before
+it is exceeded, keeping 3 requests for every remaining hour of the month (listing + LBank pages).
 
 ## Access discipline (implemented in `PoliteHttpClient`)
-Sequential requests (concurrency 1 per client), per-minute rate limit, monthly request budget persisted in
-PostgreSQL, exponential backoff with jitter, Retry-After (seconds or HTTP date), ETag
-conditional requests, circuit breaker (opens after repeated failures), and **suspension after
-repeated 401/403** until a human runs `npm run cli -- source:reset`. The website consumers share a client with a bounded 60-second cache and 30 requests/minute
-by default (one every two seconds, strictly sequential); steady-state load is about one listing
-request per hour plus a few chart requests, the first run's history backfill being the burst. Application-level errors inside HTTP 200 are also checked. No proxy rotation, no
-identity rotation, no CAPTCHA handling. "No bans" is not promised.
+Sequential requests (concurrency 1 per client), per-minute rate limit, monthly request budget
+persisted in PostgreSQL, exponential backoff with jitter, Retry-After (seconds or HTTP date),
+ETag conditional requests, circuit breaker (opens after repeated failures), and **suspension
+after repeated 401/403** until a human runs `npm run cli -- source:reset`. Application-level
+errors inside HTTP 200 are also checked. No proxy rotation, no identity rotation, no CAPTCHA
+handling. "No bans" is not promised.
 
 ## Cost separation
 | Cost | Item |
 |---|---|
 | Market data | $0 (fixture, website collector without a key, or free official API tiers with keys) |
-| Model inference | Claude subscription via `CLAUDE_CODE_OAUTH_TOKEN` (usage limits apply); per-run and daily caps use the SDK's cost *estimate* (`total_cost_usd`) as a proxy |
-| Hosting | Your machine or a small VM + Docker; with the default retention policy PostgreSQL holds a rolling ~6 GB of 30-day detail plus ~11 GB/year for the full ~8k-coin website universe (see `architecture.md` § Storage and retention) |
+| Model inference | none (no LLM is called) |
+| Hosting | Your machine or a small VM + Docker (see `architecture.md` § Storage and retention) |
 | Telegram | Bot API is free; subject to rate limits |

@@ -5,10 +5,9 @@ import { redact } from "../config/redact.js";
 import { PipelineService } from "../pipeline/pipeline.service.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { ReadModelService } from "../read-model/read-model.service.js";
-import { VmcService } from "../vmc/vmc.service.js";
 import { TelegramAccessService, isChatId } from "./access.service.js";
 import { TelegramAdminService } from "./admin.service.js";
-import { escapeHtml, pack } from "./format.js";
+import { type CoinDetailInput, escapeHtml, formatCoinDetail, pack } from "./format.js";
 import { ReportService } from "./report.service.js";
 import { TELEGRAM_FETCH, TelegramService } from "./telegram.service.js";
 
@@ -17,7 +16,8 @@ const OFFSET_KEY = "telegram.updateOffset";
 export const COMMANDS = [
   { command: "report", description: "Latest hourly report" },
   { command: "status", description: "Pipeline and data status" },
-  { command: "vmc", description: "Volume / market cap vs 6-month baseline" },
+  { command: "vmc", description: "Tier 1 VMC trace for one coin: /vmc <CMC id or symbol>" },
+  { command: "coin", description: "Full details for one coin (as in the dashboard): /coin <CMC id or symbol>" },
   { command: "run", description: "Run the pipeline now" },
   { command: "help", description: "Show commands" },
   { command: "users", description: "Owner: list members and pending requests" },
@@ -43,7 +43,6 @@ export class TelegramBotService implements OnApplicationBootstrap, OnApplication
     private readonly reports: ReportService,
     private readonly read: ReadModelService,
     private readonly pipeline: PipelineService,
-    private readonly vmc: VmcService,
     private readonly access: TelegramAccessService,
     private readonly admin: TelegramAdminService,
   ) {}
@@ -53,7 +52,7 @@ export class TelegramBotService implements OnApplicationBootstrap, OnApplication
     this.running = true;
     void this.api("setMyCommands", { commands: COMMANDS }).catch(() => undefined);
     void this.loop();
-    this.log.log("listening for bot commands (/report, /status, /vmc, /run, /help)");
+    this.log.log("listening for bot commands (/report, /status, /vmc, /coin, /run, /help)");
   }
 
   onApplicationShutdown() {
@@ -83,6 +82,7 @@ export class TelegramBotService implements OnApplicationBootstrap, OnApplication
           continue;
         }
         if (!r.body.ok) throw new Error(`getUpdates HTTP ${r.status}: ${r.body.description ?? ""}`);
+        if (failures > 0) this.log.log(`polling recovered after ${failures} failed attempt(s)`);
         failures = 0;
         for (const u of (r.body.result as Array<{ update_id: number; message?: { chat: { id: number; type?: string }; from?: { username?: string; first_name?: string }; text?: string } }>) ?? []) {
           offset = u.update_id + 1;
@@ -95,7 +95,8 @@ export class TelegramBotService implements OnApplicationBootstrap, OnApplication
       } catch (err) {
         if (!this.running) return;
         failures++;
-        this.log.warn(`polling error (${failures}): ${redact(err)}`);
+        // Network drops are normal; the loop retries with backoff (4 s … 60 s) and logs the recovery.
+        this.log.warn(`polling error (${failures}, retrying in ${Math.min(60, 2 * 2 ** Math.min(failures, 5))} s): ${redact(err)}`);
         await sleep(Math.min(60_000, 2_000 * 2 ** Math.min(failures, 5)));
       }
     }
@@ -119,7 +120,10 @@ export class TelegramBotService implements OnApplicationBootstrap, OnApplication
         parts = [await this.status()];
         break;
       case "/vmc":
-        parts = await this.vmcCards();
+        parts = [await this.vmcTrace(arg)];
+        break;
+      case "/coin":
+        parts = await this.coinDetail(arg);
         break;
       case "/run": {
         if (!owner) {
@@ -187,7 +191,8 @@ export class TelegramBotService implements OnApplicationBootstrap, OnApplication
       "<b>📊 Coins Predicts bot</b>",
       "/report — latest hourly report",
       "/status — pipeline and data status",
-      "/vmc — volume / market cap vs 6-month baseline",
+      "/vmc &lt;CMC id or symbol&gt; — Tier 1 VMC windows for one coin",
+      "/coin &lt;CMC id or symbol&gt; — full details for one coin: windows, 30 daily rows, LBank, venues, reviews",
       ...(owner ? ["/run — run the pipeline now", "", "<b>Owner</b>", "/users — members and pending requests", "/approve &lt;id&gt; · /deny &lt;id&gt; · /remove &lt;id&gt;"] : []),
       "",
       `Automatic hourly reports: ${this.cfg.TELEGRAM_MODE === "live" && this.cfg.SCHEDULER_ENABLED ? "ON" : "OFF (set TELEGRAM_MODE=live and SCHEDULER_ENABLED=true)"}`,
@@ -195,9 +200,9 @@ export class TelegramBotService implements OnApplicationBootstrap, OnApplication
   }
 
   private async report(): Promise<string[]> {
-    const runId = await this.read.latestRunId();
-    if (!runId) return ["No report yet. Send /run to create one."];
-    return this.reports.build(runId, "latest", null);
+    const batchId = await this.read.latestScanBatchId();
+    if (!batchId) return ["No report yet. Send /run to create one."];
+    return this.reports.build(batchId);
   }
 
   private async status(): Promise<string> {
@@ -206,7 +211,8 @@ export class TelegramBotService implements OnApplicationBootstrap, OnApplication
     const lines = [
       "<b>⚙️ Status</b>",
       `Data: ${cov.isLiveData ? "live" : "🧪 TEST DATA (synthetic)"} · ${escapeHtml(String((cov.provider as { name?: string } | null)?.name ?? this.cfg.DATA_SOURCE))}`,
-      `Agents: ${this.cfg.AGENT_PROVIDER} · Telegram: ${this.cfg.TELEGRAM_MODE} · Scheduler: ${this.cfg.SCHEDULER_ENABLED ? "on" : "off"}`,
+      `Telegram: ${this.cfg.TELEGRAM_MODE} · Scheduler: ${this.cfg.SCHEDULER_ENABLED ? "on" : "off"}`,
+      await this.scanLine(),
       "",
       "<b>Recent runs</b>",
       ...runs.map((r) => `${r.status === "succeeded" || r.status === "partial" ? "✅" : r.status === "failed" ? "❌" : "•"} ${formatInZone(new Date(String(r.slotTime)), tz).slice(5, 16)} · ${escapeHtml(String(r.kind))} · ${escapeHtml(String(r.status))}`),
@@ -214,23 +220,50 @@ export class TelegramBotService implements OnApplicationBootstrap, OnApplication
     return lines.join("\n");
   }
 
-  private async vmcCards(): Promise<string[]> {
-    if (this.vmc.assetIds.length === 0) return ["Volume / market cap tracking is not configured (VMC_ASSET_IDS is empty)."];
-    const c = await this.vmc.comparison();
-    const blocks = [`<b>📐 Volume / Market Cap</b>${c.isFixture ? "\n🧪 <b>TEST DATA</b> — synthetic" : ""}\nCurrent = 24h volume ÷ market cap now\nBaseline = 6-month average of daily ratios`];
-    for (const r of c.rows) {
-      blocks.push(
-        [
-          `<b>${escapeHtml(r.symbol)}</b> · ${escapeHtml(r.name)} (CMC ${r.cmcId})`,
-          `Current ${r.currentRatio ? Number(r.currentRatio).toFixed(4) : "n/a"} · Baseline ${r.baselineMean ? Number(r.baselineMean).toFixed(4) : "n/a"}`,
-          `Ratio to baseline: ${escapeHtml(r.ratioToBaseline)}`,
-          `Baseline: ${escapeHtml(r.baselineCoverage)}`,
-          `Last 72h: ${escapeHtml(r.recentWindow)}`,
-          `Status: ${escapeHtml(r.dataStatus.join(", "))}`,
-        ].join("\n"),
-      );
-    }
-    blocks.push("<i>Descriptive only — no signals or thresholds.</i>");
-    return pack(blocks);
+  private async scanLine(): Promise<string> {
+    const o = (await this.read.overview()) as { latestBatch?: { status?: string; slotTime?: string } | null; scan?: { queueStatus?: string; counts?: Record<string, number> } | null; crawlAgeMinutes?: number | null };
+    if (!o.scan) return "Tier 1: no scan yet";
+    const c = o.scan.counts ?? {};
+    return `Tier 1: batch ${escapeHtml(String(o.latestBatch?.status ?? "?"))} (${o.crawlAgeMinutes ?? "?"} min old) · queue ${c.queue ?? 0} (${escapeHtml(String(o.scan.queueStatus ?? "?"))}) · eligible ${c.eligible ?? 0} · review ${c.needsReview ?? 0}`;
+  }
+
+  /** A CMC id, or a symbol that maps to exactly one coin of the latest scan; else a reply text. */
+  private async resolveCoin(arg: string, command: string): Promise<{ cmcId: number } | { message: string }> {
+    const q = arg.trim();
+    if (!q) return { message: `Usage: /${command} &lt;CMC id or symbol&gt;, e.g. /${command} 52` };
+    if (/^\d{1,10}$/.test(q)) return { cmcId: Number(q) };
+    const batchId = await this.read.latestScanBatchId();
+    if (!batchId) return { message: "No scan yet. Send /run to create one." };
+    const exact = await this.prisma.scanResult.findMany({ where: { batchId, symbol: { equals: q, mode: "insensitive" } }, select: { cmcId: true, symbol: true, name: true }, orderBy: { rank: "asc" }, take: 10 });
+    if (exact.length > 1) return { message: `Several coins use the symbol ${escapeHtml(q)}:\n${exact.map((r) => `• ${escapeHtml(r.name)} — /${command} ${r.cmcId}`).join("\n")}` };
+    if (!exact.length) return { message: `No coin with the symbol ${escapeHtml(q)} in the latest scan. Try the CMC id.` };
+    return { cmcId: exact[0]!.cmcId };
+  }
+
+  /** The dashboard drawer for one coin of the latest scan, as phone-width messages. */
+  private async coinDetail(arg: string): Promise<string[]> {
+    const found = await this.resolveCoin(arg, "coin");
+    if ("message" in found) return [found.message];
+    const t = await this.read.assetTrace(found.cmcId);
+    if (!t) return [`No Tier 1 record for CMC id ${found.cmcId} in the latest scan.`];
+    return formatCoinDetail(t as unknown as CoinDetailInput);
+  }
+
+  /** Tier 1 windows for one coin of the latest scan: by CMC id, or by symbol when it is unique. */
+  private async vmcTrace(arg: string): Promise<string> {
+    const q = arg.trim();
+    const found = await this.resolveCoin(arg, "vmc");
+    if ("message" in found) return found.message;
+    const t = (await this.read.assetTrace(found.cmcId)) as { record: Record<string, unknown>; windows: Array<{ days: number; mean: string | null; reason: string | null; pass: { multiple: string | null; status: string; reason: string | null } | null }>; current: { label: string } } | null;
+    if (!t) return `No Tier 1 record for ${escapeHtml(q)} in the latest scan.`;
+    const r = t.record as { symbol: string; name: string; cmcId: number; currentVmc: number | null; eligibilityStatus: string; eligibilityReasons: string[]; lbankStatus: string; stars: number };
+    const lines = [
+      `<b>${escapeHtml(r.symbol)}</b> · ${escapeHtml(r.name)} (CMC ${r.cmcId})`,
+      `Current VMC ${r.currentVmc === null ? "n/a" : `${(Number(r.currentVmc) * 100).toFixed(3)}%`} — ${escapeHtml(t.current.label)}`,
+      ...t.windows.map((w) => `${w.days}d mean ${w.mean === null ? `n/a (${escapeHtml(w.reason ?? "")})` : `${(Number(w.mean) * 100).toFixed(3)}%`}${w.pass ? ` → ${w.pass.status === "N/A" ? `N/A (${escapeHtml(w.pass.reason ?? "")})` : `${Number(w.pass.multiple).toFixed(2)}x ${w.pass.status}`}` : " (context only)"}`),
+      `Stars ${r.stars} · ${escapeHtml(r.eligibilityStatus)}${r.eligibilityReasons.length ? `: ${escapeHtml(r.eligibilityReasons.join(", "))}` : ""} · LBank ${escapeHtml(r.lbankStatus)}`,
+      "<i>Descriptive screen result, not advice.</i>",
+    ];
+    return lines.join("\n");
   }
 }
