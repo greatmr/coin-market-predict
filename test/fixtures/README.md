@@ -30,7 +30,7 @@ current market feed:
 | `cmc-web-market-pairs.json` | `/data-api/v3/cryptocurrency/market-pairs/latest` (Litecoin, id 2) | 2026-11-05 | 8 of the 500 reported pairs |
 
 End-to-end and database tests use the synthetic `FixtureCmcMarket`
-(`src/sources/fixture/fixture-cmc.ts`): ids ≥ 990001, ranks 1–1300 plus one unranked coin, 29
+(`src/modules/sources/fixture/fixture-cmc.ts`): ids ≥ 990001, ranks 1–1300 plus one unranked coin, 29
 named edge cases (exact 1.5×, missing / invalid days, zero baseline, stale and unverified quotes,
 rank / cap / age boundaries, ambiguous LBank tickers, Upbit-dominant and single-venue coins).
 Every value it produces is invented and labelled SYNTHETIC.

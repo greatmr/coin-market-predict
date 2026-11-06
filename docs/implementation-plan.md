@@ -1,5 +1,11 @@
 # Two-Tier VMC Strategy — implementation plan
 
+> **Historical record.** This plan and its § 7 database procedure were written for and executed on
+> the Prisma schema (2026-11-05); its table names and `prisma` commands describe that time. Since
+> 2026-11-06 the persistence layer is TypeORM ([ADR-0001](adr/0001-typeorm-modular-layout.md)):
+> current migration, cut-over and recovery commands are in
+> [operator-guide § 9](operator-guide.md#9-backup-restore-and-migrations).
+
 Plan written before any behaviour change (2026-11-05). Strategy: [strategy-two-tier-vmc.md](strategy-two-tier-vmc.md).
 Inputs and gaps: [tier1-input-mapping.md](tier1-input-mapping.md). Assumption ids (A1…) refer to
 the strategy document §9; conflict ids (C1…) to §10; gap ids (G1…) to the input mapping.

@@ -22,5 +22,5 @@ description: Procedure for evaluating a new or changed crypto market-data source
 5. **Maintenance**: auth needs, schema stability, anti-bot measures (any challenge page means
    the surface is not for automation — stop).
 6. **Write up** in `docs/source-feasibility.md` (table row + quotes + limitations). Only then
-   implement an adapter under `src/sources/<provider>/` with a saved fixture and parser tests,
+   implement an adapter under `src/modules/sources/<provider>/` with a saved fixture and a parser spec,
    and keep it opt-in via `DATA_SOURCE`.

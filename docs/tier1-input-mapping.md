@@ -7,7 +7,7 @@ Strategy rules: [strategy-two-tier-vmc.md](strategy-two-tier-vmc.md).
 ## Existing crawler (before this change)
 
 - **Source**: CoinMarketCap website collector (`DATA_SOURCE=coinmarketcap_web`), one shared polite
-  HTTP queue (`src/sources/coinmarketcap-web/client.ts`), 30 requests/minute, persisted monthly
+  HTTP queue (`src/modules/sources/coinmarketcap-web/client.ts`), 30 requests/minute, persisted monthly
   budget, Retry-After and denial suspension.
 - **Batch cadence**: one listing request per hourly run (`PIPELINE_CRON` minute 7, UTC); one crawl
   batch per UTC hour slot. Documented interval 60 minutes → `max_quote_age` = 120 minutes (p.12).

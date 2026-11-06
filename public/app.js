@@ -28,30 +28,32 @@ function put(node, ...children) {
   node.replaceChildren(...children.flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false));
 }
 
+/** Every /api response is an envelope: `{ data, errors: null }` or `{ data: null, errors: [{ message, code }] }`. */
+function errorText(body) {
+  const errors = body && Array.isArray(body.errors) ? body.errors : [];
+  return errors.map((e) => e && e.message).filter(Boolean).join(", ");
+}
+
+async function readEnvelope(r) {
+  const text = await r.text();
+  try { return text ? JSON.parse(text) : null; } catch { return null; }
+}
+
 async function api(path) {
   const r = await fetch(`/api/${path}`, { headers: { accept: "application/json" } });
+  const body = await readEnvelope(r);
   if (!r.ok) {
-    let msg = `HTTP ${r.status}`;
-    try {
-      const b = await r.json();
-      if (b && b.message) msg += `: ${Array.isArray(b.message) ? b.message.join(", ") : b.message}`;
-    } catch { /* not JSON */ }
-    throw new Error(`${path.split("?")[0]} — ${msg}`);
+    const detail = errorText(body);
+    throw new Error(`${path.split("?")[0]} — HTTP ${r.status}${detail ? `: ${detail}` : ""}`);
   }
-  const text = await r.text();
-  return text ? JSON.parse(text) : null;
+  return body ? body.data : null;
 }
 
 async function apiPost(path, body) {
   const r = await fetch(`/api/${path}`, { method: "POST", headers: { accept: "application/json", "content-type": "application/json" }, body: JSON.stringify(body) });
-  const text = await r.text();
-  let data = null;
-  try { data = text ? JSON.parse(text) : null; } catch { /* not JSON */ }
-  if (!r.ok) {
-    const m = data && data.message;
-    throw new Error(Array.isArray(m) ? m.join(", ") : m || `HTTP ${r.status}`);
-  }
-  return data;
+  const res = await readEnvelope(r);
+  if (!r.ok) throw new Error(errorText(res) || `HTTP ${r.status}`);
+  return res ? res.data : null;
 }
 
 const num = (x) => (x === null || x === undefined || x === "" ? null : Number(x));

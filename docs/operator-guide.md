@@ -8,7 +8,7 @@ How to run the system, read its output, and record reviews. The rules themselves
 
 ## 1. Run it
 ```bash
-docker compose up -d postgres && npm run db:migrate && npm run build
+docker compose up -d postgres && npm run db:migrate   # builds, then applies committed migrations
 npm run cli -- config:check            # secrets shown only as <set>/<not set>
 npm run cli -- run-once                # one hourly batch now
 npm start                              # dashboard http://127.0.0.1:3000 + hourly scheduler
@@ -141,11 +141,37 @@ A failed export never replaces the previous one. Files are pruned after
 `addedAt`; bump `version` and `updatedAt` on every change. The file's hash is part of each
 scan's configuration version, so a change is visible in every result it affects.
 
-## 9. Backup and restore
+## 9. Backup, restore and migrations
 ```bash
 docker compose exec -T postgres pg_dump -U coins -Fc coins > backups/coins-$(date +%F).dump
 docker compose exec -T postgres pg_restore -U coins -d coins --clean --if-exists < backups/coins-YYYY-MM-DD.dump
+npm run db:status     # applied and pending migrations; exits 1 while any is pending
+npm run db:migrate    # applies pending migrations (Docker: RUN_MIGRATIONS=true at container start)
 ```
-The pre-migration backup of 2026-11-05 and its verification are described in
+The schema changes only through new files in `src/database/migrations/`
+([ADR-0001](adr/0001-typeorm-modular-layout.md)); an applied migration is never edited.
+`npm run db:revert` undoes the last migration *and drops what it created*: development databases
+only. Never run `docker compose down -v`, `db:revert`, or TypeORM `schema:drop` / `schema:sync`
+against real history.
+
+### One-time cut-over from the Prisma schema (2026-11-06)
+A database created before 2026-11-06 still holds the Prisma tables (quoted CamelCase names such
+as `"MarketSnapshot"`). Their market data is not migrated (the pipeline refills it), but the source
+registry, the monthly request budget, the approved Telegram members and the bot's update offset
+are carried over, so members keep their reports and the bot does not re-run old commands:
+
+1. Stop the app (`npm start`, or `docker compose --profile app stop app`). With the Docker app
+   profile, finish these steps before starting the new image: its entrypoint migrates and starts
+   the bot straight away.
+2. Back up (above).
+3. `npm run db:migrate` — creates the snake_case tables next to the old ones (no name clashes).
+4. `docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' < scripts/db/2026-11-06-carry-over-prisma-state.sql`
+   — prints the copied row counts and keys, never values.
+5. The same command with `scripts/db/2026-11-06-drop-prisma-schema.sql`. It refuses to run
+   while step 3 or 4 is missing.
+6. Start the app or `npm run cli -- run-once`. The first run rebuilds identities, snapshots and
+   the batch; on the live source, daily rows refill over the first runs (§ 1), so windows are N/A
+   until their days arrive.
+
+The earlier backup of 2026-11-05 (before the Two-Tier VMC migration) is described in
 [implementation-plan.md § 7](implementation-plan.md#7-database-preparation-before-the-schema-migration).
-Never run `docker compose down -v`, `prisma migrate reset` or `db push` against real history.

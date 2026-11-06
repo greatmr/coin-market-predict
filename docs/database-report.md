@@ -2,8 +2,15 @@
 
 Snapshot of the live database (`coins`, provider `coinmarketcap_web`) taken 2026-11-06 after the
 08:00 UTC slot, about 23 hours after live crawling started (first slot 2026-11-05 10:00 UTC).
-All figures come from read-only queries; nothing was changed. Schema: `prisma/schema.prisma`.
-Retention code: `src/pipeline/retention.service.ts`.
+All figures come from read-only queries; nothing was changed. Retention code:
+`src/modules/pipeline/retention.service.ts`.
+
+> **Schema since 2026-11-06.** This snapshot was taken on the Prisma schema, whose quoted
+> CamelCase table names are kept below as measured. The TypeORM schema that replaced it
+> ([ADR-0001](adr/0001-typeorm-modular-layout.md)) has the same tables, columns, keys and numeric
+> precision under snake_case names (`MarketSnapshot` → `market_snapshot`, `providerId` →
+> `provider_id`, …), so the structure, retention rules and findings still apply; the figures
+> describe the database before the cut-over.
 
 ## Summary
 
@@ -37,7 +44,7 @@ run bookkeeping       ─► PipelineRun, PipelineStage, JobLease, SourceHealth,
 ### Hourly observations — `MarketSnapshot`
 
 - One row per coin per UTC hour, unique on `(providerId, providerAssetId, slotTime, quoteCurrency)`.
-  Writes use `createMany({ skipDuplicates })`: the first write wins, so a replayed or resumed
+  Writes use `INSERT … ON CONFLICT DO NOTHING`: the first write wins, so a replayed or resumed
   hour adds nothing and never overwrites an observation.
 - Three times are kept apart: `slotTime` (hour bucket), `collectedAt` (our crawl time) and
   `observedAt` (CMC quote `lastUpdated`), plus `freshnessSeconds` and `isStale`.
@@ -49,7 +56,7 @@ run bookkeeping       ─► PipelineRun, PipelineStage, JobLease, SourceHealth,
 
 ### Batch record — `CrawlBatch`
 
-- One row per provider and hour (`@@unique([providerId, slotTime])`), computed from the
+- One row per provider and hour (unique on `(providerId, slotTime)`), computed from the
   snapshots actually stored for the slot, so a replay describes the same data.
 - Holds `listedTotal`, `collected`, per-field non-null counts (`fieldCounts`), `missingRanks` and
   `duplicateRanks` within 1–1200, the source update-time range and `statusReasons`.

@@ -6,12 +6,10 @@ FROM node:24-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json .npmrc ./
 RUN npm ci
-COPY prisma ./prisma
-COPY prisma.config.ts tsconfig.json tsconfig.build.json ./
+COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
-# prisma generate needs no database, but prisma.config.ts resolves DATABASE_URL: use a placeholder.
-RUN DATABASE_URL=postgresql://build:build@localhost:5432/build npx prisma generate \
-    && npx tsc -p tsconfig.build.json && npm prune --omit=dev
+# Compiles the app, the CLI and the TypeORM migrations (dist/database/migrations).
+RUN npx tsc -p tsconfig.build.json && npm prune --omit=dev
 
 FROM node:24-bookworm-slim AS runtime
 ENV NODE_ENV=production \
@@ -21,8 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
-COPY --chown=node:node package.json prisma.config.ts ./
-COPY --chown=node:node prisma ./prisma
+COPY --chown=node:node package.json ./
 # Versioned Tier 1 classification / LBank mapping overrides (TIER1_OVERRIDES_FILE).
 COPY --chown=node:node config ./config
 COPY --chown=node:node public ./public

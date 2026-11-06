@@ -38,9 +38,10 @@ services:
       - path: .env
         required: false
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-coins}:${POSTGRES_PASSWORD:-coins_dev_password}@postgres:5432/${POSTGRES_DB:-coins}?schema=public
+      DATABASE_URL: postgresql://${POSTGRES_USER:-coins}:${POSTGRES_PASSWORD:-coins_dev_password}@postgres:5432/${POSTGRES_DB:-coins}
       HOST: 0.0.0.0
       PORT: 3000
+      # Applies pending TypeORM migrations before the app starts (docker/entrypoint.sh).
       RUN_MIGRATIONS: "true"
       # Secrets are mounted at runtime, never baked into the image.
       TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token

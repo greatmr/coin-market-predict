@@ -17,7 +17,7 @@ Hourly cryptocurrency **screening for human review**, implementing the Two-Tier 
 
 - Strategy specification (with PDF page references, assumptions, conflicts): [docs/strategy-two-tier-vmc.md](docs/strategy-two-tier-vmc.md)
 - Operating it day to day: [docs/operator-guide.md](docs/operator-guide.md)
-- Architecture: [docs/architecture.md](docs/architecture.md)
+- Architecture: [docs/architecture.md](docs/architecture.md); decisions: [TypeORM and the module layout](docs/adr/0001-typeorm-modular-layout.md), [the strategy module](docs/adr/0002-strategy-module-boundary.md)
 - Data sources and the website collector: [docs/source-feasibility.md](docs/source-feasibility.md)
 - Field mapping and data gaps: [docs/tier1-input-mapping.md](docs/tier1-input-mapping.md)
 - Implementation plan, database preparation and recovery: [docs/implementation-plan.md](docs/implementation-plan.md)
@@ -34,15 +34,25 @@ Hourly cryptocurrency **screening for human review**, implementing the Two-Tier 
 ## Requirements
 Node.js ≥ 22.12 (Docker image uses Node 24 LTS), Docker with Compose v2, npm 10+.
 
+## Code layout
+NestJS + TypeORM + PostgreSQL, native ESM. One module per area in `src/modules/` (sources,
+ingestion, daily-metrics, venues, scan, exports, reviews, pipeline, telegram, read-model,
+dashboard, mcp, app-state); the Two-Tier VMC rules are their own pure module,
+`src/modules/strategy`. Shared code is in `src/common`, configuration in `src/config`, the
+TypeORM setup and raw-SQL migrations in `src/database`. Details:
+[docs/architecture.md](docs/architecture.md#modules-src).
+
 ## Setup
 ```bash
 npm ci
 cp .env.example .env              # then edit; never commit .env
 docker compose up -d postgres     # PostgreSQL 17 on 127.0.0.1:5433, volume coins_pgdata
-npm run db:migrate                # prisma migrate deploy
-npm run build
+npm run db:migrate                # builds, then applies the committed TypeORM migrations
 npm run cli -- config:check       # validates config; secrets shown as <set>/<not set>
 ```
+A database created before 2026-11-06 still has the old Prisma tables: follow the one-time
+cut-over in [operator-guide § 9](docs/operator-guide.md#9-backup-restore-and-migrations) instead
+of only running `db:migrate`.
 
 ## Run
 ```bash
@@ -96,9 +106,11 @@ approves members) is described in [docs/architecture.md](docs/architecture.md#te
 
 ## Tests
 ```bash
-npm test                        # unit (offline): rules, boundaries, decimal math, parsers, writers
-npm run test:db                 # PostgreSQL tests in database coins_test (auto-created + migrated)
+npm test                        # unit specs next to the code (offline): rules, boundaries, decimal math, parsers, writers
+npm run test:e2e                # PostgreSQL tests in database coins_test (auto-created + migrated; alias test:db)
 npm run typecheck
+npm run lint                    # ESLint, including the strategy-module import boundary
+npm run format:check            # Prettier
 npm run lint:secrets            # scans files that would be committed
 RUN_LIVE_CMC_WEB=1 npm run test:live  # public CMC listing/history/pair routes, no key
 RUN_LIVE_SOURCE=1 npm run test:live   # one page from CMC/CoinGecko APIs if keys are set
@@ -116,8 +128,12 @@ keeps `.env` and `secrets/` out of the build context. Exports persist in the `co
 volume.
 
 ## Database operations
-- Migrations: `npm run db:migrate` (deploy), `npx prisma migrate dev --name <change>` (author).
-  Never `db push`/`migrate reset` against real history.
+- Migrations: `npm run db:migrate` (apply), `npm run db:status` (applied / pending). To change
+  the schema, edit the entities, draft a migration with
+  `npm run migration:generate -- src/database/migrations/<Name>` (or `migration:create` for an
+  empty one), review the SQL, and register it in `src/database/migrations/index.ts`; the schema
+  drift test checks that entities and migrations agree. Never `synchronize`, `schema:sync` or
+  `schema:drop`; `db:revert` only on development databases.
 - Retention: `RETENTION_DETAIL_DAYS=30` (default) keeps 30 days of hourly detail for every coin,
   then thins coins outside the Tier 1 band to one snapshot per UTC day; see
   [Storage and retention](docs/architecture.md#storage-and-retention). Reviews, decisions, daily
