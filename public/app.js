@@ -192,18 +192,63 @@ function renderBanners(ov) {
   put(b, msgs.map((m, i) => el("div", { class: i ? "banner-line" : null }, m)));
 }
 
+/** "1 h 05 min", "4 min 12 s", "38 s". */
+function fmtSpan(seconds) {
+  const t = Math.max(0, Math.round(seconds));
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), sec = t % 60;
+  if (h) return `${h} h ${String(m).padStart(2, "0")} min`;
+  if (m) return `${m} min ${String(sec).padStart(2, "0")} s`;
+  return `${sec} s`;
+}
+function countdownText(iso) {
+  const left = (new Date(iso).getTime() - Date.now()) / 1000;
+  return left > 0 ? `in ${fmtSpan(left)}` : "starting now…";
+}
+
+/** Next scheduled pipeline run with a live countdown (updated every second by tickCountdowns). */
+function nextRunLine(schedule) {
+  if (!schedule || !schedule.enabled) return el("div", { class: "meta next-run" }, "Automatic updates are off (SCHEDULER_ENABLED=false).");
+  if (!schedule.nextRunAt) return el("div", { class: "meta next-run" }, `Next update: unknown (schedule "${schedule.cron}")`);
+  return el("div", { class: "meta next-run", title: `Schedule "${schedule.cron}" (UTC)` },
+    "Next update ", el("b", null, fmtTime(schedule.nextRunAt)), " · ", el("span", { "data-countdown": schedule.nextRunAt }, countdownText(schedule.nextRunAt)));
+}
+
+let countdownFired = null;
+function tickCountdowns() {
+  for (const node of document.querySelectorAll("[data-countdown]")) {
+    const iso = node.getAttribute("data-countdown");
+    node.textContent = countdownText(iso);
+    // A few seconds after the scheduled time, look for the new run so its progress bar appears.
+    if (Date.now() - new Date(iso).getTime() > 5_000 && countdownFired !== iso) {
+      countdownFired = iso;
+      void refresh().then(watchRun).catch(() => undefined);
+    }
+  }
+}
+
 function renderRunStrip(ov) {
   const run = ov.latestRun;
-  if (!run) return put($("run-strip"), el("div", null, S.cfg.schedulerEnabled ? "Waiting for the first hourly run." : "Automatic runs are off. Start one with `npm run cli -- run-once`."));
+  const next = nextRunLine(ov.schedule);
+  if (!run) return put($("run-strip"), el("div", null, S.cfg.schedulerEnabled ? "Waiting for the first hourly run." : "Automatic runs are off. Start one with `npm run cli -- run-once`."), next);
   const stages = ["discover", "collect", "lbank", "daily", "scan", "venues", "export", "notify"];
   const done = new Set((run.stages || []).filter((s) => s.status === "succeeded").map((s) => s.stage));
   const daily = run.metrics && run.metrics.daily;
+  const p = run.status === "running" ? run.progress : null;
+  const item = p && p.current;
+  const elapsed = run.startedAt ? (Date.now() - new Date(run.startedAt).getTime()) / 1000 : null;
   put($("run-strip"),
     el("div", { class: "state" }, lab(RUN, run.status), el("span", null, `${run.kind} run · slot ${fmtTime(run.slotTime)}`)),
     el("div", { class: "progress" },
-      el("div", { class: "label" }, run.status === "running" ? `${run.currentStageLabel || run.currentStage || "starting"}…` : `finished ${fmtAgo(run.finishedAt)}`),
+      el("div", { class: "label" }, p
+        ? `${run.currentStageLabel || run.currentStage || "Starting"}… · step ${Math.min(p.stagesDone + 1, p.stagesTotal)} of ${p.stagesTotal} · ${p.percent}%${elapsed !== null ? ` · ${fmtSpan(elapsed)} elapsed` : ""}`
+        : run.status === "running" ? `${run.currentStageLabel || run.currentStage || "starting"}…` : `finished ${fmtAgo(run.finishedAt)}`),
+      p ? el("progress", { class: "run-bar", max: 100, value: p.percent, "aria-label": `Pipeline run progress: ${p.percent}%` }) : null,
+      item ? el("div", { class: "item-progress" },
+        el("div", { class: "label" }, `${fmtInt(item.done)} of ${fmtInt(item.total)} ${item.unit}${item.etaSeconds !== null ? ` · about ${fmtSpan(item.etaSeconds)} left` : ""}`),
+        el("progress", { class: "run-bar thin", max: item.total, value: item.done, "aria-label": `${run.currentStage}: ${item.done} of ${item.total} ${item.unit}` })) : null,
       el("div", { class: "steps" }, stages.map((s) => el("span", { class: `step${done.has(s) ? " done" : ""}${run.currentStage === s ? " active" : ""}`, title: s }, s)))),
     daily && daily.due !== undefined ? el("div", { class: "meta" }, `daily rows: ${daily.fetched ?? 0}/${daily.due} due refreshed${daily.remaining ? ` · ${daily.remaining} pending` : ""}`) : null,
+    next,
     run.error ? el("div", { class: "error small" }, run.error) : null,
     S.cfg.canWrite ? el("button", { type: "button", class: "btn", title: "Recompute the latest stored batch from saved data (no crawling) and re-export", onclick: rescan }, "Reprocess latest batch") : null);
 }
@@ -789,6 +834,7 @@ async function start() {
   selectTab(location.hash.slice(1) || "overview", false);
   setInterval(() => { void refresh().then(watchRun).catch((e) => put($("run-strip"), el("div", { class: "error" }, `Could not reach the API: ${e.message}`))); }, 30_000);
   watchRun();
+  setInterval(tickCountdowns, 1_000);
 }
 
 void start();

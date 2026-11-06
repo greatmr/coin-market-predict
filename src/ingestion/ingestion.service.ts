@@ -397,7 +397,10 @@ export class IngestionService {
       where: { providerId, status: { in: ["succeeded", "partial"] } },
       orderBy: { startedAt: "desc" },
     });
-    const universeSize = lastDiscovery?.sourceTotal ?? result.universeSize ?? null;
+    // The total reported by this sweep describes the same listing as its observations. The last
+    // discovery can be up to DISCOVERY_INTERVAL_HOURS old and the source's active universe drifts
+    // by a few coins per hour, so it is only a fallback for sources that report no total.
+    const universeSize = result.universeSize ?? lastDiscovery?.sourceTotal ?? null;
     const missingFields: Record<string, number> = {};
     for (const d of drafts) for (const k of Object.keys(d.nullReasons)) missingFields[k] = (missingFields[k] ?? 0) + 1;
     const collected = drafts.length;
@@ -411,6 +414,8 @@ export class IngestionService {
           ? "partial"
           : "unknown";
     const notes = [...result.notes];
+    if (result.universeSize != null && lastDiscovery?.sourceTotal != null && result.universeSize !== lastDiscovery.sourceTotal)
+      notes.push(`source total ${result.universeSize} this slot (last discovery: ${lastDiscovery.sourceTotal})`);
     if (inserted < drafts.length) notes.push(`${drafts.length - inserted} snapshots already stored for this slot (idempotent re-run)`);
     const batch = await this.recordBatch(slot, runId, now, { label, universeSize, notes });
     await this.syncCmcAssets(result.observations, batch.id, now);

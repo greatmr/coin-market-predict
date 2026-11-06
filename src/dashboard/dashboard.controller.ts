@@ -1,10 +1,10 @@
 import { basename } from "node:path";
 import { BadRequestException, Body, Controller, Get, Inject, NotFoundException, Param, Post, Query, Req, Res } from "@nestjs/common";
 import type { Request, Response } from "express";
-import { CronTime } from "cron";
 import { z } from "zod";
 import { APP_CONFIG, type AppConfig } from "../config/config.js";
 import { PipelineService } from "../pipeline/pipeline.service.js";
+import { nextCronRun } from "../pipeline/progress.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { ReadModelService } from "../read-model/read-model.service.js";
 import { TelegramAccessService, isChatId } from "../telegram/access.service.js";
@@ -24,14 +24,6 @@ function parse<T>(schema: z.ZodType<T>, v: unknown): T {
 
 const uuid = z.string().uuid();
 const cmcIdParam = z.coerce.number().int().positive().max(2_000_000_000);
-
-function nextCronRun(expr: string): string | null {
-  try {
-    return new CronTime(expr, "UTC").sendAt().toUTC().toISO();
-  } catch {
-    return null;
-  }
-}
 
 /** JSON API for the dashboard. Reads go through the read model; writes need JSON, same origin and loopback or Basic auth. */
 @Controller("api")

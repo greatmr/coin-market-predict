@@ -103,7 +103,7 @@ export class DailyService {
    * Ordered by the caller (most relevant first); bounded by assets, minutes and the request-budget
    * reserve; a candidate whose T−1 was not returned is retried after TIER1_DAILY_RETRY_HOURS.
    */
-  async refresh(providerId: string, batch: { id: string; crawledAt: Date }, candidates: Array<{ cmcId: number; slug: string | null }>): Promise<DailyRefreshReport> {
+  async refresh(providerId: string, batch: { id: string; crawledAt: Date }, candidates: Array<{ cmcId: number; slug: string | null }>, onProgress?: (done: number, total: number) => void): Promise<DailyRefreshReport> {
     const asOfDate = isoDate(batch.crawledAt);
     const latest = addDays(asOfDate, -1);
     const from = addDays(asOfDate, -this.cfg.TIER1_DAILY_LOOKBACK_DAYS);
@@ -126,7 +126,10 @@ export class DailyService {
     const deadline = Date.now() + this.cfg.TIER1_DAILY_MAX_MINUTES * 60_000;
     let allowance = await spendableRequests(this.prisma, this.cfg, providerId, now);
     let consecutiveFailures = 0;
+    const planned = Math.min(due.length, this.cfg.TIER1_DAILY_MAX_ASSETS_PER_RUN);
+    onProgress?.(0, planned);
     for (const c of due) {
+      if (report.attempted > 0) onProgress?.(report.attempted, planned);
       if (report.attempted >= this.cfg.TIER1_DAILY_MAX_ASSETS_PER_RUN) { report.stoppedBy = "max_assets"; break; }
       if (Date.now() >= deadline) { report.stoppedBy = "time_budget"; break; }
       if (report.attempted > 0 && report.attempted % 25 === 0) allowance = await spendableRequests(this.prisma, this.cfg, providerId);
@@ -153,6 +156,7 @@ export class DailyService {
         }
       }
     }
+    onProgress?.(report.attempted, planned);
     const nowHave = await this.prisma.dailyMetric.count({ where: { providerId, cmcId: { in: ids }, dateUtc: parseIsoDate(latest) } });
     report.remaining = candidates.length - nowHave;
     report.status = report.remaining === 0 ? "completed" : "partial";

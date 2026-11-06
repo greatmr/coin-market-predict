@@ -104,6 +104,24 @@ describe("ingestion against PostgreSQL", () => {
     expect(b.statusReasons).toEqual(expect.arrayContaining(["missing_ranks:1199", "duplicate_ranks:1"]));
   });
 
+  it("judges listing coverage against the slot's own source total, not an older discovery total", async () => {
+    await prisma.provider.create({ data: { id: "fake", name: "fake", accessMethod: "fixture", isLive: false } });
+    const asset = (id: string): SourceAsset => ({ providerAssetId: id, name: id, symbol: id, sourceUrl: "x", platforms: [] });
+    await new IngestionService(prisma, testConfig(), fakeSource("fake", [asset("1"), asset("2"), asset("3")])).discover(new Date());
+    // One coin left the source's active listing after discovery; the sweep read the whole listing.
+    const shrunk = new IngestionService(prisma, testConfig(), fakeSource("fake", [asset("1"), asset("2")], true, [obs("1", "AAA"), obs("2", "BBB")]));
+    const r = await shrunk.collect(slotOf(new Date()), null, new Date());
+    expect(r.label).toBe("complete");
+    expect(r.universeSize).toBe(2);
+    expect(r.notes.join(" ")).toMatch(/source total 2 this slot \(last discovery: 3\)/);
+    const b = await prisma.crawlBatch.findUniqueOrThrow({ where: { id: r.batchId } });
+    expect(b.listedTotal).toBe(2);
+    expect(b.statusReasons).not.toContain("source_listing_partial");
+    // Fewer observations than the slot's own total stays partial.
+    const short = new IngestionService(prisma, testConfig(), fakeSource("fake", [asset("1"), asset("2")], true, [obs("1", "AAA")]));
+    expect((await short.collect(slotOf(new Date(Date.now() + 3_600_000)), null, new Date())).label).toBe("partial");
+  });
+
   it("marks assets delisted only after a complete discovery sweep", async () => {
     await prisma.provider.create({ data: { id: "fake", name: "fake", accessMethod: "fixture", isLive: false } });
     const listing: SourceAsset[] = [

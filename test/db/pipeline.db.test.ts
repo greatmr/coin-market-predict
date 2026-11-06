@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addHours, slotOf } from "../../src/common/time.js";
 import { LeaseService } from "../../src/pipeline/lease.service.js";
 import { PIPELINE_LEASE, PipelineService } from "../../src/pipeline/pipeline.service.js";
+import { ReadModelService } from "../../src/read-model/read-model.service.js";
 import { ScanService } from "../../src/tier1/scan.service.js";
 import { makeApp, resetDb } from "./helpers.js";
 
@@ -23,6 +24,11 @@ describe("hourly pipeline", () => {
     const run = await ctx.prisma.pipelineRun.findUniqueOrThrow({ where: { id: r.runId! } });
     expect(run.isLiveData).toBe(false);
     expect((run.metrics as { batchId?: string }).batchId).toBe(r.batchId);
+    // Item progress is live state only: it is gone once the run has finished.
+    expect(run.metrics).not.toHaveProperty("progress");
+    const ov = (await ctx.app.get(ReadModelService).overview()) as { latestRun: { progress: unknown }; schedule: { cron: string } };
+    expect(ov.latestRun.progress).toBeNull();
+    expect(ov.schedule.cron).toBeTruthy();
     expect(await ctx.prisma.scanResult.count({ where: { batchId: r.batchId! } })).toBeGreaterThan(1000);
     const deliveries = await ctx.prisma.telegramDelivery.findMany({ where: { runId: r.runId! } });
     expect(deliveries.length).toBeGreaterThan(0);

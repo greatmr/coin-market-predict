@@ -169,7 +169,7 @@ export class VenuesService {
   }
 
   /** CMC Markets spot pairs for review candidates (stage `venues`), at most once per refresh period each. */
-  async refreshAssetMarkets(providerId: string, batchId: string, candidates: Array<{ cmcId: number; slug: string | null }>, at: Date): Promise<VenueRefreshReport> {
+  async refreshAssetMarkets(providerId: string, batchId: string, candidates: Array<{ cmcId: number; slug: string | null }>, at: Date, onProgress?: (done: number, total: number) => void): Promise<VenueRefreshReport> {
     const report: VenueRefreshReport = { candidates: candidates.length, due: 0, attempted: 0, fetched: 0, failed: 0, stoppedBy: null, notes: [] };
     if (!this.source || this.source.providerId !== providerId || !candidates.length) return report;
     const since = new Date(at.getTime() - this.cfg.TIER1_VENUE_REFRESH_HOURS * 3_600_000);
@@ -180,7 +180,10 @@ export class VenuesService {
     report.due = due.length;
     const deadline = Date.now() + 10 * 60_000;
     let allowance = await spendableRequests(this.prisma, this.cfg, providerId, at);
+    const planned = Math.min(due.length, this.cfg.TIER1_VENUE_MAX_ASSETS_PER_RUN);
+    if (planned) onProgress?.(0, planned);
     for (const c of due) {
+      if (report.attempted > 0) onProgress?.(report.attempted, planned);
       if (report.attempted >= this.cfg.TIER1_VENUE_MAX_ASSETS_PER_RUN) { report.stoppedBy = "max_assets"; break; }
       if (Date.now() > deadline) { report.stoppedBy = "time_budget"; break; }
       if (allowance <= 0) { report.stoppedBy = "request_budget_reserve"; break; }
@@ -201,6 +204,7 @@ export class VenuesService {
         if (stopsCrawl(err)) { report.stoppedBy = "source_unavailable"; break; }
       }
     }
+    if (planned) onProgress?.(report.attempted, planned);
     return report;
   }
 }

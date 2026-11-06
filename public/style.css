@@ -131,6 +131,15 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 10px
 .step.done { color: var(--ink); border-color: var(--good); }
 .step.done::before { content: "✓ "; color: var(--up); }
 .step.active { color: var(--ink); border-color: var(--accent); background: var(--accent-wash); }
+/* Native <progress> (accessible, no inline styles under the CSP), one accent hue on the meter track. */
+.run-bar { display: block; width: 100%; height: 8px; margin: 2px 0 6px; border: 0; border-radius: 999px; background: var(--meter-track); color: var(--accent); overflow: hidden; appearance: none; -webkit-appearance: none; }
+.run-bar::-webkit-progress-bar { background: var(--meter-track); border-radius: 999px; }
+.run-bar::-webkit-progress-value { background: var(--accent); border-radius: 999px; transition: width 0.4s ease; }
+.run-bar::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
+.run-bar.thin { height: 5px; }
+.item-progress .label { font-size: 12px; color: var(--muted); margin-bottom: 2px; font-variant-numeric: tabular-nums; }
+.next-run [data-countdown] { font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: reduce) { .run-bar::-webkit-progress-value { transition: none; } }
 
 /* ---------- Stat tiles ---------- */
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }

@@ -16,20 +16,13 @@ import { VenuesService, type LbankCrawlReport } from "../tier1/venues.service.js
 import { LeaseService } from "./lease.service.js";
 import { RetentionService } from "./retention.service.js";
 
+import { STAGES, progressBar, type Stage, type StageProgress } from "./progress.js";
+
+export { STAGES, progressBar };
 export const PIPELINE_LEASE = "hourly-pipeline";
 const LEASE_TTL_MS = 10 * 60_000;
-/** Text progress bar for the run log: `[████░░░░] 4/8`. */
-export function progressBar(done: number, total: number, width = 8): string {
-  const filled = Math.round((Math.min(done, total) / total) * width);
-  return `[${"█".repeat(filled)}${"░".repeat(width - filled)}] ${done}/${total}`;
-}
-
-/**
- * discover → collect (existing crawler batch) → lbank (LBank Spot pairs) → daily (completed UTC
- * rows) → scan (Tier 1) → venues (CMC Markets rows for review candidates) → export → notify.
- */
-export const STAGES = ["discover", "collect", "lbank", "daily", "scan", "venues", "export", "notify"] as const;
-type Stage = (typeof STAGES)[number];
+/** Minimum gap between item-progress writes, so a fast loop does not flood the database. */
+const PROGRESS_WRITE_MS = 1_000;
 
 export interface RunOutcome {
   runId: string | null;
@@ -144,6 +137,21 @@ export class PipelineService {
     const done = new Set((await this.prisma.pipelineStage.findMany({ where: { runId, status: "succeeded" } })).map((s) => s.stage));
     const stages: RunOutcome["stages"] = {};
     const metrics: Record<string, unknown> = { ...((run.metrics as Record<string, unknown>) ?? {}) };
+    delete metrics.progress;
+    const saveMetrics = () => this.prisma.pipelineRun.update({ where: { id: runId }, data: { metrics: metrics as never } });
+    // Item progress of long stages for the dashboard. Writes are serialized and throttled; the
+    // stage wrapper waits for the last one so it never lands after the stage has finished.
+    let progressWrite: Promise<unknown> = Promise.resolve();
+    const progressFor = (name: Stage, unit: string) => {
+      let last = 0;
+      return (done: number, total: number) => {
+        const t = Date.now();
+        if (done > 0 && done < total && t - last < PROGRESS_WRITE_MS) return;
+        last = t;
+        metrics.progress = { stage: name, unit, done, total } satisfies StageProgress;
+        progressWrite = progressWrite.then(saveMetrics).catch(() => undefined);
+      };
+    };
 
     const stage = async <T>(name: Stage, fn: () => Promise<T>, o: { retries?: number; skipIfDone?: boolean } = {}): Promise<T | undefined> => {
       const step = STAGES.indexOf(name) + 1;
@@ -161,9 +169,14 @@ export class PipelineService {
         update: { status: "running", startedAt: new Date(), attempts: { increment: 1 }, error: null },
       });
       let lastErr: unknown;
+      const clearProgress = async () => {
+        await progressWrite;
+        if ((metrics.progress as StageProgress | undefined)?.stage === name) delete metrics.progress;
+      };
       for (let attempt = 0; attempt <= (o.retries ?? 0); attempt++) {
         try {
           const result = await fn();
+          await clearProgress();
           await this.prisma.pipelineStage.update({ where: { runId_stage: { runId, stage: name } }, data: { status: "succeeded", finishedAt: new Date(), detail: summarize(result) as never } });
           metrics[`${name}Ms`] = Date.now() - started;
           stages[name] = "succeeded";
@@ -174,11 +187,11 @@ export class PipelineService {
           if (err instanceof SourceUnavailableError) break; // do not retry denied/suspended sources
         }
       }
+      await clearProgress();
       await this.prisma.pipelineStage.update({ where: { runId_stage: { runId, stage: name } }, data: { status: "failed", finishedAt: new Date(), error: redact(lastErr).slice(0, 2000) } });
       stages[name] = `failed: ${redact(lastErr).slice(0, 200)}`;
       throw lastErr;
     };
-    const saveMetrics = () => this.prisma.pipelineRun.update({ where: { id: runId }, data: { metrics: metrics as never } });
     const degraded: string[] = [];
 
     let coverage = run.coverage as unknown as CoverageReport | null;
@@ -209,7 +222,7 @@ export class PipelineService {
       // Daily rows: partial refreshes leave affected windows N/A; never fatal.
       let daily: DailyRefreshReport | null | undefined = await stage("daily", async () => {
         const ctx = await this.scanner.loadContext(batchId!);
-        return this.daily.refresh(providerId, { id: batchId!, crawledAt: ctx.asOf }, this.scanner.dailyCandidates(ctx));
+        return this.daily.refresh(providerId, { id: batchId!, crawledAt: ctx.asOf }, this.scanner.dailyCandidates(ctx), progressFor("daily", "coins"));
       }).catch((err) => {
         degraded.push("daily refresh failed");
         this.log.warn(`daily refresh failed, scanning with stored rows: ${redact(err)}`);
@@ -227,7 +240,7 @@ export class PipelineService {
       await saveMetrics();
 
       await stage("venues", async () => {
-        const report = await this.venues.refreshAssetMarkets(providerId, batchId!, scan.venueCandidates, this.clock.now());
+        const report = await this.venues.refreshAssetMarkets(providerId, batchId!, scan.venueCandidates, this.clock.now(), progressFor("venues", "coins"));
         const annotated = await this.scanner.annotateVenues(batchId!, scan.venueCandidates.map((c) => c.cmcId));
         return { ...report, annotated };
       }, { skipIfDone: false }).catch((err) => {

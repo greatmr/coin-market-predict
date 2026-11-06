@@ -5,6 +5,7 @@ import { D, STORE_DP } from "../common/decimal.js";
 import { addDays, isoDate, parseIsoDate } from "../common/dates.js";
 import { APP_CONFIG, type AppConfig } from "../config/config.js";
 import type { Prisma } from "../generated/prisma/client.js";
+import { nextCronRun, runProgress } from "../pipeline/progress.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { RULES } from "../tier1/constants.js";
 import { plain } from "./plain.js";
@@ -133,8 +134,10 @@ export class ReadModelService {
       provider: provider ? { id: provider.id, name: provider.name, isLive: provider.isLive, attribution: provider.attribution } : null,
       isLiveData: provider?.isLive ?? false,
       latestRun: latestRun
-        ? { id: latestRun.id, kind: latestRun.kind, slotTime: latestRun.slotTime, status: interrupted ? "interrupted" : latestRun.status, currentStage: latestRun.currentStage, currentStageLabel: latestRun.currentStage ? STAGE_LABELS[latestRun.currentStage] ?? latestRun.currentStage : null, startedAt: latestRun.startedAt, finishedAt: latestRun.finishedAt, stages: latestRun.stages, metrics: latestRun.metrics, error: latestRun.error }
+        ? { id: latestRun.id, kind: latestRun.kind, slotTime: latestRun.slotTime, status: interrupted ? "interrupted" : latestRun.status, currentStage: latestRun.currentStage, currentStageLabel: latestRun.currentStage ? STAGE_LABELS[latestRun.currentStage] ?? latestRun.currentStage : null, startedAt: latestRun.startedAt, finishedAt: latestRun.finishedAt, stages: latestRun.stages, metrics: latestRun.metrics, error: latestRun.error,
+            progress: latestRun.status === "running" && !interrupted ? runProgress({ stages: latestRun.stages, currentStage: latestRun.currentStage, progress: (latestRun.metrics as Record<string, unknown> | null)?.progress, now: new Date() }) : null }
         : null,
+      schedule: { enabled: this.cfg.SCHEDULER_ENABLED, cron: this.cfg.PIPELINE_CRON, nextRunAt: this.cfg.SCHEDULER_ENABLED ? nextCronRun(this.cfg.PIPELINE_CRON) : null },
       latestBatch,
       scan: lastGood ? { batchId: lastGood.batchId, asOf: lastGood.asOf, finishedAt: lastGood.finishedAt, queueStatus: lastGood.queueStatus, counts: lastGood.counts, warnings: lastGood.warnings, rulesetVersion: lastGood.rulesetVersion, configVersion: lastGood.configVersion, overridesVersion: lastGood.overridesVersion } : null,
       latestScanStatus: latestScan ? { batchId: latestScan.batchId, status: latestScan.status, error: latestScan.error } : null,

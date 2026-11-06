@@ -204,6 +204,16 @@ describe("replay, revisions and human records", () => {
     await daily.upsertRows("fixture", [base], meta);
   });
 
+  it("daily refresh reports per-coin progress for the dashboard bar", async () => {
+    const events: Array<[number, number]> = [];
+    // Unknown CMC ids have no stored T−1 row, so both are due; the outcome of each fetch does not matter here.
+    const report = await ctx.app.get(DailyService).refresh("fixture", { id: batchId, crawledAt: new Date() }, [{ cmcId: 999_991, slug: null }, { cmcId: 999_992, slug: null }], (d, t) => events.push([d, t]));
+    expect(report.due).toBe(2);
+    expect(events[0]).toEqual([0, 2]);
+    expect(events.at(-1)).toEqual([report.attempted, 2]);
+    expect(events.every(([d, t]) => d <= t)).toBe(true);
+  });
+
   it("reviews are append-only revisions; plans are validated and kept INCOMPLETE until complete (p.26, p.27)", async () => {
     const reviews = ctx.app.get(ReviewService);
     const first = await ctx.prisma.review.findFirstOrThrow({ where: { cmcId: S.YNY, batchId, revision: 1 } });

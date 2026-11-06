@@ -27,7 +27,7 @@ exports and the Telegram summary. Missed hours are recorded, never invented.
 ## 2. Read the dashboard
 | Tab | Shows |
 |---|---|
-| Overview | Run progress, batch status, counts, warnings, the rule list, and why coins are not eligible |
+| Overview | Run progress (whole-run bar plus a per-coin bar with time left for the daily-rows and venues stages), next scheduled update with a countdown, batch status, counts, warnings, the rule list, and why coins are not eligible |
 | Review Queue | ELIGIBLE coins with at least one YES among 3d / 7d / 30d, in the PDF's order (3d, then 7d, then 30d result; then the 3-day multiple) |
 | All Eligible | Every coin passing all hard filters, including 0-star rows |
 | Needs Review | Coins with missing or ambiguous inputs (no rank / cap / listing date, ambiguous class, unverified or ambiguous LBank pair, LBank feed down). Windows are still computed |
