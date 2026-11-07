@@ -57,6 +57,34 @@ export class TelegramService {
     return this.cfg.TELEGRAM_MODE;
   }
 
+  private username: string | null = null;
+
+  /**
+   * The bot's @username (without "@"), once loaded. Reports use it to make coin names tappable
+   * deep links (t.me/<bot>?start=coin_<id>); while it is unknown they fall back to /coin_<id>.
+   */
+  get botUsername(): string | null {
+    return this.username;
+  }
+
+  /** Look the username up with getMe and cache it; null when there is no token or the call fails. */
+  async loadBotUsername(): Promise<string | null> {
+    if (this.username || !this.cfg.TELEGRAM_BOT_TOKEN) return this.username;
+    try {
+      const res = await this.fetchImpl(
+        `https://api.telegram.org/bot${this.cfg.TELEGRAM_BOT_TOKEN}/getMe`,
+        { method: 'POST', signal: AbortSignal.timeout(15_000) },
+      );
+      const body = (await res.json()) as { ok?: boolean; result?: { username?: unknown } };
+      const name = body.ok ? body.result?.username : null;
+      // Telegram usernames are 5–32 of [A-Za-z0-9_]; anything else is never put into a link.
+      if (typeof name === 'string' && /^[A-Za-z0-9_]{5,32}$/.test(name)) this.username = name;
+    } catch {
+      /* offline or token rejected: reports keep the /coin_<id> commands */
+    }
+    return this.username;
+  }
+
   private get deliveries() {
     return this.db.getRepository(TelegramDelivery);
   }

@@ -231,6 +231,8 @@ async function main() {
           throw new Error(
             'no scanned batch yet; run `npm run cli -- run-once` first, or use --fake',
           );
+        // Same coin links as the running bot uses (needs the bot token; falls back to /coin_<id>).
+        await ctx.get(TelegramService).loadBotUsername();
         const parts = (await ctx.get(ReportService).build(batchId)).map((p) => {
           const d = parseDocumentPart(p);
           return d

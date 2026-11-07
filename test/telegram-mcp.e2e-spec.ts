@@ -212,37 +212,52 @@ describe('Telegram bot commands', () => {
     expect((await bot.handle('999', '/report', { label: '@guest', isPrivate: true }))[0]).toMatch(
       /This bot is private/,
     );
-    expect((await bot.handle('186142556', '/help'))[0]).toMatch(/\/report — latest hourly report/);
+    // A stranger tapping a forwarded coin link still meets the access gate, not the coin.
+    expect(
+      (await bot.handle('777', '/start coin_990001', { label: '@stranger', isPrivate: true }))[0],
+    ).toMatch(/This bot is private/);
+    expect((await bot.handle('186142556', '/help'))[0]).toMatch(
+      /\/report — latest hourly report[\s\S]*\/coin SIGN — everything about one coin/,
+    );
     expect((await bot.handle('186142556', '/report'))[0]).toMatch(/No report yet/);
 
     const run = await bot.handle('186142556', '/run');
-    expect(run[0]).toMatch(/Tier 1 VMC screen/);
-    expect(run[0]).toMatch(/TEST DATA/);
-    const table = /<pre>([\s\S]*?)<\/pre>/.exec(run.join('\n'));
-    expect(table).not.toBeNull();
-    expect(table![1]!.split('\n')[0]).toMatch(/^#\s+Coin\s+YES\s+3d\s+7d\s+30d\s+VMC$/);
-    for (const line of table![1]!.split('\n')) expect(line.length).toBeLessThanOrEqual(44);
+    expect(run[0]).toMatch(/VMC screen · /);
+    expect(run[0]).toMatch(/Test data/);
+    // Each queued coin is a two-line card with a tappable /coin_<id> command.
+    expect(run[0]).toMatch(
+      /<b>1\. [A-Z0-9]+<\/b> {2}[★☆]{3} {2}VMC <b>[\d.]+%<\/b> {2}\/coin_\d+\n└ 3d /,
+    );
+    expect(run[0]).not.toContain('<pre>');
     expect(run.join('\n')).not.toMatch(/\bbuy\b/i);
     expect((await bot.handle('186142556', '/status'))[0]).toMatch(
-      /Recent runs[\s\S]*|Tier 1: batch COMPLETE/,
+      /Status[\s\S]*Test data[\s\S]*Latest scan<\/b> · batch complete[\s\S]*🎯 Queue \d+[\s\S]*Recent runs[\s\S]*manual · (succeeded|partial)/,
     );
     expect((await bot.handle('186142556', '/vmc'))[0]).toMatch(/Usage/);
     expect((await bot.handle('186142556', '/vmc 990001'))[0]).toMatch(
-      /YNY[\s\S]*3d mean[\s\S]*2\.00x YES/,
+      /YNY[\s\S]*3d +10\.0% {2}█+░* +2\.00× YES[\s\S]*\/coin_990001/,
     );
     expect((await bot.handle('186142556', '/vmc TWIN'))[0]).toMatch(
       /Several coins use the symbol TWIN/,
     );
     expect((await bot.handle('186142556', '/coin'))[0]).toMatch(/Usage: \/coin/);
     const coin = (await bot.handle('186142556', '/coin yny')).join('\n');
-    expect(coin).toMatch(/YNY<\/b> · Yes No Yes Labs \(fixture\) · CMC 990001/);
-    expect(coin).toMatch(/TEST DATA/);
-    expect(coin).toMatch(/3d {2}\s*10\.000%\s+2\.00x {2}YES/);
-    expect(coin).toMatch(/Completed UTC days used/);
-    expect(coin).toMatch(/LBank Spot pairs<\/b> · VERIFIED/);
-    expect(coin).toMatch(/YNY\/USDT · mapping OK · tradable \(feed\)/);
+    expect(coin).toMatch(/YNY<\/b> · Yes No Yes Labs \(fixture\)/);
+    expect(coin).toMatch(/CMC 990001/);
+    expect(coin).toMatch(/Test data/);
+    expect(coin).toMatch(/3d +10\.0% {2}█+░* +2\.00× YES/);
+    expect(coin).toMatch(/<blockquote expandable><b>Daily rows used<\/b>/);
+    expect(coin).toMatch(/LBank<\/b> · verified/);
+    expect(coin).toMatch(/YNY\/USDT · tradable \(feed\)/);
+    // A tapped /coin_<id> from the report opens the same detail.
+    expect((await bot.handle('186142556', '/coin_990001')).join('\n')).toBe(coin);
+    expect((await bot.handle('186142556', '/vmc_990001'))[0]).toMatch(/2\.00× YES/);
+    // A tapped coin name is a t.me deep link: Telegram sends "/start coin_<id>".
+    expect((await bot.handle('186142556', '/start coin_990001')).join('\n')).toBe(coin);
+    expect((await bot.handle('186142556', '/start vmc_990001'))[0]).toMatch(/2\.00× YES/);
+    expect((await bot.handle('186142556', '/start'))[0]).toMatch(/\/report — latest hourly report/);
     expect((await bot.handle('186142556', '/coin TWIN'))[0]).toMatch(
-      /Several coins use the symbol TWIN:[\s\S]*\/coin 990005[\s\S]*\/coin 990006/,
+      /Several coins use the symbol TWIN\. Tap one:[\s\S]*\/coin_990005[\s\S]*\/coin_990006/,
     );
     expect((await bot.handle('186142556', '/coin NOPE'))[0]).toMatch(
       /No coin with the symbol NOPE/,

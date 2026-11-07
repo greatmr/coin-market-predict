@@ -154,9 +154,11 @@ export failed or was pruned.
 *pending* and the owner is notified with `/approve <id>`, `/deny <id>`. Approved members receive
 the hourly report (one `telegram_delivery` row per chat; a failing recipient never blocks the
 others) and can use `/report`, `/status`, `/vmc <cmcId|symbol>` (short window summary),
-`/coin <cmcId|symbol>` (the dashboard drawer: status, current VMC, windows, the 30 completed daily
-rows, LBank pairs and mapping tasks, CMC Markets venues, reviews — split into phone-width
-messages), `/help`. Only the
+`/coin <cmcId|symbol>` (status, current VMC, windows with multiple bars, VMC and price sparklines,
+LBank pairs and mapping tasks, CMC Markets venues, the latest review, and the 30 completed daily
+rows in an expandable quote; coin names in reports are `t.me/<bot>?start=coin_<id>` deep links, which arrive as
+`/start coin_<id>`; `/coin_<id>` and `/vmc_<id>` are the fallback when the bot username is not
+known yet), `/help`. Strangers who tap a forwarded link still meet the access gate. Only the
 owner can `/run`, `/users`, `/approve`, `/deny`, `/remove`. Denied chats are ignored; groups
 cannot request access. State lives in `app_state` key `telegram.access`
 (`src/modules/telegram/access.service.ts`). Sharing reports with other people is the "redistribution"

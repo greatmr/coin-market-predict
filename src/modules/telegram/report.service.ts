@@ -14,6 +14,7 @@ import { Provider } from '../sources/entities/provider.entity.js';
 
 import { XLSX_MIME, documentPart } from './attachment.js';
 import { type QueueRow, type Tier1ReportInput, formatTier1Report } from './format.js';
+import { TelegramService } from './telegram.service.js';
 
 const num = (v: { toString(): string } | null) => (v === null ? null : Number(v.toString()));
 
@@ -23,6 +24,7 @@ export class ReportService {
   constructor(
     @InjectDataSource() private readonly db: DataSource,
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
+    private readonly telegram: TelegramService,
   ) {}
 
   async buildInput(batchId: string): Promise<Tier1ReportInput> {
@@ -84,6 +86,7 @@ export class ReportService {
       lbankUnverifiedWithYes: unverifiedYes,
       rows,
       warnings: run.warnings,
+      botUsername: this.telegram.botUsername,
     };
   }
 
@@ -110,10 +113,11 @@ export class ReportService {
     const path = resolve(run.exportPath, 'workbook.xlsx');
     if (!existsSync(path)) return null;
     const slot = input.slotTime.toISOString().slice(0, 16).replace(':', '-');
+    const k = (x: number) => x.toLocaleString('en-US');
     const caption = [
-      `📎 <b>Tier 1 export</b> · batch ${input.slotTime.toISOString().slice(0, 16).replace('T', ' ')} UTC${input.isLive ? '' : ' · 🧪 TEST DATA'}`,
-      `Sheets: Review_Queue (${input.counts.queue}) · All_Eligible (${input.counts.eligible}) · Needs_Review (${input.counts.needsReview}) · Excluded (${input.counts.excluded}) · Run_Metadata`,
-      '<i>Research screen only · no orders placed</i>',
+      `📎 <b>Full workbook</b> · batch ${input.slotTime.toISOString().slice(11, 16)} UTC${input.isLive ? '' : ' · 🧪 test data'}`,
+      `🎯 Queue ${k(input.counts.queue)} · ✅ eligible ${k(input.counts.eligible)} · 🔎 needs review ${k(input.counts.needsReview)} · ⛔ excluded ${k(input.counts.excluded)}`,
+      '<i>One sheet each, plus run metadata · research screen only</i>',
     ].join('\n');
     return documentPart({
       path,

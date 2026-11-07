@@ -298,8 +298,8 @@ describe('Tier 1 end to end on the synthetic fixture', () => {
     const d = await ctx.repo(TelegramDelivery).findBy({ mode: 'dry_run' });
     expect(d.length).toBeGreaterThan(0);
     expect(d.every((x) => x.status === 'dry_run')).toBe(true);
-    expect(d[0]!.text).toMatch(/TEST DATA/);
-    expect(d[0]!.text).toMatch(/Review Queue/);
+    expect(d[0]!.text).toMatch(/Test data<\/b>: a synthetic market/);
+    expect(d[0]!.text).toMatch(/review queue/i);
   });
 
   it('provides a full calculation trace for one CMC id: 30 completed daily rows and every window (p.20 #2)', async () => {
@@ -583,7 +583,7 @@ describe('replay, revisions and human records', () => {
     expect(doc).not.toBeNull();
     expect(existsSync(doc!.path)).toBe(true);
     expect(doc!.filename).toMatch(/^coins-tier1_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}Z_SYNTHETIC\.xlsx$/);
-    expect(doc!.caption).toMatch(/TEST DATA/);
+    expect(doc!.caption).toMatch(/test data/);
     expect(parts.slice(0, -1).every((p) => parseDocumentPart(p) === null)).toBe(true);
   });
 
@@ -594,8 +594,8 @@ describe('replay, revisions and human records', () => {
     const r = await ctx.app.get(PipelineService).reprocess(batchId, { export: false });
     expect(r.scan!.queueStatus).toBe('WITHHELD_INCOMPLETE_BATCH');
     const parts = await ctx.app.get(ReportService).build(batchId);
-    expect(parts.join('\n')).toMatch(/Review Queue withheld/);
-    expect(parts.join('\n')).not.toMatch(/<pre>/);
+    expect(parts.join('\n')).toMatch(/Review queue withheld/);
+    expect(parts.join('\n')).not.toMatch(/<pre>|\/coin_/); // no coin cards for a withheld queue
     expect(parts.some((p) => parseDocumentPart(p) !== null)).toBe(false); // no workbook for a withheld queue
     await ctx.repo(CrawlBatch).update({ id: batchId }, { status: 'COMPLETE', statusReasons: [] });
   });
