@@ -3,132 +3,213 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Coins Predicts — Two-Tier VMC screen</title>
+  <title>Coins Predicts</title>
+  <meta name="color-scheme" content="dark light">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">Coins Predicts <span class="sub">Two-Tier VMC · Tier 1 CMC screen → Tier 2 human chart review · research only, no orders</span></div>
-    <div class="badges"><span id="badges" class="badges"></span><button id="theme" class="icon-btn" type="button" title="Switch color theme">Theme: auto</button></div>
-  </header>
-  <div id="banner" class="banner" role="status" hidden></div>
-  <nav class="tabs" role="tablist" aria-label="Dashboard sections">
-    <button role="tab" id="t-overview" data-tab="overview" aria-controls="tab-overview">Overview</button>
-    <button role="tab" id="t-queue" data-tab="queue" aria-controls="tab-queue">Review Queue <span class="count" id="count-queue">0</span></button>
-    <button role="tab" id="t-eligible" data-tab="eligible" aria-controls="tab-eligible">All Eligible <span class="count" id="count-eligible">0</span></button>
-    <button role="tab" id="t-needs_review" data-tab="needs_review" aria-controls="tab-needs_review">Needs Review <span class="count" id="count-needs_review">0</span></button>
-    <button role="tab" id="t-excluded" data-tab="excluded" aria-controls="tab-excluded">Excluded <span class="count" id="count-excluded">0</span></button>
-    <button role="tab" id="t-batches" data-tab="batches" aria-controls="tab-batches">Batches &amp; health</button>
-    <button role="tab" id="t-exports" data-tab="exports" aria-controls="tab-exports">Exports</button>
-    <button role="tab" id="t-access" data-tab="access" aria-controls="tab-access">Telegram access <span class="count" id="count-access">0</span></button>
+  <div class="aurora" aria-hidden="true"><span></span><span></span><span></span></div>
+
+  <nav class="rail" aria-label="Dashboard sections">
+    <a class="mark" href="#overview" aria-label="Coins Predicts overview">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M4 22c4 0 5-9 9-9s4 6 7 6 4-11 8-13" /><circle cx="28" cy="6" r="2.4" /></svg>
+    </a>
+    <div class="rail-items" role="tablist" aria-orientation="vertical">
+      <button role="tab" id="t-overview" data-tab="overview" aria-controls="tab-overview">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13a8 8 0 1 1 16 0" /><path d="M12 13l4-4" /><path d="M4 18h16" /></svg><span>Overview</span>
+      </button>
+      <button role="tab" id="t-queue" data-tab="queue" aria-controls="tab-queue">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19V9" /><path d="M10 19V5" /><path d="M15 19v-7" /><path d="M20 19V3" /></svg><span>Review queue</span><b class="count" id="count-queue">0</b>
+      </button>
+      <button role="tab" id="t-eligible" data-tab="eligible" aria-controls="tab-eligible">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M8.5 12.5l2.5 2.5 4.5-5" /></svg><span>Eligible</span><b class="count" id="count-eligible">0</b>
+      </button>
+      <button role="tab" id="t-needs_review" data-tab="needs_review" aria-controls="tab-needs_review">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4l9 16H3z" /><path d="M12 10v4" /><path d="M12 17h.01" /></svg><span>Needs review</span><b class="count" id="count-needs_review">0</b>
+      </button>
+      <button role="tab" id="t-excluded" data-tab="excluded" aria-controls="tab-excluded">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M6.5 17.5l11-11" /></svg><span>Excluded</span><b class="count" id="count-excluded">0</b>
+      </button>
+      <button role="tab" id="t-batches" data-tab="batches" aria-controls="tab-batches">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-6 4 12 2-6h6" /></svg><span>Runs &amp; health</span>
+      </button>
+      <button role="tab" id="t-exports" data-tab="exports" aria-controls="tab-exports">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11" /><path d="M7.5 10.5L12 15l4.5-4.5" /><path d="M5 20h14" /></svg><span>Exports</span>
+      </button>
+      <button role="tab" id="t-access" data-tab="access" aria-controls="tab-access">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 4L3 11l6 2 2 6 3-4 4 3z" /></svg><span>Telegram</span><b class="count" id="count-access">0</b>
+      </button>
+    </div>
+    <button id="theme" class="rail-theme" type="button" aria-label="Color theme: auto">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16z" class="fill" /></svg>
+    </button>
   </nav>
 
-  <main>
-    <section id="tab-overview" class="tab" role="tabpanel" aria-labelledby="t-overview">
-      <div id="run-strip" class="card status-strip" aria-live="polite">Loading…</div>
-      <div id="kpis" class="tiles"></div>
-      <div class="grid-2">
-        <div class="card">
-          <div class="card-head"><h2>Latest scan</h2><span class="hint" id="scan-meta"></span></div>
-          <div id="scan-summary"></div>
-        </div>
-        <div class="card">
-          <div class="card-head"><h2>Warnings</h2><span class="hint">counts and comparisons only — no thresholds are invented</span></div>
-          <div id="warnings"></div>
-        </div>
+  <div class="shell">
+    <header class="top">
+      <div class="title-block">
+        <h1 id="page-title">Overview</h1>
+        <p id="page-sub" class="page-sub"></p>
       </div>
-      <div class="grid-2" data-gap="top">
-        <div class="card">
-          <div class="card-head"><h2>How Tier 1 decides</h2><span class="hint" id="rules-version"></span></div>
+      <div class="top-actions">
+        <span id="badges" class="badges"></span>
+        <button id="search-open" class="search-btn" type="button" aria-haspopup="dialog">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="M16 16l4 4" /></svg>
+          <span>Find a coin</span><kbd>⌘K</kbd>
+        </button>
+      </div>
+    </header>
+
+    <div id="banner" class="banner" role="status" hidden></div>
+
+    <main>
+      <!-- Overview -->
+      <section id="tab-overview" class="tab" role="tabpanel" aria-labelledby="t-overview">
+        <div class="hero">
+          <div class="panel pulse" id="pulse" aria-live="polite">Loading…</div>
+          <div class="panel funnel-panel">
+            <div class="panel-head"><h2>From every listed coin to the review queue</h2><span class="hint" id="scan-meta"></span></div>
+            <div id="funnel"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><h2>Review queue</h2><a class="link" href="#queue">Open the full queue</a></div>
+          <div id="queue-strip" class="queue-strip"></div>
+        </div>
+
+        <div class="grid-3">
+          <div class="panel">
+            <div class="panel-head"><h2>Window results</h2><span class="hint">evaluated coins</span></div>
+            <div id="windows"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h2>Eligibility</h2><span class="hint">every coin in the batch</span></div>
+            <div id="split"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h2>Stars</h2><span class="hint">windows met, evaluated coins</span></div>
+            <div id="stars"></div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="panel">
+            <div class="panel-head"><h2>Why coins are left out</h2><span class="hint">a coin can have several reasons</span></div>
+            <div id="reasons"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h2>Data quality</h2><span class="hint" id="quality-meta"></span></div>
+            <div id="quality"></div>
+          </div>
+        </div>
+
+        <details class="panel rules">
+          <summary><h2>How Tier 1 decides</h2><span class="hint" id="rules-version"></span></summary>
           <div id="rules"></div>
-        </div>
-        <div class="card">
-          <div class="card-head"><h2>Why coins are not eligible</h2><span class="hint">a coin can have several reasons</span></div>
-          <div id="reasons"></div>
-        </div>
-      </div>
-    </section>
+        </details>
+      </section>
 
-    <section id="tab-queue" class="tab sheet" role="tabpanel" aria-labelledby="t-queue" hidden data-sheet="queue">
-      <div class="card">
-        <div class="card-head"><h2>Review Queue</h2><span class="hint sheet-meta"></span></div>
-        <p class="lead small">ELIGIBLE coins whose current rolling-24h VMC is at least 1.5× at least one of its own 3-day, 7-day or 30-day means of completed UTC daily ratios. Ordered by 3d, then 7d, then 30d result (YES before NO before N/A), then the 3-day multiple. A list for human chart review — not a buy signal.</p>
+      <!-- Sheets -->
+      <section id="tab-queue" class="tab sheet" role="tabpanel" aria-labelledby="t-queue" hidden data-sheet="queue">
         <div class="sheet-status"></div>
-        <div class="filters"><input type="search" class="sheet-search" placeholder="Search symbol, name or CMC id" aria-label="Search"><label>Rows <select class="sheet-rows"><option>50</option><option selected>100</option><option>250</option></select></label></div>
-        <div class="table-wrap sheet-table"></div>
+        <div class="toolbar">
+          <label class="search-field"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="M16 16l4 4" /></svg><input type="search" class="sheet-search" placeholder="Symbol, name or CMC id" aria-label="Filter this list"></label>
+          <div class="seg view-seg" role="group" aria-label="View"><button type="button" data-view="table" aria-pressed="true">Table</button><button type="button" data-view="scatter" aria-pressed="false">Scatter</button></div>
+          <label class="rows">Rows <select class="sheet-rows"><option>50</option><option selected>100</option><option>250</option></select></label>
+        </div>
+        <div class="panel flush"><div class="table-wrap sheet-table"></div><div class="sheet-scatter" hidden></div></div>
         <div class="pager sheet-pager"></div>
-      </div>
-    </section>
+      </section>
 
-    <section id="tab-eligible" class="tab sheet" role="tabpanel" aria-labelledby="t-eligible" hidden data-sheet="eligible">
-      <div class="card">
-        <div class="card-head"><h2>All Eligible</h2><span class="hint sheet-meta"></span></div>
-        <p class="lead small">Every coin that passes all hard filters (rank 101–1200, market cap ≥ $15M, listed ≥ 60 days, not a stablecoin or tokenized asset, an LBank Spot pair) — including 0-star rows and failed windows.</p>
-        <div class="filters"><input type="search" class="sheet-search" placeholder="Search symbol, name or CMC id" aria-label="Search"><label>Rows <select class="sheet-rows"><option>50</option><option selected>100</option><option>250</option></select></label></div>
-        <div class="table-wrap sheet-table"></div>
+      <section id="tab-eligible" class="tab sheet" role="tabpanel" aria-labelledby="t-eligible" hidden data-sheet="eligible">
+        <div class="toolbar">
+          <label class="search-field"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="M16 16l4 4" /></svg><input type="search" class="sheet-search" placeholder="Symbol, name or CMC id" aria-label="Filter this list"></label>
+          <div class="seg view-seg" role="group" aria-label="View"><button type="button" data-view="table" aria-pressed="true">Table</button><button type="button" data-view="scatter" aria-pressed="false">Scatter</button></div>
+          <label class="rows">Rows <select class="sheet-rows"><option>50</option><option selected>100</option><option>250</option></select></label>
+        </div>
+        <div class="panel flush"><div class="table-wrap sheet-table"></div><div class="sheet-scatter" hidden></div></div>
         <div class="pager sheet-pager"></div>
-      </div>
-    </section>
+      </section>
 
-    <section id="tab-needs_review" class="tab sheet" role="tabpanel" aria-labelledby="t-needs_review" hidden data-sheet="needs_review">
-      <div class="card">
-        <div class="card-head"><h2>Needs Review</h2><span class="hint sheet-meta"></span></div>
-        <p class="lead small">Missing or ambiguous inputs are never silently eligible: rank, cap or listing date missing, an ambiguous class, an ambiguous LBank ticker (or an unverified pair when manual verification is on), or no usable LBank list. VMC windows are still computed so you can decide what to resolve first. Open a coin to confirm or reject its LBank mapping.</p>
-        <div class="filters"><input type="search" class="sheet-search" placeholder="Search symbol, name or CMC id" aria-label="Search"><label>Rows <select class="sheet-rows"><option>50</option><option selected>100</option><option>250</option></select></label></div>
-        <div class="table-wrap sheet-table"></div>
+      <section id="tab-needs_review" class="tab sheet" role="tabpanel" aria-labelledby="t-needs_review" hidden data-sheet="needs_review">
+        <div class="toolbar">
+          <label class="search-field"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="M16 16l4 4" /></svg><input type="search" class="sheet-search" placeholder="Symbol, name or CMC id" aria-label="Filter this list"></label>
+          <div class="seg view-seg" role="group" aria-label="View"><button type="button" data-view="table" aria-pressed="true">Table</button><button type="button" data-view="scatter" aria-pressed="false">Scatter</button></div>
+          <label class="rows">Rows <select class="sheet-rows"><option>50</option><option selected>100</option><option>250</option></select></label>
+        </div>
+        <div class="panel flush"><div class="table-wrap sheet-table"></div><div class="sheet-scatter" hidden></div></div>
         <div class="pager sheet-pager"></div>
-      </div>
-    </section>
+      </section>
 
-    <section id="tab-excluded" class="tab sheet" role="tabpanel" aria-labelledby="t-excluded" hidden data-sheet="excluded">
-      <div class="card">
-        <div class="card-head"><h2>Excluded</h2><span class="hint sheet-meta"></span></div>
-        <p class="lead small">Coins with at least one known failed hard filter, with every reason. Windows are not evaluated for them (no daily history is requested).</p>
-        <div class="filters"><input type="search" class="sheet-search" placeholder="Search symbol, name or CMC id" aria-label="Search"><label>Rows <select class="sheet-rows"><option>50</option><option selected>100</option><option>250</option></select></label></div>
-        <div class="table-wrap sheet-table"></div>
+      <section id="tab-excluded" class="tab sheet" role="tabpanel" aria-labelledby="t-excluded" hidden data-sheet="excluded">
+        <div class="toolbar">
+          <label class="search-field"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="M16 16l4 4" /></svg><input type="search" class="sheet-search" placeholder="Symbol, name or CMC id" aria-label="Filter this list"></label>
+          <label class="rows">Rows <select class="sheet-rows"><option>50</option><option selected>100</option><option>250</option></select></label>
+        </div>
+        <div class="panel flush"><div class="table-wrap sheet-table"></div></div>
         <div class="pager sheet-pager"></div>
-      </div>
-    </section>
+      </section>
 
-    <section id="tab-batches" class="tab" role="tabpanel" aria-labelledby="t-batches" hidden>
-      <div id="health-tiles" class="tiles"></div>
-      <div class="card"><div class="card-head"><h2>Crawl batches</h2><span class="hint">one per UTC hour; a missing hour is a visible gap</span></div><div class="table-wrap" id="batches"></div></div>
-      <div class="card"><div class="card-head"><h2>Open LBank mapping tasks</h2><span class="hint">ambiguous base tickers waiting for a reviewer</span></div><div class="table-wrap" id="tasks"></div></div>
-      <div class="card"><div class="card-head"><h2>Pipeline runs</h2><span class="hint">UTC hourly slots shown in your display timezone</span></div><div class="table-wrap" id="runs"></div></div>
-    </section>
+      <!-- Runs & health -->
+      <section id="tab-batches" class="tab" role="tabpanel" aria-labelledby="t-batches" hidden>
+        <div id="health-tiles" class="tiles"></div>
+        <div class="panel"><div class="panel-head"><h2>Latest run, stage by stage</h2><span class="hint" id="gantt-meta"></span></div><div id="gantt"></div></div>
+        <div class="panel"><div class="panel-head"><h2>Hourly crawl batches</h2><span class="hint">one per UTC hour; a missing hour stays a visible gap</span></div><div id="batch-chart"></div><div class="table-wrap" id="batches"></div></div>
+        <div class="panel"><div class="panel-head"><h2>Pipeline runs</h2></div><div class="table-wrap" id="runs"></div></div>
+        <div class="panel"><div class="panel-head"><h2>Open LBank mapping tasks</h2><span class="hint">ambiguous tickers waiting for you</span></div><div class="table-wrap" id="tasks"></div></div>
+      </section>
 
-    <section id="tab-exports" class="tab" role="tabpanel" aria-labelledby="t-exports" hidden>
-      <div class="card">
-        <div class="card-head"><h2>Exports</h2><span class="hint" id="exports-meta"></span></div>
-        <p class="lead small">Each scanned batch is exported as UTF-8 CSV per sheet (full precision, N/A values blank with a reason code) and an Excel workbook with All_Eligible, Review_Queue, Needs_Review, Excluded and Run_Metadata. SHA-256 checksums are in each manifest. A failed export never replaces an earlier valid one.</p>
-        <div class="table-wrap" id="exports"></div>
-      </div>
-    </section>
+      <!-- Exports -->
+      <section id="tab-exports" class="tab" role="tabpanel" aria-labelledby="t-exports" hidden>
+        <div class="panel"><div class="panel-head"><h2>Exported batches</h2><span class="hint" id="exports-meta"></span></div><div class="table-wrap" id="exports"></div></div>
+      </section>
 
-    <section id="tab-access" class="tab" role="tabpanel" aria-labelledby="t-access" hidden>
-      <div id="access-note"></div>
-      <div class="card"><div class="card-head"><h2>Missed reports</h2><span class="hint" id="missed-hint">last 6 hours</span>
-        <span class="row-actions"><button type="button" class="btn" id="missed-retry-all">Retry all missed</button><button type="button" class="btn primary" id="send-latest-all">Send latest report to everyone</button></span></div>
-        <div class="table-wrap" id="access-missed"></div></div>
-      <div class="card"><div class="card-head"><h2>Waiting for approval</h2><span class="hint">people who messaged the bot</span></div><div class="table-wrap" id="access-pending"></div></div>
-      <div class="card"><div class="card-head"><h2>Members</h2><span class="hint">receive the hourly summary and /report, /status, /vmc</span></div><div class="table-wrap" id="access-members"></div></div>
-      <div class="card"><div class="card-head"><h2>Add by chat id</h2><span class="hint">the person must also open the bot and press Start</span></div>
-        <form id="access-add" class="inline-form" autocomplete="off"><input id="access-add-id" inputmode="numeric" pattern="-?[0-9]{3,20}" placeholder="Telegram chat id" aria-label="Telegram chat id" required><button type="submit" class="btn">Approve</button></form>
-      </div>
-      <div class="card"><div class="card-head"><h2>Rejected</h2><span class="hint">ignored by the bot until allowed again</span></div><div class="table-wrap" id="access-denied"></div></div>
-    </section>
-  </main>
+      <!-- Telegram -->
+      <section id="tab-access" class="tab" role="tabpanel" aria-labelledby="t-access" hidden>
+        <div id="access-note"></div>
+        <div class="panel"><div class="panel-head"><h2>Missed reports</h2><span class="hint">last 6 hours</span>
+          <span class="row-actions"><button type="button" class="btn" id="missed-retry-all">Retry all missed</button><button type="button" class="btn primary" id="send-latest-all">Send latest report to everyone</button></span></div>
+          <div class="table-wrap" id="access-missed"></div></div>
+        <div class="grid-2">
+          <div class="panel"><div class="panel-head"><h2>Waiting for approval</h2><span class="hint">people who messaged the bot</span></div><div class="table-wrap" id="access-pending"></div></div>
+          <div class="panel"><div class="panel-head"><h2>Members</h2><span class="hint">get the hourly summary and bot commands</span></div><div class="table-wrap" id="access-members"></div></div>
+        </div>
+        <div class="grid-2">
+          <div class="panel"><div class="panel-head"><h2>Add by chat id</h2><span class="hint">they must also open the bot and press Start</span></div>
+            <form id="access-add" class="inline-form" autocomplete="off"><input id="access-add-id" inputmode="numeric" pattern="-?[0-9]{3,20}" placeholder="Telegram chat id" aria-label="Telegram chat id" required><button type="submit" class="btn primary">Approve</button></form>
+          </div>
+          <div class="panel"><div class="panel-head"><h2>Rejected</h2><span class="hint">ignored until allowed again</span></div><div class="table-wrap" id="access-denied"></div></div>
+        </div>
+      </section>
+    </main>
+    <footer id="footer"></footer>
+  </div>
 
-  <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+  <!-- Coin detail -->
+  <div id="drawer-backdrop" class="backdrop" hidden></div>
   <aside id="drawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden>
     <div class="drawer-head">
-      <div><h2 id="drawer-title">Coin</h2><div class="sub" id="drawer-sub"></div></div>
-      <button type="button" class="btn" id="drawer-close">Close</button>
+      <div id="drawer-logo" class="drawer-logo"></div>
+      <div class="drawer-titles"><h2 id="drawer-title">Coin</h2><div class="sub" id="drawer-sub"></div></div>
+      <button type="button" class="icon-btn" id="drawer-close" aria-label="Close coin detail"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg></button>
     </div>
     <div class="drawer-body" id="drawer-body"></div>
   </aside>
-  <footer id="footer"></footer>
+
+  <!-- Coin search -->
+  <div id="palette" class="palette" role="dialog" aria-modal="true" aria-label="Find a coin" hidden>
+    <div class="palette-box">
+      <label class="palette-input"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="M16 16l4 4" /></svg>
+        <input id="palette-input" type="search" placeholder="Search by symbol, name or CMC id" autocomplete="off" aria-controls="palette-list" aria-autocomplete="list"></label>
+      <ul id="palette-list" class="palette-list" role="listbox" aria-label="Matching coins"></ul>
+      <div class="palette-foot"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>Enter</kbd> open</span><span><kbd>Esc</kbd> close</span></div>
+    </div>
+  </div>
+
+  <div id="tip" class="tip" role="tooltip" hidden></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
   <script src="app.js"></script>
 </body>
 </html>

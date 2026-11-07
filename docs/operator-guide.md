@@ -25,27 +25,44 @@ Each run takes one crawl batch per UTC hour (minute 7 by default) and writes the
 exports and the Telegram summary. Missed hours are recorded, never invented.
 
 ## 2. Read the dashboard
-| Tab | Shows |
+| Section (left rail) | Shows |
 |---|---|
-| Overview | Run progress (whole-run bar plus a per-coin bar with time left for the daily-rows and venues stages), next scheduled update with a countdown, batch status, counts, warnings, the rule list, and why coins are not eligible |
-| Review Queue | ELIGIBLE coins with at least one YES among 3d / 7d / 30d, in the PDF's order (3d, then 7d, then 30d result; then the 3-day multiple) |
-| All Eligible | Every coin passing all hard filters, including 0-star rows |
-| Needs Review | Coins with missing or ambiguous inputs (no rank / cap / listing date, ambiguous class, unverified or ambiguous LBank pair, LBank feed down). Windows are still computed |
+| Overview | Run ring (progress while a run is going, otherwise a countdown to the next run) with the stage list; a funnel from every listed coin to evaluated, eligible and the review queue; review-queue cards; window results (YES / NO / N/A per window), eligibility donut, stars, exclusion reasons, data quality (quote and LBank status, LBank list age, warnings) and the rule list |
+| Review queue | ELIGIBLE coins with at least one YES among 3d / 7d / 30d, in the PDF's order (3d, then 7d, then 30d result; then the 3-day multiple) |
+| Eligible | Every coin passing all hard filters, including 0-star rows |
+| Needs review | Coins with missing or ambiguous inputs (no rank / cap / listing date, ambiguous class, unverified or ambiguous LBank pair, LBank feed down). Windows are still computed |
 | Excluded | Coins with a known failed filter, with every reason |
-| Batches & health | Crawl batches (missing / duplicate ranks), source health and request budget, open LBank mapping tasks, runs |
+| Runs & health | Source, circuit and request budget; the latest run's stages on a timeline; hourly crawl batches (missing / duplicate ranks); runs; open LBank mapping tasks |
 | Exports | Per-batch CSV / XLSX files with checksums |
-| Telegram access | Missed reports, pending requests, members |
+| Telegram | Missed reports, pending requests, members |
 
-Window cells read `YES 2.00×`, `NO 1.33×` or `N/A`. Hover an N/A for its reason:
+The queue, eligible and needs-review lists switch between **Table** and **Scatter** (current VMC
+against the coin's own 30-day mean on log scales, with the 1.5× line; click a dot to open the
+coin). **Find a coin** (⌘K / Ctrl K, or `/`) searches every known coin by symbol, name or CMC id.
+The theme button at the bottom of the rail cycles auto / light / dark.
+
+Window cells show the multiple and a bar against the 1.5× tick (YES in amber), or `N/A`. Hover an N/A for its reason:
 `DAILY_ROW_MISSING` / `DAILY_ROW_INVALID` (a day in that window is missing or invalid — other
 windows still count), `ZERO_BASELINE`, `CURRENT_STALE` (provider update older than
 `MAX_QUOTE_AGE_MINUTES`, default 120), `TIMESTAMP_UNVERIFIED`, `MISMATCHED_OBSERVATION`,
 `NOT_EVALUATED_EXCLUDED`. Stars count YES results among 3d / 7d / 30d; they are not a
 probability or confidence. The 14-day mean is context only.
 
-Click any row for the **calculation trace**: the current observation with its formula, each
-window's dates and mean, the 30 completed daily rows used (with revision numbers), the LBank
-pairs, venue rows, and the review history. The same trace is available as
+Click any row (or a queue card) for the **coin detail**. Its address gains `?coin=<CMC id>`, so
+the view can be reloaded or bookmarked. Under the price and status chips it has three tabs (the
+last one used stays selected):
+- **Review**: the evidence and your review form.
+  - *Volume ÷ market cap*: the 30 completed daily VMC bars and today's rolling-24h value. Pick a
+    window (3 / 7 / 14 / 30 days) to highlight its days and draw its mean and the 1.5× line.
+  - *Price and volume*: daily closes with daily volume, or the hourly snapshots (72 h, 7 days,
+    30 days). Hourly history builds up one point per run.
+  - *Where it trades* (CMC venue shares), the LBank pairs with their decision buttons, and the
+    review form.
+- **History**: review revisions, LBank decisions and CMC metadata changes (name, symbol, tags).
+- **Calculation details**: the current-VMC formula and timestamps, the window table with every
+  formula, and every daily row used, with revision numbers.
+
+The same trace is available as
 `npm run cli -- tier1:trace --id <cmcId>`, and in Telegram as `/coin <CMC id or symbol>` (the
 whole drawer, a few messages) or `/vmc <CMC id or symbol>` (windows only). A symbol shared by
 several coins gets a list of `/coin <id>` choices.
@@ -53,7 +70,7 @@ several coins gets a list of `/coin <id>` choices.
 ### When the queue is withheld
 | Banner / status | Meaning | What to do |
 |---|---|---|
-| Withheld: incomplete batch | Ranks 1–1200 had a gap or duplicate, or not every listed coin was stored | Check *Batches & health*; the next hourly batch usually recovers. Rows remain inspectable but are not a complete queue |
+| Withheld: incomplete batch | Ranks 1–1200 had a gap or duplicate, or not every listed coin was stored | Check *Runs & health*; the next hourly batch usually recovers. Rows remain inspectable but are not a complete queue |
 | Withheld: LBank feed unavailable | No complete LBank Spot markets list yet, or the stored list is older than `LBANK_PAIRS_MAX_AGE_DAYS` (35) | Press *Refresh LBank list now* on the Overview (or `lbank:refresh`); check source health if it fails. Every LBank status is UNKNOWN until a complete list exists |
 | Empty | No eligible coin met any window | Nothing to review this hour; no rule is relaxed to fill it |
 
@@ -62,7 +79,7 @@ several coins gets a list of `/coin <id>` choices.
    tradable (operator decision D1), so most coins need nothing here. Two cases do:
    - **Ambiguous ticker** (LBank symbol differs from CMC, e.g. `DUSK1`, or one ticker on several
      CMC ids, e.g. `MARS/USDC`): press **Mapping correct** or **Wrong asset**. Open tasks are
-     listed under *Batches & health*.
+     listed under *Runs & health*.
    - **Listed but not tradable** on LBank (suspended, delisted): press **Not tradable**.
    Decisions are stored with your name and apply from the next scan; press *Reprocess latest
    batch* on the Overview to apply them now. (With `LBANK_REQUIRE_MANUAL_VERIFICATION=true` every
@@ -127,7 +144,7 @@ A failed export never replaces the previous one. Files are pruned after
 ## 7. Troubleshooting
 | Symptom | Likely cause | Action |
 |---|---|---|
-| Many `DAILY_ROW_MISSING` | Cold start, the daily stage hit its time / asset / budget bound, or CMC has not published yesterday yet | Wait for the next runs (retries after `TIER1_DAILY_RETRY_HOURS`); check `metrics.daily` on the run and the budget on *Batches & health* |
+| Many `DAILY_ROW_MISSING` | Cold start, the daily stage hit its time / asset / budget bound, or CMC has not published yesterday yet | Wait for the next runs (retries after `TIER1_DAILY_RETRY_HOURS`); check `metrics.daily` on the run and the budget on *Runs & health* |
 | Many `CURRENT_STALE` | The listing returned old provider timestamps | Compare provider update time and crawl time in the trace; persistent staleness means a source problem |
 | Source circuit `open` / `suspended` | Repeated errors or 401/403 denials | Stop and investigate (network, blocking, route change) before `source:reset` |
 | Budget nearly used | Daily refresh volume above the monthly budget | Raise `CMC_WEB_MONTHLY_REQUEST_BUDGET` deliberately or reduce `TIER1_DAILY_MAX_ASSETS_PER_RUN`; the hourly listing keeps a reserve |
