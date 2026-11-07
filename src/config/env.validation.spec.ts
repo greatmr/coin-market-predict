@@ -48,8 +48,21 @@ describe('configuration', () => {
     }
   });
 
-  it('requires dashboard auth when binding beyond loopback', () => {
-    expect(() => loadConfig({ ...base, HOST: '0.0.0.0' })).toThrow(/DASHBOARD_BASIC_AUTH/);
+  it('allows binding beyond loopback (every dashboard route needs a signed-in user)', () => {
+    expect(loadConfig({ ...base, HOST: '0.0.0.0' }).HOST).toBe('0.0.0.0');
+  });
+
+  it('validates the session and bootstrap-owner settings and masks the owner password', () => {
+    const c = loadConfig(base);
+    expect([c.SESSION_TTL_HOURS, c.COOKIE_SECURE, c.INITIAL_OWNER_PASSWORD]).toEqual([
+      12,
+      'auto',
+      undefined,
+    ]);
+    expect(() => loadConfig({ ...base, INITIAL_OWNER_PASSWORD: 'short' })).toThrow(/at least 8/);
+    expect(() => loadConfig({ ...base, COOKIE_SECURE: 'maybe' })).toThrow(/COOKIE_SECURE/);
+    const set = loadConfig({ ...base, INITIAL_OWNER_PASSWORD: 'a-long-secret-pass' });
+    expect(JSON.stringify(describeConfig(set))).not.toContain('a-long-secret-pass');
   });
 
   it('reads *_FILE secrets and masks them in diagnostics', () => {

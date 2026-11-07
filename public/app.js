@@ -43,24 +43,33 @@ async function readEnvelope(r) {
   const text = await r.text();
   try { return text ? JSON.parse(text) : null; } catch { return null; }
 }
-async function api(path) {
-  const r = await fetch(`/api/${path}`, { headers: { accept: "application/json" } });
-  const body = await readEnvelope(r);
+const errorCode = (body) => (body && Array.isArray(body.errors) && body.errors[0] ? body.errors[0].code : null);
+
+/** One request; a lost session sends the person back to sign-in, a pending password change to that form. */
+async function request(method, path, body) {
+  const init = { method, headers: { accept: "application/json" } };
+  if (method !== "GET") { init.headers["content-type"] = "application/json"; init.body = JSON.stringify(body ?? {}); }
+  const r = await fetch(`/api/${path}`, init);
+  const res = await readEnvelope(r);
   if (!r.ok) {
-    const detail = errorText(body);
-    const err = new Error(`${path.split("?")[0]}: HTTP ${r.status}${detail ? ` ${detail}` : ""}`);
+    const code = errorCode(res);
+    const detail = errorText(res);
+    const err = new Error(detail || `HTTP ${r.status}`);
     err.status = r.status;
+    err.code = code;
     err.detail = detail;
+    if (!path.startsWith("auth/")) {
+      if (code === "AUTH_REQUIRED") showAuth("login", "Your session ended. Sign in again.");
+      else if (code === "PASSWORD_CHANGE_REQUIRED") showAuth("change");
+    }
     throw err;
   }
-  return body ? body.data : null;
-}
-async function apiPost(path, body) {
-  const r = await fetch(`/api/${path}`, { method: "POST", headers: { accept: "application/json", "content-type": "application/json" }, body: JSON.stringify(body) });
-  const res = await readEnvelope(r);
-  if (!r.ok) throw new Error(errorText(res) || `HTTP ${r.status}`);
   return res ? res.data : null;
 }
+const api = (path) => request("GET", path);
+const apiPost = (path, body) => request("POST", path, body);
+const apiPatch = (path, body) => request("PATCH", path, body);
+const apiDelete = (path) => request("DELETE", path, {});
 
 const num = (x) => (x === null || x === undefined || x === "" ? null : Number(x));
 const isNum = (x) => typeof x === "number" && Number.isFinite(x);
@@ -76,9 +85,13 @@ const S = {
   drawer: { cmcId: null, batchId: null, returnFocus: null },
   priceRange: "daily",
   detailTab: "review",
+  me: null,
+  started: false,
   lastBatch: null,
 };
 const tz = () => (S.cfg && S.cfg.timezone) || "UTC";
+/** Whether the signed-in user's role has a permission (the server checks it again on every call). */
+const can = (perm) => !!(S.me && S.me.permissions.includes(perm));
 const live = () => !!(S.cfg && S.cfg.isLiveData);
 
 function nf(o) { return new Intl.NumberFormat("en-US", o); }
@@ -599,6 +612,8 @@ const PAGES = {
   batches: ["Runs & health", "Crawl batches, pipeline runs and the source's request budget."],
   exports: ["Exports", "CSV per sheet and an Excel workbook for each scanned batch, with SHA-256 checksums in the manifest."],
   access: ["Telegram", "Who receives the hourly report, and reports that did not arrive."],
+  users: ["Users", "Who can sign in to this dashboard, and what each role may see and do."],
+  account: ["My account", "Your username, your password, and what your role allows."],
 };
 
 function renderHeader() {
@@ -689,7 +704,7 @@ function renderPulse(ov) {
     el("ol", { class: "steps", "aria-label": "Pipeline stages" }, STAGES.map(([s, label]) => el("li", { class: `${done.has(s) ? "done" : ""}${failed.has(s) ? " failed" : ""}${run.currentStage === s ? " active" : ""}`, title: metrics[`${s}Ms`] ? `${label}: ${fmtMs(metrics[`${s}Ms`])}` : label }, el("span", { class: "step-dot", "aria-hidden": "true" }), el("span", { class: "step-name" }, label)))),
     (metrics.degraded || []).length ? el("ul", { class: "notes small" }, metrics.degraded.map((d) => el("li", null, d))) : null,
     run.error ? el("div", { class: "error small" }, run.error) : null,
-    S.cfg.canWrite ? el("div", { class: "row-actions" }, el("button", { type: "button", class: "btn", title: "Recompute the latest stored batch from saved data (no crawling) and export it again", onclick: rescan }, "Reprocess latest batch")) : null));
+    can("scan:operate") ? el("div", { class: "row-actions" }, el("button", { type: "button", class: "btn", title: "Recompute the latest stored batch from saved data (no crawling) and export it again", onclick: rescan }, "Reprocess latest batch")) : null));
 }
 
 async function rescan(e) {
@@ -787,7 +802,7 @@ function renderQuality(ov, sc, c) {
   const lbTones = { VERIFIED: "base", PAIR_LISTED_UNVERIFIED: "warn", NOT_LISTED: "muted", NOT_TRADABLE: "rose", UNKNOWN: "warn" };
   const lbankRows = (rows) => el("div", { class: "quality-stack" }, rows.map((r) => el("div", { class: "q-row" }, el("span", { class: "q-label" }, r.label), stackRows([{ label: "", segs: r.segs }]).firstChild.children[1], el("span", { class: "q-legend" }, r.segs.map((s) => el("span", { class: s.tone }, `${s.label} ${fmtInt(s.value)}`))))));
   const l = S.lbank && S.lbank.list;
-  const lbButton = S.cfg.canWrite ? el("button", { type: "button", class: "btn", title: "Fetch the Markets list of CMC's LBank page now, then recompute the latest batch", onclick: refreshLbank }, "Refresh LBank list now") : null;
+  const lbButton = can("scan:operate") ? el("button", { type: "button", class: "btn", title: "Fetch the Markets list of CMC's LBank page now, then recompute the latest batch", onclick: refreshLbank }, "Refresh LBank list now") : null;
   put($("quality"),
     lbankRows([{ label: "Current quotes", segs: segsOf(c.current, CURRENT, curTones) }, { label: "LBank status", segs: segsOf(c.lbank, LBANK, lbTones) }]),
     el("div", { class: "lbank-line" },
@@ -1056,7 +1071,7 @@ function renderTrace(t) {
     (r.flags.length || r.venueFlags.length) ? el("div", { class: "chips" }, el("span", { class: "muted small" }, "Flags:"), [...r.flags, ...r.venueFlags].map((x) => chip(String(x).replace(/_/g, " ").toLowerCase(), { tone: "warn" }))) : null);
 
   const lb = t.lbank;
-  const canWrite = S.cfg.canWrite;
+  const canWrite = can("review:write");
   const decide = (decision, marketPair) => venueDecision(r, decision, marketPair);
   const lbank = el("section", { class: "panel" },
     el("div", { class: "panel-head" }, el("h3", null, "LBank Spot pairs"), el("span", { class: "hint" }, lb.crawl ? `list ${lb.crawl.status.toLowerCase()}, ${fmtTime(lb.crawl.finishedAt)}` : "no list")),
@@ -1165,7 +1180,6 @@ function renderTrace(t) {
 
 async function venueDecision(r, decision, marketPair) {
   const reviewer = savedReviewer();
-  if (!reviewer) { toast("Enter your name in the review form first: it is recorded with every decision.", "warning"); $("rv-reviewer") && $("rv-reviewer").focus(); return; }
   try {
     await apiPost("venue-decisions", { cmcId: r.cmcId, batchId: r.batchId, marketPair: marketPair || null, decision, reviewer, note: ($("rv-venueNote") && $("rv-venueNote").value) || undefined });
     toast(`${decision.replace(/_/g, " ").toLowerCase()} recorded for ${marketPair || "the coin"}. It applies from the next scan, or now with “Reprocess latest batch”.`);
@@ -1175,12 +1189,8 @@ async function venueDecision(r, decision, marketPair) {
   }
 }
 
-function savedReviewer() {
-  const inp = $("rv-reviewer");
-  const v = inp ? inp.value.trim() : "";
-  if (v) { try { localStorage.setItem("reviewer", v); } catch { /* storage unavailable */ } return v; }
-  try { return localStorage.getItem("reviewer") || ""; } catch { return ""; }
-}
+/** The signed-in user is the reviewer of record (the server sets it from the session, too). */
+const savedReviewer = () => (S.me ? S.me.username : "");
 
 function select(id, options, value, allowEmpty = true) {
   return el("select", { id }, allowEmpty ? el("option", { value: "" }, "—") : null, options.map((o) => el("option", { value: o, selected: o === value }, o)));
@@ -1200,7 +1210,7 @@ function reviewForm(t) {
   const out = el("div", { id: "rv-result", class: "small", "aria-live": "polite" });
   const form = el("form", { class: "review-form", autocomplete: "off" },
     el("fieldset", null, el("legend", null, "Tier 1: venue and event day"),
-      field("Reviewer", input("rv-reviewer", { value: reviewer, required: true, maxlength: 80 })),
+      field("Reviewer", input("rv-reviewer", { value: savedReviewer(), readonly: true, title: "Recorded from your sign-in" })),
       field("Venue decision", select("rv-venueDecision", R.venueDecisions, (last && last.venueDecision) || "PENDING", false)),
       field("Venue note", input("rv-venueNote", { value: (last && last.venueNote) || "", maxlength: 1000, placeholder: "e.g. only Upbit active" })),
       field("Event day", select("rv-eventDay", R.eventDays, (last && last.eventDay) || "UNKNOWN", false), "first or second day of unusual volume, judged from the VMC chart")),
@@ -1227,7 +1237,7 @@ function reviewForm(t) {
       [0, 1, 2].map((i) => [field(`TP${i + 1} price`, input(`rv-tp${i}-price`, { inputmode: "decimal", value: tp(i, "price") })), field(`TP${i + 1} allocation %`, input(`rv-tp${i}-alloc`, { inputmode: "decimal", value: tp(i, "allocationPct") }))]),
       field("Plan notes", el("textarea", { id: "rv-notes", rows: 2, maxlength: 2000 }, plan.notes || "")),
       plan.deadline ? el("div", { class: "small wide" }, `Time exit: ${utc(plan.deadline)}`) : null),
-    el("div", { class: "row-actions" }, el("button", { type: "submit", class: "btn primary", disabled: !S.cfg.canWrite }, last ? "Save new revision" : "Save review"), S.cfg.canWrite ? null : el("span", { class: "error small" }, "Read-only dashboard: set DASHBOARD_BASIC_AUTH or bind to 127.0.0.1.")),
+    el("div", { class: "row-actions" }, el("button", { type: "submit", class: "btn primary", disabled: !can("review:write") }, last ? "Save new revision" : "Save review"), can("review:write") ? null : el("span", { class: "muted small" }, "Your role can read reviews but not record them.")),
     out);
   form.addEventListener("submit", (e) => { e.preventDefault(); void submitReview(t); });
   return el("section", { class: "panel review-panel" },
@@ -1473,7 +1483,7 @@ async function loadAccess() {
   ], missed.rows, { empty: missed.mode === "live" ? "No missed reports in the last 6 hours." : `Telegram is ${missed.mode}: nothing is sent.` }));
   $("missed-retry-all").disabled = !a.canManage || !missed.rows.some((r) => r.state !== "not_queued");
   $("send-latest-all").disabled = !a.canManage || missed.mode !== "live";
-  if (!a.canManage) showAccessNote("error", "Read-only: set DASHBOARD_BASIC_AUTH (or keep HOST on 127.0.0.1) to approve or reject from the dashboard.");
+  if (!a.canManage) showAccessNote("error", "Your role can see but not change Telegram access.");
   else if (a.mode !== "live" || !a.commandsEnabled) showAccessNote("ok", `Telegram is ${a.mode}${a.commandsEnabled ? "" : " and bot commands are off"}: new people can only ask for access when the app runs with TELEGRAM_MODE=live.`);
   else showAccessNote("ok", "");
   const when = { label: "Since", render: (r) => (r.at ? fmtTime(r.at) : "") };
@@ -1482,9 +1492,233 @@ async function loadAccess() {
   put($("access-denied"), table([{ label: "Chat id", render: (r) => r.chatId }, { label: "", render: (r) => act("Allow again", "", () => changeAccess("approve", r.chatId, `Approved ${r.chatId}.`)) }], a.denied.map((chatId) => ({ chatId })), { empty: "Nobody rejected." }));
 }
 
+/* ============================== Sign-in, account and users ============================== */
+
+const ROLE_TEXT = {
+  owner: ["Owner", "Everything, including users and the Telegram audience."],
+  analyzer: ["Analyzer", "Every data page, run health and exports; can reprocess a batch and refresh the LBank list."],
+  reviewer: ["Reviewer", "Market pages and coin details; records reviews and LBank decisions."],
+};
+const PERMISSION_TEXT = {
+  "data:read": "See the overview, lists and coin details",
+  "health:read": "See runs, batches and source health",
+  "exports:read": "Download CSV and Excel exports",
+  "review:write": "Record reviews and LBank decisions",
+  "scan:operate": "Reprocess a batch and refresh the LBank list",
+  "telegram:manage": "Manage Telegram members and re-send reports",
+  "users:manage": "Add, change and remove users",
+};
+
+function showAuth(mode, notice) {
+  document.body.classList.add("signed-out");
+  $("auth").hidden = false;
+  if (!$("drawer").hidden) closeDrawer();
+  if (P.open) closePalette();
+  $("login-form").hidden = mode !== "login";
+  $("change-form").hidden = mode !== "change";
+  if (mode === "login") {
+    $("login-error").textContent = notice || "";
+    $("login-password").value = "";
+    ($("login-username").value ? $("login-password") : $("login-username")).focus();
+  } else {
+    $("change-error").textContent = "";
+    $("cf-username").value = S.me ? S.me.username : "";
+    for (const id of ["cf-current", "cf-new", "cf-repeat"]) $(id).value = "";
+    $("change-lead").textContent = S.me && S.me.username === "owner" && S.me.role === "owner"
+      ? "This is the first sign-in of the owner account. Choose your own username and password to continue."
+      : "Your password is temporary. Choose your own to continue.";
+    $("cf-current").focus();
+  }
+}
+function hideAuth() {
+  document.body.classList.remove("signed-out");
+  $("auth").hidden = true;
+}
+
+/** Name, role and the sections the role may open. */
+function applyUser() {
+  if (!S.me) return;
+  $("user-name").textContent = S.me.username;
+  $("user-role").textContent = ROLE_TEXT[S.me.role][0];
+  $("user-avatar").textContent = S.me.username.slice(0, 1).toUpperCase();
+  for (const t of TABS) $(`t-${t}`).hidden = !tabAllowed(t);
+}
+
+async function signOut() {
+  try { await apiPost("auth/logout", {}); } catch { /* the cookie is cleared or already gone */ }
+  location.replace(location.pathname);
+}
+
+function setBusy(form, busy) {
+  form.querySelectorAll("button, input, select").forEach((x) => { x.disabled = busy; });
+}
+
+/** A small modal form; resolves true after onSubmit succeeds, false when cancelled. */
+function dialog({ title, body, ok = "OK", danger = false, onSubmit }) {
+  const box = $("dialog"), form = $("dialog-form");
+  $("dialog-title").textContent = title;
+  put($("dialog-body"), body);
+  $("dialog-error").textContent = "";
+  const okBtn = $("dialog-ok");
+  okBtn.textContent = ok;
+  okBtn.className = `btn ${danger ? "danger solid" : "primary"}`;
+  box.hidden = false;
+  const first = form.querySelector("input, select");
+  (first || okBtn).focus();
+  return new Promise((resolve) => {
+    const close = (v) => { box.hidden = true; form.onsubmit = null; $("dialog-cancel").onclick = null; box.onkeydown = null; resolve(v); };
+    $("dialog-cancel").onclick = () => close(false);
+    box.onkeydown = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(false); } };
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      setBusy(form, true);
+      try { await onSubmit(); close(true); } catch (err) { $("dialog-error").textContent = err.message; } finally { setBusy(form, false); }
+    };
+  });
+}
+
+async function loadUsers() {
+  const users = await api("users");
+  $("users-meta").textContent = `${users.length} ${users.length === 1 ? "person" : "people"}`;
+  const status = (u) => (!u.isActive ? statusLabel("", "Disabled") : u.lockedUntil ? statusLabel("critical", `Locked until ${fmtClock(u.lockedUntil)}`) : u.mustChangePassword ? statusLabel("warning", "Must set password") : statusLabel("good", "Active"));
+  put($("users-table"), table([
+    { label: "User", render: (u) => el("div", { class: "coin" }, el("span", { class: `avatar ${u.role}`, "aria-hidden": "true" }, u.username.slice(0, 1).toUpperCase()), el("div", { class: "coin-text" }, el("b", null, u.username, u.id === S.me.id ? el("span", { class: "chip you" }, "you") : null), el("span", null, `added ${fmtTime(u.createdAt, { year: true })}`))) },
+    { label: "Role", render: (u) => {
+      const sel = el("select", { "aria-label": `Role of ${u.username}`, disabled: u.id === S.me.id }, Object.entries(ROLE_TEXT).map(([k, [label]]) => el("option", { value: k, selected: k === u.role }, label)));
+      sel.addEventListener("change", async () => {
+        try { await apiPatch(`users/${u.id}`, { role: sel.value }); toast(`${u.username} is now ${ROLE_TEXT[sel.value][0].toLowerCase()}. Their sessions were ended.`); }
+        catch (e) { toast(e.message, "error"); }
+        await loadUsers();
+      });
+      return sel;
+    } },
+    { label: "Status", render: status },
+    { label: "Last sign-in", render: (u) => (u.lastLoginAt ? fmtAgo(u.lastLoginAt) : el("span", { class: "muted" }, "never")) },
+    { label: "", render: (u) => el("div", { class: "row-actions" },
+      el("button", { type: "button", class: "btn small", onclick: () => resetPasswordDialog(u) }, "Reset password"),
+      u.id === S.me.id ? null : el("button", { type: "button", class: "btn small", onclick: () => toggleActive(u) }, u.isActive ? "Disable" : "Enable"),
+      u.id === S.me.id ? null : el("button", { type: "button", class: "btn small danger", onclick: () => deleteUserDialog(u) }, "Delete")) },
+  ], users, { empty: "No users." }));
+  put($("role-matrix"), el("div", { class: "role-matrix" }, Object.entries(ROLE_TEXT).map(([k, [label, text]]) => el("div", { class: "role-row" }, el("span", { class: `avatar ${k}`, "aria-hidden": "true" }, label.slice(0, 1)), el("div", null, el("b", null, label), el("p", { class: "muted small" }, text))))));
+}
+
+async function toggleActive(u) {
+  try {
+    await apiPatch(`users/${u.id}`, { isActive: !u.isActive });
+    toast(u.isActive ? `${u.username} is disabled and signed out.` : `${u.username} can sign in again.`);
+  } catch (e) { toast(e.message, "error"); }
+  await loadUsers();
+}
+
+function resetPasswordDialog(u) {
+  const pw = el("input", { type: "password", required: true, minlength: 8, maxlength: 128, autocomplete: "new-password" });
+  return dialog({
+    title: `Reset ${u.username}'s password`,
+    body: [el("p", { class: "muted small" }, "Give them this temporary password. They choose their own at the next sign-in, and every session they have now ends."), el("label", { class: "field" }, el("span", null, "Temporary password"), pw)],
+    ok: "Reset password",
+    onSubmit: async () => { await apiPost(`users/${u.id}/password`, { password: pw.value }); toast(`Password reset for ${u.username}.`); },
+  }).then((done) => done && loadUsers());
+}
+
+function deleteUserDialog(u) {
+  return dialog({
+    title: `Delete ${u.username}?`,
+    body: el("p", null, "They can no longer sign in. Reviews they recorded keep their name. To pause access instead, disable the account."),
+    ok: "Delete user",
+    danger: true,
+    onSubmit: async () => { await apiDelete(`users/${u.id}`); toast(`Deleted ${u.username}.`); },
+  }).then((done) => done && loadUsers());
+}
+
+function renderAccount() {
+  if (!S.me) return;
+  $("ac-username").value = S.me.username;
+  for (const id of ["ac-new", "ac-repeat", "ac-current"]) $(id).value = "";
+  $("account-meta").textContent = `password changed ${fmtAgo(S.me.passwordChangedAt)}`;
+  const [label, text] = ROLE_TEXT[S.me.role];
+  put($("account-access"),
+    el("div", { class: "role-row" }, el("span", { class: `avatar ${S.me.role}`, "aria-hidden": "true" }, S.me.username.slice(0, 1).toUpperCase()), el("div", null, el("b", null, label), el("p", { class: "muted small" }, text))),
+    el("ul", { class: "perm-list" }, Object.entries(PERMISSION_TEXT).map(([perm, t]) => el("li", { class: S.me.permissions.includes(perm) ? "yes" : "no" }, el("span", { class: "perm-mark", "aria-hidden": "true" }, S.me.permissions.includes(perm) ? "✓" : "–"), el("span", null, t), el("span", { class: "sr-only" }, S.me.permissions.includes(perm) ? "allowed" : "not allowed")))));
+}
+
+/** Change own username and/or password; `form` ids differ between the account page and the first-sign-in form. */
+async function saveAccount({ username, current, next, repeat, errorBox }) {
+  if (next !== repeat) throw new Error("The new passwords don't match.");
+  const body = { currentPassword: current };
+  if (username && username.toLowerCase() !== S.me.username) body.username = username;
+  if (next) body.newPassword = next;
+  if (!body.username && !body.newPassword) throw new Error("Change the username or the password first.");
+  if (errorBox) errorBox.textContent = "";
+  S.me = (await apiPost("auth/account", body)).user;
+  return body;
+}
+
+function wireAccounts() {
+  $("login-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    setBusy(form, true);
+    $("login-error").textContent = "";
+    try {
+      S.me = (await apiPost("auth/login", { username: $("login-username").value, password: $("login-password").value })).user;
+      if (S.me.mustChangePassword) showAuth("change");
+      else await enterApp();
+    } catch (err) {
+      $("login-error").textContent = err.message;
+      $("login-password").value = "";
+      $("login-password").focus();
+    } finally { setBusy(form, false); }
+  });
+  $("change-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    setBusy(form, true);
+    try {
+      await saveAccount({ username: $("cf-username").value.trim(), current: $("cf-current").value, next: $("cf-new").value, repeat: $("cf-repeat").value, errorBox: $("change-error") });
+      toast("Saved. Welcome in.");
+      await enterApp();
+    } catch (err) { $("change-error").textContent = err.message; } finally { setBusy(form, false); }
+  });
+  $("change-sign-out").addEventListener("click", () => void signOut());
+  $("account-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    setBusy(form, true);
+    try {
+      const changed = await saveAccount({ username: $("ac-username").value.trim(), current: $("ac-current").value, next: $("ac-new").value, repeat: $("ac-repeat").value });
+      applyUser();
+      renderAccount();
+      toast(changed.newPassword ? "Saved. Your other sessions were signed out." : "Saved.");
+    } catch (err) { toast(err.message, "error"); } finally { setBusy(form, false); }
+  });
+  $("user-add").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    setBusy(form, true);
+    try {
+      const u = await apiPost("users", { username: $("ua-username").value.trim(), role: $("ua-role").value, password: $("ua-password").value });
+      toast(`Added ${u.username}. Share the temporary password with them privately.`);
+      form.reset();
+      await loadUsers();
+    } catch (err) { toast(err.message, "error"); } finally { setBusy(form, false); }
+  });
+  put($("ua-role"), Object.entries(ROLE_TEXT).map(([k, [label]]) => el("option", { value: k, selected: k === "reviewer" }, label)));
+  const pop = $("user-pop"), chip = $("user-chip");
+  const setPop = (open) => { pop.hidden = !open; chip.setAttribute("aria-expanded", String(open)); };
+  chip.addEventListener("click", (e) => { e.stopPropagation(); setPop(pop.hidden); });
+  document.addEventListener("click", (e) => { if (!pop.hidden && !e.target.closest(".user-menu")) setPop(false); });
+  pop.addEventListener("click", () => setPop(false));
+  pop.addEventListener("keydown", (e) => { if (e.key === "Escape") { setPop(false); chip.focus(); } });
+  $("sign-out").addEventListener("click", () => void signOut());
+}
+
 /* ============================== Router & refresh ============================== */
 
-const TABS = ["overview", "queue", "eligible", "needs_review", "excluded", "batches", "exports", "access"];
+const TABS = ["overview", "queue", "eligible", "needs_review", "excluded", "batches", "exports", "access", "users", "account"];
+/** The permission each section needs (the rest need data:read, which every role has). */
+const TAB_PERMISSION = { batches: "health:read", exports: "exports:read", access: "telegram:manage", users: "users:manage" };
+const tabAllowed = (t) => t === "account" || !TAB_PERMISSION[t] || can(TAB_PERMISSION[t]);
+const visibleTabs = () => TABS.filter(tabAllowed);
 const SHEETS = ["queue", "eligible", "needs_review", "excluded"];
 const showError = (where) => (e) => {
   console.error(e);
@@ -1497,10 +1731,12 @@ async function loadTab(tab) {
   else if (tab === "batches") await loadBatches().catch(showError("batches"));
   else if (tab === "exports") await loadExports().catch(showError("exports"));
   else if (tab === "access") await loadAccess().catch(showError("access-pending"));
+  else if (tab === "users") await loadUsers().catch(showError("users-table"));
+  else if (tab === "account") renderAccount();
 }
 
 function selectTab(tab, push = true) {
-  if (!TABS.includes(tab)) tab = "overview";
+  if (!TABS.includes(tab) || !tabAllowed(tab)) tab = "overview";
   S.tab = tab;
   for (const t of TABS) {
     $(`tab-${t}`).hidden = t !== tab;
@@ -1524,7 +1760,7 @@ async function refresh(force = false) {
   const batch = ov.scan ? ov.scan.batchId : null;
   if (force || batch !== S.lastBatch) {
     S.lastBatch = batch;
-    if (S.tab !== "overview" && S.tab !== "access") await loadTab(S.tab);
+    if (!["overview", "access", "users", "account"].includes(S.tab)) await loadTab(S.tab);
   }
 }
 
@@ -1567,7 +1803,8 @@ function wire() {
     const dir = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key];
     if (!dir) return;
     e.preventDefault();
-    const next = TABS[(TABS.indexOf(S.tab) + dir + TABS.length) % TABS.length];
+    const tabs = visibleTabs();
+    const next = tabs[(tabs.indexOf(S.tab) + dir + tabs.length) % tabs.length];
     selectTab(next);
     $(`t-${next}`).focus();
   });
@@ -1611,19 +1848,40 @@ function wire() {
 async function start() {
   initTheme();
   wire();
+  wireAccounts();
+  try {
+    S.me = (await api("auth/me")).user;
+  } catch (e) {
+    if (e.code === "AUTH_REQUIRED") return showAuth("login");
+    if (e.code === "PASSWORD_CHANGE_REQUIRED") return showAuth("change");
+    $("banner").hidden = false;
+    $("banner").textContent = `The dashboard could not load: ${e.message}. Check that the app is running, then reload.`;
+    return;
+  }
+  if (S.me.mustChangePassword) return showAuth("change");
+  await enterApp();
+}
+
+/** After sign-in: load the data the role may see, then start the refresh timers (once). */
+async function enterApp() {
+  hideAuth();
+  applyUser();
   try {
     S.cfg = await api("config");
     renderHeader();
     await refresh(true);
-    void api("telegram/access").then((a) => { $("count-access").textContent = fmtInt(a.pending.length + (a.missingCount || 0)); }).catch(() => undefined);
+    if (can("telegram:manage")) void api("telegram/access").then((a) => { $("count-access").textContent = fmtInt(a.pending.length + (a.missingCount || 0)); }).catch(() => undefined);
   } catch (e) {
+    if (!$("auth").hidden) return;
     $("banner").hidden = false;
     $("banner").textContent = `The dashboard could not load: ${e.message}. Check that the app is running, then reload.`;
   }
   selectTab(location.hash.slice(1) || "overview", false);
   const coin = Number(new URL(location.href).searchParams.get("coin"));
   if (S.cfg && Number.isInteger(coin) && coin > 0) void openAsset(coin, null, null);
-  setInterval(() => { void refresh().then(watchRun).catch((e) => toast(`Could not reach the API: ${e.message}`, "error")); }, 30_000);
+  if (S.started) return;
+  S.started = true;
+  setInterval(() => { if (!$("auth").hidden) return; void refresh().then(watchRun).catch((e) => { if ($("auth").hidden) toast(`Could not reach the API: ${e.message}`, "error"); }); }, 30_000);
   watchRun();
   setInterval(tickCountdowns, 1_000);
 }

@@ -8,7 +8,7 @@ export const SECRET_KEYS = [
   'COINGECKO_API_KEY',
   'MCP_READ_TOKEN',
   'MCP_WRITE_TOKEN',
-  'DASHBOARD_BASIC_AUTH',
+  'INITIAL_OWNER_PASSWORD',
   'POSTGRES_PASSWORD',
 ] as const;
 
@@ -136,7 +136,14 @@ const schema = z
     MCP_HTTP_ENABLED: bool.default(true),
     MCP_READ_TOKEN: optionalSecret,
     MCP_WRITE_TOKEN: optionalSecret,
-    DASHBOARD_BASIC_AUTH: optionalSecret,
+    /** Dashboard sign-in: a session lasts this long after its last use. */
+    SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(720).default(12),
+    /** Secure flag of the session cookie: auto = only when the request arrived over HTTPS. */
+    COOKIE_SECURE: z.enum(['auto', 'true', 'false']).default('auto'),
+    /** Express "trust proxy" behind a reverse proxy (e.g. loopback, 1): correct client IP and HTTPS detection. */
+    TRUST_PROXY: z.string().trim().optional(),
+    /** Password for the bootstrap owner created on an empty database (default "owner", must be changed at first sign-in). */
+    INITIAL_OWNER_PASSWORD: optionalSecret,
   })
   .superRefine((c, ctx) => {
     if (!c.DATABASE_URL) {
@@ -170,11 +177,12 @@ const schema = z
           'DATA_SOURCE=coinmarketcap requires CMC_API_KEY (free Basic key from CoinMarketCap)',
       });
     }
-    if (!isLoopback(c.HOST) && !c.DASHBOARD_BASIC_AUTH) {
+    if (c.INITIAL_OWNER_PASSWORD && c.INITIAL_OWNER_PASSWORD.length < 8) {
       ctx.addIssue({
         code: 'custom',
-        path: ['DASHBOARD_BASIC_AUTH'],
-        message: 'Binding to a non-loopback HOST requires DASHBOARD_BASIC_AUTH',
+        path: ['INITIAL_OWNER_PASSWORD'],
+        message:
+          'must be at least 8 characters (leave it unset to use the default, which must be changed at first sign-in)',
       });
     }
     if (c.LBANK_PAIRS_MAX_AGE_DAYS < c.LBANK_PAIRS_REFRESH_DAYS) {

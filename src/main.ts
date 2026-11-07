@@ -9,7 +9,6 @@ import { resolve } from 'node:path';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter.js';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor.js';
 import { RedactingLogger } from './common/logging/redacting.logger.js';
-import { basicAuth } from './common/security/basic-auth.middleware.js';
 import { redact } from './common/security/redact.js';
 import { securityHeaders } from './common/security/security-headers.middleware.js';
 
@@ -52,7 +51,13 @@ async function main() {
   app.useLogger(logger);
   app.disable('x-powered-by');
   app.use(securityHeaders);
-  app.use(basicAuth(cfg.DASHBOARD_BASIC_AUTH));
+  // Behind a reverse proxy (nginx, Caddy): real client IPs and HTTPS detection for the session cookie.
+  if (cfg.TRUST_PROXY)
+    app.set(
+      'trust proxy',
+      /^\d+$/.test(cfg.TRUST_PROXY) ? Number(cfg.TRUST_PROXY) : cfg.TRUST_PROXY,
+    );
+  // Dashboard sign-in and permissions: AuthGuard (modules/auth), registered by the dashboard module.
   // JSON API: `/api/*`, every response `{ data, errors }` (see common/dto/api-response.dto.ts).
   app.setGlobalPrefix('api', { exclude: GLOBAL_PREFIX_EXCLUDES });
   app.useGlobalFilters(new AllExceptionsFilter());

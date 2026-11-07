@@ -3,27 +3,19 @@ import type { Request } from 'express';
 
 import { ErrorCodes } from '../dto/error-codes.js';
 
-export const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1']);
-
 const forbidden = (message: string) =>
   new ForbiddenException({ message, code: ErrorCodes.WRITE_FORBIDDEN });
 
 /**
- * Guard for the few endpoints that change state. A page on another website must not be able to
- * trigger them through the operator's browser, and an unauthenticated dashboard reachable from the
- * network must not accept them at all.
+ * Every state-changing dashboard request (checked by the auth guard): a page on another website
+ * must not be able to trigger it through a signed-in browser. JSON is not a CORS-simple type, so
+ * browsers preflight (and block) cross-site calls; the Origin and Fetch Metadata headers, when
+ * present, must name this same site. The session cookie is also SameSite=Strict.
  */
-export function assertTrustedWrite(
-  req: Pick<Request, 'is' | 'headers'>,
-  cfg: { HOST: string; DASHBOARD_BASIC_AUTH?: string },
-) {
-  if (!cfg.DASHBOARD_BASIC_AUTH && !LOOPBACK.has(cfg.HOST)) {
-    throw forbidden(
-      'Changing access from the dashboard needs DASHBOARD_BASIC_AUTH when HOST is not loopback.',
-    );
-  }
-  // application/json is not a CORS-simple type, so browsers preflight (and block) cross-site calls.
+export function assertTrustedWrite(req: Pick<Request, 'is' | 'headers'>) {
   if (!req.is('application/json')) throw forbidden('JSON requests only.');
+  if (req.headers['sec-fetch-site'] === 'cross-site')
+    throw forbidden('Cross-site request refused.');
   const origin = req.headers.origin;
   if (origin) {
     let host: string | null = null;
@@ -35,7 +27,3 @@ export function assertTrustedWrite(
     if (host !== req.headers.host) throw forbidden('Cross-origin request refused.');
   }
 }
-
-/** Whether the dashboard may write at all with this configuration (shown to the UI). */
-export const canWrite = (cfg: { HOST: string; DASHBOARD_BASIC_AUTH?: string }) =>
-  !!cfg.DASHBOARD_BASIC_AUTH || LOOPBACK.has(cfg.HOST);

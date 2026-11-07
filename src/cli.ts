@@ -15,6 +15,8 @@ import { loadConfigOrExit } from './config/load-config.js';
 
 import { buildDataSourceOptions } from './database/typeorm-options.js';
 
+import { USER_ROLES, type UserRole } from './modules/auth/permissions.js';
+import { BOOTSTRAP_OWNER, UserError, UsersService } from './modules/auth/users.service.js';
 import { parseCmcHistoryCsv } from './modules/daily-metrics/csv-import.js';
 import { DailyMetricsService } from './modules/daily-metrics/daily-metrics.service.js';
 import { IngestionService } from './modules/ingestion/ingestion.service.js';
@@ -58,6 +60,15 @@ const HELP = `Coins Predicts CLI — Two-Tier VMC strategy (docs/strategy-two-ti
   telegram:test [--sample]     Verify bot token + chat and send one test message
   telegram:deliver             Send pending live Telegram deliveries
   source:reset [--provider ID] Clear a suspended/open circuit breaker after you resolved the cause
+
+  Dashboard users (passwords are asked at a hidden prompt, or read from stdin when piped)
+  users:list                   Usernames, roles, status and last sign-in
+  users:add --username U --role owner|analyzer|reviewer
+                               Add a user with a temporary password (changed at first sign-in)
+  users:password --username U [--keep]
+                               Set a new password and unlock the account (--keep: no forced change)
+  users:reset-owner            Recovery: make "owner" an active owner with password "owner"
+                               (changed at first sign-in), unlocked, all its sessions ended
 `;
 
 function arg(name: string): string | undefined {
@@ -271,6 +282,50 @@ async function main() {
         out(`circuit reset for ${provider}`);
         break;
       }
+      case 'users:list': {
+        const users = await ctx.get(UsersService).list();
+        if (!users.length)
+          out('No users yet. The web server creates "owner" on start, or run users:reset-owner.');
+        for (const u of users)
+          out(
+            `${u.username.padEnd(20)} ${u.role.padEnd(9)} ${u.isActive ? (u.lockedUntil ? 'locked' : 'active') : 'disabled'}${u.mustChangePassword ? ', must change password' : ''}  last sign-in ${u.lastLoginAt ?? 'never'}`,
+          );
+        break;
+      }
+      case 'users:add': {
+        const username = arg('--username');
+        const role = arg('--role') as UserRole | undefined;
+        if (!username || !role || !USER_ROLES.includes(role))
+          throw new Error(`usage: users:add --username U --role ${USER_ROLES.join('|')}`);
+        const password = await readSecret(`Temporary password for ${username}: `);
+        const u = await ctx
+          .get(UsersService)
+          .create({ username, role, password })
+          .catch(cliUserError);
+        out(`added ${u.username} (${u.role}); they choose their own password at first sign-in`);
+        break;
+      }
+      case 'users:password': {
+        const username = arg('--username');
+        if (!username) throw new Error('usage: users:password --username U [--keep]');
+        const users = ctx.get(UsersService);
+        const u = await users.findByUsername(username);
+        if (!u) throw new Error(`no user named ${username}`);
+        const password = await readSecret(`New password for ${u.username}: `);
+        const keep = process.argv.includes('--keep');
+        await users.resetPassword(u.id, password, { temporary: !keep }).catch(cliUserError);
+        out(
+          `password set for ${u.username}, account unlocked, sessions ended${keep ? '' : '; it must be changed at next sign-in'}`,
+        );
+        break;
+      }
+      case 'users:reset-owner': {
+        const u = await ctx.get(UsersService).resetOwner();
+        out(
+          `"${u.username}" is an active owner with password "${BOOTSTRAP_OWNER.password}". Sign in and choose a new password: the dashboard asks for it first.`,
+        );
+        break;
+      }
       default:
         process.stdout.write(HELP);
         process.exitCode = 2;
@@ -278,6 +333,51 @@ async function main() {
   } finally {
     await ctx.close();
   }
+}
+
+/** A refused user change as a plain CLI error (its message is written for people). */
+function cliUserError(err: unknown): never {
+  throw err instanceof UserError ? new Error(err.message) : err;
+}
+
+/**
+ * A password from a hidden prompt on a terminal, or the first line of stdin when piped
+ * (`printf %s "$PASS" | npm run cli -- users:add …`). Never taken from argv, which shell history keeps.
+ */
+async function readSecret(prompt: string): Promise<string> {
+  const stdin = process.stdin;
+  if (!stdin.isTTY) {
+    let data = '';
+    for await (const chunk of stdin) data += String(chunk);
+    const line = data.split(/\r?\n/)[0] ?? '';
+    if (!line) throw new Error('no password on stdin');
+    return line;
+  }
+  process.stdout.write(prompt);
+  return new Promise((resolve, reject) => {
+    let value = '';
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding('utf8');
+    const done = (err?: Error) => {
+      stdin.setRawMode(false);
+      stdin.pause();
+      stdin.off('data', onData);
+      process.stdout.write('\n');
+      if (err) reject(err);
+      else resolve(value);
+    };
+    const onData = (ch: string) => {
+      for (const c of ch) {
+        if (c === '\r' || c === '\n')
+          return done(value ? undefined : new Error('no password entered'));
+        if (c === '\u0003') return done(new Error('cancelled'));
+        if (c === '\u007f' || c === '\b') value = value.slice(0, -1);
+        else value += c;
+      }
+    };
+    stdin.on('data', onData);
+  });
 }
 
 /**

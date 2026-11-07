@@ -5,6 +5,7 @@ import { type AppConfig, AppConfigModule } from './config/index.js';
 
 import { DatabaseModule } from './database/database.module.js';
 
+import { AuthModule } from './modules/auth/auth.module.js';
 import { DashboardModule } from './modules/dashboard/dashboard.module.js';
 import { McpModule } from './modules/mcp/mcp.module.js';
 import { PipelineModule } from './modules/pipeline/pipeline.module.js';
@@ -35,6 +36,7 @@ export class AppModule {
         ReviewsModule,
         ReadModelModule,
         McpModule,
+        AuthModule,
         ...(opts.http ? [HealthModule, DashboardModule, TelegramBotModule] : []),
       ],
     };

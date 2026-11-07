@@ -1,10 +1,8 @@
-import { Controller, Get, Inject, Post, Req } from '@nestjs/common';
-import type { Request } from 'express';
-
-import { assertTrustedWrite } from '../../common/security/write-guard.js';
+import { Controller, Get, Inject, Post } from '@nestjs/common';
 
 import { APP_CONFIG, type AppConfig } from '../../config/index.js';
 
+import { RequirePermission } from '../auth/auth.guard.js';
 import { PipelineService } from '../pipeline/pipeline.service.js';
 import { VenuesService } from '../venues/venues.service.js';
 
@@ -29,9 +27,9 @@ export class LbankController {
   }
 
   /** Fetch the list now, then recompute and re-export the latest batch. */
+  @RequirePermission('scan:operate')
   @Post('refresh')
-  async refresh(@Req() req: Request) {
-    assertTrustedWrite(req, this.cfg);
+  async refresh() {
     const r = await this.pipeline.refreshLbankPairs();
     if ('skipped' in r) return { ok: false, reason: r.skipped };
     return {

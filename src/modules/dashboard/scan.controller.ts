@@ -1,11 +1,10 @@
-import { Body, Controller, Get, Inject, Post, Query, Req } from '@nestjs/common';
-import type { Request } from 'express';
+import { Body, Controller, Get, Inject, Post, Query } from '@nestjs/common';
 
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
-import { assertTrustedWrite } from '../../common/security/write-guard.js';
 
 import { APP_CONFIG, type AppConfig } from '../../config/index.js';
 
+import { RequirePermission } from '../auth/auth.guard.js';
 import { PipelineService } from '../pipeline/pipeline.service.js';
 import { ReadModelService } from '../read-model/read-model.service.js';
 
@@ -33,12 +32,9 @@ export class ScanController {
   }
 
   /** Recompute a stored batch (default: the latest) and re-export it; never crawls. */
+  @RequirePermission('scan:operate')
   @Post('rescan')
-  async rescan(
-    @Body(new ZodValidationPipe(OptionalBatchSchema)) body: OptionalBatchDto,
-    @Req() req: Request,
-  ) {
-    assertTrustedWrite(req, this.cfg);
+  async rescan(@Body(new ZodValidationPipe(OptionalBatchSchema)) body: OptionalBatchDto) {
     const r = await this.pipeline.reprocess(body.batchId);
     if (r.skipped) return { ok: false, reason: r.skipped };
     return {

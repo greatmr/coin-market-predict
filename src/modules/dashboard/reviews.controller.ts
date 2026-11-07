@@ -8,16 +8,14 @@ import {
   Param,
   Post,
   Query,
-  Req,
 } from '@nestjs/common';
-import type { Request } from 'express';
 
 import { ErrorCodes } from '../../common/dto/error-codes.js';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
-import { assertTrustedWrite } from '../../common/security/write-guard.js';
 
 import { APP_CONFIG, type AppConfig } from '../../config/index.js';
 
+import { type AuthContext, CurrentAuth, RequirePermission } from '../auth/auth.guard.js';
 import { ReadModelService } from '../read-model/read-model.service.js';
 import { type CreateReviewDto, CreateReviewSchema } from '../reviews/dto/create-review.dto.js';
 import { type VenueDecisionDto, VenueDecisionSchema } from '../reviews/dto/venue-decision.dto.js';
@@ -71,23 +69,26 @@ export class ReviewsController {
   }
 
   /** Append a review revision (Tier 1 venue/event-day decision and/or Tier 2 chart review + trade plan). */
+  @RequirePermission('review:write')
   @Post('reviews')
   create(
     @Body(new ZodValidationPipe(CreateReviewSchema)) body: CreateReviewDto,
-    @Req() req: Request,
+    @CurrentAuth() a: AuthContext,
   ) {
-    assertTrustedWrite(req, this.cfg);
-    return this.guarded(() => this.reviews.create(body));
+    // The signed-in user is the reviewer of record, whatever name the form sent.
+    return this.guarded(() => this.reviews.create({ ...body, reviewer: a.user.username }));
   }
 
   /** Append an LBank venue decision (tradability verification or mapping evidence). */
+  @RequirePermission('review:write')
   @Post('venue-decisions')
   venueDecision(
     @Body(new ZodValidationPipe(VenueDecisionSchema)) body: VenueDecisionDto,
-    @Req() req: Request,
+    @CurrentAuth() a: AuthContext,
   ) {
-    assertTrustedWrite(req, this.cfg);
-    return this.guarded(() => this.reviews.decideVenue(body, this.cfg.DATA_SOURCE));
+    return this.guarded(() =>
+      this.reviews.decideVenue({ ...body, reviewer: a.user.username }, this.cfg.DATA_SOURCE),
+    );
   }
 
   @Get('mapping-tasks')

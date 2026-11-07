@@ -31,6 +31,11 @@ never real orders. Spec: `docs/strategy-two-tier-vmc.md`. Purpose and open decis
   is the only live source with daily rows and LBank pairs (no website scraping beyond its JSON
   routes — see `docs/source-feasibility.md`).
 - Reviews and LBank decisions are append-only; reviewer decisions never change stored source data.
+- **Dashboard users** (`src/modules/auth/`, `docs/adr/0003-dashboard-users.md`): owner / analyzer /
+  reviewer. Every `/api` route needs a session and the route's permission (`AuthGuard`, default
+  `data:read`); give any new route that is not plain market data a `@RequirePermission(...)`. The
+  role table is `modules/auth/permissions.ts`. Never weaken the last-active-owner rules in
+  `UsersService`. An empty database gets `owner` / `owner` (must change) on server start.
 - No LLM agents run in production (retired 2026-11-05; see `docs/architecture.md`).
 
 ## Commands
@@ -40,7 +45,8 @@ docker compose up -d postgres           # DB on 127.0.0.1:5433
 npm run db:migrate                      # build + apply committed migrations (db:status lists them)
 npm run cli -- run-once                 # one pipeline run (fixture source by default)
 npm run cli -- tier1:trace --id 990001  # calculation trace for one coin
-npm start                               # dashboard http://127.0.0.1:3000 + scheduler
+npm start                               # dashboard http://127.0.0.1:3000 + scheduler (sign in: owner / owner first)
+npm run cli -- users:reset-owner        # recover the owner sign-in (owner / owner, must change)
 npm test                                # unit specs, src/**/*.spec.ts (no DB, no network)
 npm run test:e2e                        # DB tests, test/**/*.e2e-spec.ts (coins_test; alias test:db)
 npm run lint && npm run format:check    # ESLint (incl. strategy boundary) + Prettier

@@ -121,7 +121,7 @@ RUN_LIVE_SOURCE=1 npm run test:live   # one page from CMC/CoinGecko APIs if keys
 ## Docker
 ```bash
 # Database only (host-based NestJS): see Setup.
-# Full stack in containers (needs DASHBOARD_BASIC_AUTH in .env because the app binds 0.0.0.0):
+# Full stack in containers (the app binds 0.0.0.0; every page needs a sign-in):
 mkdir -p secrets && touch secrets/telegram_bot_token
 docker compose --profile app up -d --build
 ```

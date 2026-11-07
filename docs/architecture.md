@@ -45,6 +45,7 @@ Layout and database conventions follow the operator's standard NestJS + TypeORM 
 | `modules/reviews/` | Append-only Tier 1 / Tier 2 reviews and LBank decisions, validated by the strategy's Tier 2 rules |
 | `modules/pipeline/` | Orchestrator, DB lease, scheduler, restart recovery, storage retention |
 | `modules/telegram/` | Hourly summary formatting and delivery (dedupe, retries), bot commands, access control |
+| `modules/auth/` | Dashboard users (owner / analyzer / reviewer), scrypt passwords, sessions, the role → permission table and the `/api` guard ([ADR-0003](adr/0003-dashboard-users.md)) |
 | `modules/read-model/` | Read-only queries shared by dashboard, MCP and Telegram (sheets, calculation traces, batches, exports) |
 | `modules/dashboard/` | The REST controllers and DTOs behind `/api/*` — the only module with HTTP routes besides `health` and `mcp` |
 | `modules/mcp/` | Read-only MCP tools over HTTP (bearer token) and stdio |
@@ -167,10 +168,11 @@ decision in `intend.md`: confirm the data provider's terms.
 ## MCP vs dashboard boundary
 - **Dashboard → REST** (`/api/*`) reading `ReadModelService`. Responses are
   `{ data, errors }`; an error carries a stable `code` (`common/dto/error-codes.ts`) and every
-  body, query and path parameter is validated with Zod (400 `VALIDATION_FAILED`). Review and LBank
-  decision writes are accepted only on a loopback bind or with `DASHBOARD_BASIC_AUTH`
-  (403 `WRITE_FORBIDDEN`). Export downloads are plain files; `GET /healthz` is a liveness probe
-  outside `/api`.
+  body, query and path parameter is validated with Zod (400 `VALIDATION_FAILED`). Every `/api`
+  route needs a signed-in user (401 `AUTH_REQUIRED`) whose role has the route's permission (403
+  `PERMISSION_DENIED`; `modules/auth/permissions.ts`); writes must also be same-origin JSON (403
+  `WRITE_FORBIDDEN`). Export downloads are plain files; `GET /healthz` is a liveness probe outside
+  `/api`.
 - **External hosts → `/mcp`** (Streamable HTTP, stateless, bearer token, DNS-rebinding
   protection on loopback) or **stdio** (`npm run mcp:stdio`). Tools: `get_scan_summary`,
   `get_scan_results`, `get_asset_trace`, `list_batches`, `get_mapping_tasks`, `get_coverage`,

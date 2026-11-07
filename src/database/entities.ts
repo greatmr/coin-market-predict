@@ -1,4 +1,6 @@
 import { AppState } from '../modules/app-state/entities/app-state.entity.js';
+import { AppUser } from '../modules/auth/entities/app-user.entity.js';
+import { UserSession } from '../modules/auth/entities/user-session.entity.js';
 import { DailyFetchState } from '../modules/daily-metrics/entities/daily-fetch-state.entity.js';
 import { DailyMetricRevision } from '../modules/daily-metrics/entities/daily-metric-revision.entity.js';
 import { DailyMetric } from '../modules/daily-metrics/entities/daily-metric.entity.js';
@@ -38,6 +40,9 @@ export const ENTITIES = [
   PipelineRun,
   PipelineStage,
   TelegramDelivery,
+  // dashboard users
+  AppUser,
+  UserSession,
   // market data (ingestion)
   Asset,
   AssetIdentity,

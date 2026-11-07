@@ -1,14 +1,13 @@
 import { Controller, Get, Inject } from '@nestjs/common';
 
-import { canWrite } from '../../common/security/write-guard.js';
-
 import { APP_CONFIG, type AppConfig } from '../../config/index.js';
 
+import { RequirePermission } from '../auth/auth.guard.js';
 import { nextCronRun } from '../pipeline/progress.js';
 import { ReadModelService } from '../read-model/read-model.service.js';
 import { StrategyService } from '../strategy/index.js';
 
-/** Configuration, overview and operational history for the dashboard (read-only). */
+/** Configuration, overview and operational history for the dashboard (read-only; history needs health:read). */
 @Controller()
 export class DashboardController {
   constructor(
@@ -36,7 +35,6 @@ export class DashboardController {
         detailDays: this.cfg.RETENTION_DETAIL_DAYS,
         exportDays: this.cfg.EXPORT_RETENTION_DAYS,
       },
-      canWrite: canWrite(this.cfg),
     };
   }
 
@@ -45,22 +43,26 @@ export class DashboardController {
     return this.read.overview();
   }
 
+  @RequirePermission('health:read')
   @Get('batches')
   batches() {
     return this.read.batches(48);
   }
 
+  @RequirePermission('health:read')
   @Get('health')
   async health() {
     const [coverage, runs] = await Promise.all([this.read.coverage(), this.read.runs(24)]);
     return { coverage, runs };
   }
 
+  @RequirePermission('health:read')
   @Get('runs')
   runs() {
     return this.read.runs(48);
   }
 
+  @RequirePermission('telegram:manage')
   @Get('deliveries')
   deliveries() {
     return this.read.deliveries(20);

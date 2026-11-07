@@ -101,8 +101,46 @@ of tappable choices.
    time exit are derived; an incomplete plan is saved as `INCOMPLETE`, never as ready.
 
 Every save is a new revision (append-only), tied to the batch and the Tier 1 values it was made
-against; *Export* on a revision returns it as JSON. Reviews can be saved only when the dashboard
-is bound to 127.0.0.1 or protected with `DASHBOARD_BASIC_AUTH`.
+against; *Export* on a revision returns it as JSON. Reviews and LBank decisions need the Owner or
+Reviewer role, and the signed-in username is recorded as the reviewer.
+
+## 3a. Users and sign-in
+Every page and API call needs a signed-in user. There are three roles:
+
+| Role | Can see | Can do |
+|---|---|---|
+| Owner | Everything | Everything, including *Users* and *Telegram* |
+| Analyzer | Overview, lists, coin details, *Runs & health*, *Exports* | Reprocess the latest batch, refresh the LBank list |
+| Reviewer | Overview, lists, coin details | Save reviews and LBank decisions |
+
+Everyone can change their own username and password under *My account* (the current password is
+always required). Owners manage people under *Users*: add someone with a temporary password, change
+a role, disable or delete an account, or reset a password. A temporary password must be replaced at
+the next sign-in, and a reset, a role change or disabling ends that person's sessions. The last
+active owner can't be demoted, disabled or deleted, and an owner can't do any of that to themselves
+from the dashboard. Five wrong passwords in a row lock an account for 15 minutes; an owner's
+password reset unlocks it.
+
+**First start, and an empty database.** When the web server starts and finds no active owner, it
+creates `owner` with the password `owner` and logs a warning. The first sign-in shows only a form to
+choose your own username and password; nothing else opens until you do. To start with a different
+password, set `INITIAL_OWNER_PASSWORD` (at least 8 characters) before the first start. This also
+happens after you clear the database, so the owner is never locked out.
+
+**Recovery from the server's shell** (passwords are asked at a hidden prompt, or piped on stdin;
+never put them on the command line):
+```bash
+npm run cli -- users:list                          # who exists, roles, locked or not
+npm run cli -- users:reset-owner                   # "owner" / "owner" again: active, unlocked, must change
+npm run cli -- users:password --username ana       # new temporary password, unlocks the account
+npm run cli -- users:add --username ana --role reviewer
+docker compose exec app node dist/cli.js users:reset-owner   # the same inside the Docker app
+```
+
+**On a server.** Put the dashboard behind HTTPS (nginx or Caddy) and set `TRUST_PROXY=loopback` (or
+the proxy's hop count) so the app sees real client addresses and marks the session cookie
+`Secure` (`COOKIE_SECURE=auto`; `true` forces it). Sessions last `SESSION_TTL_HOURS` (default 12)
+after their last use. MCP keeps its own bearer tokens, and `/healthz` stays open for health checks.
 
 ## 4. LBank Spot markets list
 The list of LBank Spot pairs comes from the **Markets section of CMC's LBank exchange page**

@@ -7,16 +7,14 @@ import {
   Param,
   Post,
   Query,
-  Req,
 } from '@nestjs/common';
-import type { Request } from 'express';
 
 import { ErrorCodes } from '../../common/dto/error-codes.js';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
-import { assertTrustedWrite, canWrite } from '../../common/security/write-guard.js';
 
 import { APP_CONFIG, type AppConfig } from '../../config/index.js';
 
+import { RequirePermission } from '../auth/auth.guard.js';
 import { TelegramAccessService } from '../telegram/access.service.js';
 import { TelegramAdminService } from '../telegram/admin.service.js';
 
@@ -35,6 +33,7 @@ import {
 
 /** Who receives the Telegram report, what they missed, and manual retries / sends. */
 @Controller('telegram')
+@RequirePermission('telegram:manage')
 export class TelegramAccessController {
   constructor(
     private readonly access: TelegramAccessService,
@@ -53,7 +52,7 @@ export class TelegramAccessController {
       owner: this.access.owner || null,
       mode: this.cfg.TELEGRAM_MODE,
       commandsEnabled: this.cfg.TELEGRAM_COMMANDS_ENABLED,
-      canManage: canWrite(this.cfg),
+      canManage: true, // the whole controller needs telegram:manage
       missingCount: (await this.admin.missing(6)).length,
       members: rows(s.approved),
       pending: rows(s.pending),
@@ -74,15 +73,13 @@ export class TelegramAccessController {
   }
 
   @Post('retry')
-  async retry(@Body(new ZodValidationPipe(RetryBodySchema)) b: RetryBodyDto, @Req() req: Request) {
-    assertTrustedWrite(req, this.cfg);
+  async retry(@Body(new ZodValidationPipe(RetryBodySchema)) b: RetryBodyDto) {
     await this.assertKnownChat(b.chatId);
     return { ok: true, ...(await this.admin.retry({ runId: b.runId, chatId: b.chatId })) };
   }
 
   @Post('send')
-  async send(@Body(new ZodValidationPipe(SendBodySchema)) b: SendBodyDto, @Req() req: Request) {
-    assertTrustedWrite(req, this.cfg);
+  async send(@Body(new ZodValidationPipe(SendBodySchema)) b: SendBodyDto) {
     for (const c of b.chatIds ?? []) await this.assertKnownChat(c);
     return { ok: true, ...(await this.admin.sendReport({ runId: b.runId, chatIds: b.chatIds })) };
   }
@@ -91,9 +88,7 @@ export class TelegramAccessController {
   async change(
     @Param('action', new ZodValidationPipe(AccessActionSchema)) action: AccessAction,
     @Body(new ZodValidationPipe(AccessBodySchema)) { chatId }: AccessBodyDto,
-    @Req() req: Request,
   ) {
-    assertTrustedWrite(req, this.cfg);
     if (chatId === this.access.owner)
       throw new BadRequestException({
         message: 'That is the owner.',
