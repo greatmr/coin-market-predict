@@ -10,7 +10,7 @@ const PATTERNS = {
   "generic assignment": /^(CLAUDE_CODE_OAUTH_TOKEN|TELEGRAM_BOT_TOKEN|CMC_API_KEY|COINGECKO_API_KEY|MCP_READ_TOKEN|MCP_WRITE_TOKEN)=\S+/m,
 };
 
-const SKIP = /^(node_modules|dist|var|backups|secrets|coverage|\.git|src\/generated)(\/|$)|(^|\/)\.env(?!\.example$)[^/]*$/;
+const SKIP = /^(node_modules|dist|var|backups|secrets|coverage|\.git)(\/|$)|(^|\/)\.env(?!\.example$)[^/]*$/;
 
 function walk(dir = ".", out = []) {
   for (const name of readdirSync(dir)) {

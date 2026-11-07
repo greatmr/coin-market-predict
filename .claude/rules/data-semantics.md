@@ -1,9 +1,13 @@
 ---
 paths:
-  - "src/sources/**"
-  - "src/ingestion/**"
-  - "src/tier1/**"
-  - "prisma/**"
+  - "src/modules/sources/**"
+  - "src/modules/ingestion/**"
+  - "src/modules/daily-metrics/**"
+  - "src/modules/venues/**"
+  - "src/modules/strategy/**"
+  - "src/modules/scan/**"
+  - "src/modules/exports/**"
+  - "src/database/**"
 ---
 # Data semantics
 

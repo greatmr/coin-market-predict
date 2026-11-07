@@ -9,8 +9,15 @@
       "Bash(grep * .env*)",
       "Bash(docker volume rm *)",
       "Bash(docker compose down -v*)",
-      "Bash(npx prisma migrate reset*)",
-      "Bash(npx prisma db push*)"
+      "Bash(npm run db:revert*)",
+      "Bash(npm run cli -- db:revert*)",
+      "Bash(node dist/cli.js db:revert*)",
+      "Bash(npm run migration:revert*)",
+      "Bash(npm run typeorm -- schema:drop*)",
+      "Bash(npm run typeorm -- schema:sync*)",
+      "Bash(npx typeorm *schema:drop*)",
+      "Bash(npx typeorm *schema:sync*)",
+      "Bash(npx typeorm *migration:revert*)"
     ]
   }
 }

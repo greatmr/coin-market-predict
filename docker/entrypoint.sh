@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
-# Apply committed migrations only (never `db push` / destructive sync).
+# Apply the committed TypeORM migrations only (never `synchronize`): src/database/migrations.
 if [ "${RUN_MIGRATIONS:-false}" = "true" ]; then
-  npx prisma migrate deploy
+  node dist/cli.js db:migrate
 fi
 exec "$@"

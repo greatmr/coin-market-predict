@@ -2,7 +2,7 @@
 # MCP stdio launcher for local hosts (Claude Code / Claude Desktop), used by .mcp.json.
 # stdout carries the MCP protocol only, so every other message goes to stderr.
 # The app needs Node >= 22.12; when nvm is installed the version comes from .nvmrc, because a
-# system Node 20 cannot run it (unknown --env-file-if-exists flag, Prisma 7 engine check).
+# system Node 20 cannot run it (unknown --env-file-if-exists flag).
 cd "$(dirname "$0")/.." || exit 1
 NVM_SH="${NVM_DIR:-$HOME/.nvm}/nvm.sh"
 if [ -s "$NVM_SH" ]; then
