@@ -63,9 +63,11 @@ last one used stays selected):
   formula, and every daily row used, with revision numbers.
 
 The same trace is available as
-`npm run cli -- tier1:trace --id <cmcId>`, and in Telegram as `/coin <CMC id or symbol>` (the
-whole drawer, a few messages) or `/vmc <CMC id or symbol>` (windows only). A symbol shared by
-several coins gets a list of `/coin <id>` choices.
+`npm run cli -- tier1:trace --id <cmcId>`, and in Telegram as `/coin <CMC id or symbol>` (windows
+with bars, VMC and price sparklines, LBank, venues, review; the daily rows sit in a collapsed
+quote) or `/vmc <CMC id or symbol>` (windows only). Tap a coin name in the hourly report and the
+bot answers with its details in the next message; a symbol shared by several coins gets a list
+of tappable choices.
 
 ### When the queue is withheld
 | Banner / status | Meaning | What to do |

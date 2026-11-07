@@ -82,9 +82,10 @@ adapters (`DATA_SOURCE=coinmarketcap|coingecko`) supply listings only, so every 
 
 ### Telegram
 Create a bot with @BotFather, then set `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` and
-`TELEGRAM_MODE=live`. Each batch sends one compact summary: batch status, counts, and the
-Review Queue as a phone-width table (stars, 3d / 7d / 30d multiples, current VMC) with LBank
-pairs; a withheld or empty queue says why. The batch's Excel workbook (all five sheets, ~2 MB)
+`TELEGRAM_MODE=live`. Each batch sends one compact summary: the batch time, counts, and a two-line card per
+Review Queue coin (stars, current VMC, 3d / 7d / 30d multiples with YES in bold). Tap a coin name and the bot replies with that
+coin's details (a `t.me/<bot>?start=coin_<id>` link; before the bot has looked up its own
+username the card shows `/coin_<id>` instead). A withheld or empty queue says why. The batch's Excel workbook (all five sheets, ~2 MB)
 follows as a file unless the queue is withheld (`TELEGRAM_ATTACH_EXPORT=none` turns this off).
 Preview first:
 ```bash
@@ -92,7 +93,8 @@ npm run cli -- telegram:preview --fake   # layout with invented numbers
 npm run cli -- telegram:preview          # latest stored batch
 ```
 Bot commands for members: `/report`, `/status`, `/vmc <CMC id or symbol>` (windows) and
-`/coin <CMC id or symbol>` (the full dashboard drawer for one coin). Access control (owner
+`/coin <CMC id or symbol>` (one coin in a single message: windows with bars, VMC and price
+sparklines, LBank, venues, review, and the daily rows in a collapsed quote). Access control (owner
 approves members) is described in [docs/architecture.md](docs/architecture.md#telegram).
 
 ## MCP
