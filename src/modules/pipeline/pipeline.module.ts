@@ -8,6 +8,7 @@ import { CrawlBatch } from '../ingestion/entities/crawl-batch.entity.js';
 import { MarketSnapshot } from '../ingestion/entities/market-snapshot.entity.js';
 import { IngestionModule } from '../ingestion/ingestion.module.js';
 import { ScanModule } from '../scan/scan.module.js';
+import { SourcesModule } from '../sources/sources.module.js';
 import { TelegramModule } from '../telegram/telegram.module.js';
 import { VenuesModule } from '../venues/venues.module.js';
 
@@ -31,6 +32,7 @@ import { SchedulerService } from './scheduler.service.js';
     DailyMetricsModule,
     VenuesModule,
     ScanModule,
+    SourcesModule,
     ExportsModule,
     TelegramModule,
   ],

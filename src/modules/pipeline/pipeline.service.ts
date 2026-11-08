@@ -19,6 +19,7 @@ import { CrawlBatch } from '../ingestion/entities/crawl-batch.entity.js';
 import { type CoverageReport, IngestionService } from '../ingestion/ingestion.service.js';
 import { type ScanOutcome, ScanService } from '../scan/scan.service.js';
 import { SourceUnavailableError } from '../sources/http/polite-client.js';
+import { SourceHealthService } from '../sources/source-health.service.js';
 import { ReportService } from '../telegram/report.service.js';
 import { TelegramService } from '../telegram/telegram.service.js';
 import { type LbankCrawlReport, VenuesService } from '../venues/venues.service.js';
@@ -44,6 +45,10 @@ export interface RunOutcome {
   batchId?: string | null;
 }
 
+export type RetryCrawlResult =
+  | { started: true; slot: string; circuitReset: boolean; done: Promise<RunOutcome> }
+  | { started: false; slot: string; reason: string };
+
 @Injectable()
 export class PipelineService {
   private readonly log = new Logger(PipelineService.name);
@@ -62,6 +67,7 @@ export class PipelineService {
     private readonly telegram: TelegramService,
     private readonly leases: LeaseService,
     private readonly retention: RetentionService,
+    private readonly health: SourceHealthService,
   ) {}
 
   get providerId() {
@@ -76,8 +82,8 @@ export class PipelineService {
     return this.db.getRepository(PipelineStage);
   }
 
-  /** Run `work` while holding the pipeline lease (no overlap within or across instances). */
-  private async exclusive<T>(work: () => Promise<T>): Promise<T | { skipped: string }> {
+  /** Take the pipeline lease (no overlap within or across instances); the caller must release it. */
+  private async takeLease(): Promise<{ release: () => Promise<void> } | { skipped: string }> {
     if (this.inProcess) return { skipped: 'a run is already in progress in this process' };
     const holder = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
     if (!(await this.leases.acquire(PIPELINE_LEASE, holder, LEASE_TTL_MS)))
@@ -87,12 +93,23 @@ export class PipelineService {
       () => void this.leases.heartbeat(PIPELINE_LEASE, holder, LEASE_TTL_MS).catch(() => undefined),
       60_000,
     );
+    return {
+      release: async () => {
+        clearInterval(beat);
+        this.inProcess = false;
+        await this.leases.release(PIPELINE_LEASE, holder).catch(() => undefined);
+      },
+    };
+  }
+
+  /** Run `work` while holding the pipeline lease. */
+  private async exclusive<T>(work: () => Promise<T>): Promise<T | { skipped: string }> {
+    const lease = await this.takeLease();
+    if ('skipped' in lease) return lease;
     try {
       return await work();
     } finally {
-      clearInterval(beat);
-      this.inProcess = false;
-      await this.leases.release(PIPELINE_LEASE, holder).catch(() => undefined);
+      await lease.release();
     }
   }
 
@@ -106,6 +123,57 @@ export class PipelineService {
     return 'skipped' in r && typeof r.skipped === 'string'
       ? { runId: null, slot: slot.toISOString(), status: 'skipped', reason: r.skipped, stages: {} }
       : (r as RunOutcome);
+  }
+
+  /**
+   * Manual "Retry crawl now" (dashboard): close an open circuit breaker, skipping its cooldown, and
+   * crawl the current slot again in the background. The lease is taken before this returns, so the
+   * caller learns at once whether the run started. It does not override a suspension after access
+   * denial or a provider's Retry-After: those need the operator (`source:reset`) or waiting.
+   */
+  async retryCrawl(): Promise<RetryCrawlResult> {
+    const slot = slotOf(this.clock.now());
+    const slotIso = slot.toISOString();
+    const lease = await this.takeLease();
+    if ('skipped' in lease) return { started: false, slot: slotIso, reason: lease.skipped };
+    let handedOff = false;
+    try {
+      const providerId = this.providerId;
+      const existing = await this.runs.findOneBy({ kind: 'hourly', slotTime: slot, providerId });
+      if (existing?.status === 'succeeded' || existing?.status === 'partial')
+        return { started: false, slot: slotIso, reason: "this hour's crawl already completed" };
+      const h = await this.health.load(providerId);
+      if (h.state === 'suspended')
+        return {
+          started: false,
+          slot: slotIso,
+          reason: `the source is suspended (${h.suspendedReason ?? 'access denied'}); resolve the cause, then run npm run cli -- source:reset`,
+        };
+      if (h.retryAfterUntil && h.retryAfterUntil > this.clock.now())
+        return {
+          started: false,
+          slot: slotIso,
+          reason: `the source asked us to wait until ${h.retryAfterUntil.toISOString()}`,
+        };
+      const circuitReset = h.state !== 'closed' || h.consecutiveFailures > 0;
+      if (circuitReset) {
+        await this.health.reset(providerId);
+        this.log.warn(`circuit for ${providerId} reset by a manual crawl retry`);
+      }
+      const done = this.execute(slot, 'hourly', false)
+        .catch((err): RunOutcome => ({
+          runId: null,
+          slot: slotIso,
+          status: 'failed',
+          reason: redact(err).slice(0, 300),
+          stages: {},
+        }))
+        .finally(() => lease.release());
+      handedOff = true;
+      return { started: true, slot: slotIso, circuitReset, done };
+    } finally {
+      if (!handedOff) await lease.release();
+    }
   }
 
   /**

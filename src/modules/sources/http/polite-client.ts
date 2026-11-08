@@ -28,6 +28,9 @@ export interface PoliteClientOptions {
   responseStatus?: (response: Response, body: string) => number;
 }
 
+/** How long an open circuit refuses requests before it allows one trial request. */
+export const DEFAULT_OPEN_COOLDOWN_MS = 15 * 60_000;
+
 export class SourceUnavailableError extends Error {
   constructor(
     message: string,
@@ -73,7 +76,7 @@ export class PoliteHttpClient {
       maxBackoffMs: 60_000,
       maxInlineRetryAfterMs: 120_000,
       failureThreshold: 5,
-      openCooldownMs: 15 * 60_000,
+      openCooldownMs: DEFAULT_OPEN_COOLDOWN_MS,
       denialThreshold: 2,
       timeoutMs: 30_000,
       userAgent: 'CoinsPredicts/0.1 (research; low-frequency)',

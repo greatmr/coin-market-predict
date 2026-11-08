@@ -42,6 +42,7 @@ import { ScanResult } from '../scan/entities/scan-result.entity.js';
 import { ScanRun } from '../scan/entities/scan-run.entity.js';
 import { Provider } from '../sources/entities/provider.entity.js';
 import { SourceHealth } from '../sources/entities/source-health.entity.js';
+import { DEFAULT_OPEN_COOLDOWN_MS } from '../sources/http/polite-client.js';
 import { RULES } from '../strategy/index.js';
 import { TelegramDelivery } from '../telegram/entities/telegram-delivery.entity.js';
 import { VenueCrawl } from '../venues/entities/venue-crawl.entity.js';
@@ -304,20 +305,22 @@ export class ReadModelService {
   async overview() {
     const providerId = this.providerId;
     const scans = this.repo(ScanRun);
-    const [provider, latestRun, latestBatch, latestScan, lastGood, lastExport] = await Promise.all([
-      this.repo(Provider).findOneBy({ id: providerId }),
-      this.repo(PipelineRun).findOne({
-        where: { providerId },
-        order: { slotTime: 'DESC', startedAt: 'DESC' },
-      }),
-      this.repo(CrawlBatch).findOne({ where: { providerId }, order: { slotTime: 'DESC' } }),
-      scans.findOne({ where: { providerId }, order: { asOf: 'DESC' } }),
-      scans.findOne({ where: { providerId, status: 'succeeded' }, order: { asOf: 'DESC' } }),
-      scans.findOne({
-        where: { providerId, exportStatus: 'succeeded' },
-        order: { exportedAt: 'DESC' },
-      }),
-    ]);
+    const [provider, latestRun, latestBatch, latestScan, lastGood, lastExport, health] =
+      await Promise.all([
+        this.repo(Provider).findOneBy({ id: providerId }),
+        this.repo(PipelineRun).findOne({
+          where: { providerId },
+          order: { slotTime: 'DESC', startedAt: 'DESC' },
+        }),
+        this.repo(CrawlBatch).findOne({ where: { providerId }, order: { slotTime: 'DESC' } }),
+        scans.findOne({ where: { providerId }, order: { asOf: 'DESC' } }),
+        scans.findOne({ where: { providerId, status: 'succeeded' }, order: { asOf: 'DESC' } }),
+        scans.findOne({
+          where: { providerId, exportStatus: 'succeeded' },
+          order: { exportedAt: 'DESC' },
+        }),
+        this.repo(SourceHealth).findOneBy({ providerId }),
+      ]);
     const stages = latestRun
       ? await this.repo(PipelineStage).find({
           where: { runId: latestRun.id },
@@ -417,6 +420,19 @@ export class ReadModelService {
         : null,
       crawlAgeMinutes,
       maxQuoteAgeMinutes: this.cfg.MAX_QUOTE_AGE_MINUTES,
+      sourceHealth: health
+        ? {
+            state: health.state,
+            consecutiveFailures: health.consecutiveFailures,
+            openedAt: health.openedAt,
+            reopensAt:
+              health.state === 'open' && health.openedAt
+                ? new Date(health.openedAt.getTime() + DEFAULT_OPEN_COOLDOWN_MS)
+                : null,
+            retryAfterUntil: health.retryAfterUntil,
+            suspendedReason: health.suspendedReason,
+          }
+        : null,
       banners,
       openMappingTasks: await this.repo(VenueMappingTask).countBy({ providerId, status: 'OPEN' }),
     });

@@ -15,6 +15,7 @@ import { AuthController } from './auth.controller.js';
 import { DashboardController } from './dashboard.controller.js';
 import { ExportsController } from './exports.controller.js';
 import { LbankController } from './lbank.controller.js';
+import { PipelineController } from './pipeline.controller.js';
 import { ReviewsController } from './reviews.controller.js';
 import { ScanController } from './scan.controller.js';
 import { TelegramAccessController } from './telegram-access.controller.js';
@@ -46,6 +47,7 @@ import { UsersController } from './users.controller.js';
     ExportsController,
     ReviewsController,
     LbankController,
+    PipelineController,
     TelegramAccessController,
   ],
 })

@@ -4,6 +4,7 @@ import { addHours, slotOf } from '../src/common/utils/time.js';
 import { DailyMetricRevision } from '../src/modules/daily-metrics/entities/daily-metric-revision.entity.js';
 import { CrawlBatch } from '../src/modules/ingestion/entities/crawl-batch.entity.js';
 import { MarketSnapshot } from '../src/modules/ingestion/entities/market-snapshot.entity.js';
+import { IngestionService } from '../src/modules/ingestion/ingestion.service.js';
 import { PipelineRun } from '../src/modules/pipeline/entities/pipeline-run.entity.js';
 import { LeaseService } from '../src/modules/pipeline/lease.service.js';
 import { PIPELINE_LEASE, PipelineService } from '../src/modules/pipeline/pipeline.service.js';
@@ -11,6 +12,7 @@ import { ReadModelService } from '../src/modules/read-model/read-model.service.j
 import { ScanResult } from '../src/modules/scan/entities/scan-result.entity.js';
 import { ScanService } from '../src/modules/scan/scan.service.js';
 import { Provider } from '../src/modules/sources/entities/provider.entity.js';
+import { SourceHealthService } from '../src/modules/sources/source-health.service.js';
 import { TelegramDelivery } from '../src/modules/telegram/entities/telegram-delivery.entity.js';
 
 import { makeApp, resetDb } from './utils/helpers.js';
@@ -72,6 +74,73 @@ describe('hourly pipeline', () => {
     expect(await lease.acquire(PIPELINE_LEASE, 'third-instance', 1)).toBe(true);
     await new Promise((res) => setTimeout(res, 20));
     expect(await lease.acquire(PIPELINE_LEASE, 'fourth-instance', 60_000)).toBe(true); // expired lease can be taken
+  });
+
+  it('manual crawl retry closes an open circuit and crawls the current slot again', async () => {
+    const p = ctx.app.get(PipelineService);
+    const health = ctx.app.get(SourceHealthService);
+    await ctx.app.get(IngestionService).ensureProvider();
+    const opened = await health.load(p.providerId);
+    await health.save(p.providerId, {
+      ...opened,
+      state: 'open',
+      consecutiveFailures: 6,
+      openedAt: new Date(),
+    });
+    const ov = (await ctx.app.get(ReadModelService).overview()) as {
+      sourceHealth: { state: string; reopensAt: string | null };
+    };
+    expect(ov.sourceHealth.state).toBe('open');
+    expect(ov.sourceHealth.reopensAt).toMatch(/^\d{4}-\d\d-\d\dT/);
+
+    const r = await p.retryCrawl();
+    if (!r.started) throw new Error(r.reason);
+    expect(r.circuitReset).toBe(true);
+    expect(r.slot).toBe(slotOf(new Date()).toISOString());
+    const outcome = await r.done;
+    expect(['succeeded', 'partial']).toContain(outcome.status);
+    const after = await health.load(p.providerId);
+    expect(after.state).toBe('closed');
+    expect(after.consecutiveFailures).toBe(0);
+
+    const again = await p.retryCrawl();
+    expect(again).toMatchObject({
+      started: false,
+      reason: expect.stringMatching(/already completed/),
+    });
+  });
+
+  it('manual crawl retry refuses a suspended source, an active Retry-After and a held lease', async () => {
+    const p = ctx.app.get(PipelineService);
+    const health = ctx.app.get(SourceHealthService);
+    await ctx.app.get(IngestionService).ensureProvider();
+    const base = await health.load(p.providerId);
+
+    await health.save(p.providerId, { ...base, state: 'suspended', suspendedReason: 'HTTP 403' });
+    expect(await p.retryCrawl()).toMatchObject({
+      started: false,
+      reason: expect.stringMatching(/suspended.*source:reset/),
+    });
+    expect((await health.load(p.providerId)).state).toBe('suspended');
+
+    await health.save(p.providerId, {
+      ...base,
+      retryAfterUntil: new Date(Date.now() + 60_000),
+    });
+    expect(await p.retryCrawl()).toMatchObject({
+      started: false,
+      reason: expect.stringMatching(/asked us to wait/),
+    });
+
+    await health.save(p.providerId, base);
+    const lease = ctx.app.get(LeaseService);
+    expect(await lease.acquire(PIPELINE_LEASE, 'other-instance', 60_000)).toBe(true);
+    expect(await p.retryCrawl()).toMatchObject({
+      started: false,
+      reason: expect.stringMatching(/lease/),
+    });
+    await lease.release(PIPELINE_LEASE, 'other-instance');
+    expect(await ctx.repo(PipelineRun).count()).toBe(0);
   });
 
   it('recovers after a failure without repeating completed stages or re-crawling', async () => {
