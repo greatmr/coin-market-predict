@@ -92,6 +92,9 @@ describe('PoliteHttpClient', () => {
     expect((await store.load('test')).state).toBe('open');
     await expect(http.getJson('https://x.invalid/a')).rejects.toMatchObject({
       reason: 'circuit_open',
+      message: expect.stringMatching(
+        /5 consecutive failures \(last: HTTP 500\).*next attempt allowed after \d{4}-/,
+      ),
     });
   });
 

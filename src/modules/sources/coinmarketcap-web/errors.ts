@@ -10,8 +10,9 @@ export class CmcApiError extends Error {
     message: string,
     public readonly httpStatus: number | null,
     public readonly errorCode: number | null,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
     this.name = 'CmcApiError';
   }
 }

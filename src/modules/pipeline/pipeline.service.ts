@@ -287,7 +287,7 @@ export class PipelineService {
           return result;
         } catch (err) {
           lastErr = err;
-          if (err instanceof SourceUnavailableError) break; // do not retry denied/suspended sources
+          if (isSourceUnavailable(err)) break; // do not retry an unavailable source (open circuit, denial, budget)
         }
       }
       await clearProgress();
@@ -546,4 +546,11 @@ function summarize(v: unknown): unknown {
     );
   }
   return v;
+}
+
+/** True when the error, or an error it wraps (e.g. CmcApiError), is a SourceUnavailableError. */
+function isSourceUnavailable(err: unknown): boolean {
+  for (let e = err, depth = 0; e instanceof Error && depth < 5; e = e.cause, depth++)
+    if (e instanceof SourceUnavailableError) return true;
+  return false;
 }

@@ -123,7 +123,7 @@ export class CmcWebClient {
                     : err.httpStatus
                       ? 'server'
                       : 'network';
-          throw new CmcApiError(kind, err.message, err.httpStatus, null);
+          throw new CmcApiError(kind, err.message, err.httpStatus, null, { cause: err });
         }
         throw err;
       }

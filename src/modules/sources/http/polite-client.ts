@@ -222,8 +222,13 @@ export class PoliteHttpClient {
       if (h.openedAt && now.getTime() - h.openedAt.getTime() >= this.o.openCooldownMs) {
         h.state = 'half_open';
       } else {
+        const reopensAt = h.openedAt
+          ? new Date(h.openedAt.getTime() + this.o.openCooldownMs).toISOString()
+          : 'unknown';
         throw new SourceUnavailableError(
-          'Circuit breaker open after repeated failures',
+          `Circuit breaker open after ${h.consecutiveFailures} consecutive failures ` +
+            `(last: ${h.lastStatusCode === null ? 'network error/timeout' : `HTTP ${h.lastStatusCode}`}); ` +
+            `next attempt allowed after ${reopensAt}`,
           'circuit_open',
         );
       }

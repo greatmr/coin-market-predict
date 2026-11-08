@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { readFixture } from '../../../common/testing/fixtures.js';
 import { parseExactJson } from '../../../common/utils/decimal.js';
 
-import { PoliteHttpClient } from '../http/polite-client.js';
+import { PoliteHttpClient, SourceUnavailableError } from '../http/polite-client.js';
 import { InMemorySourceHealthStore } from '../http/source-health.js';
 
 import {
@@ -270,6 +270,7 @@ describe('website transport and coverage', () => {
     const c = client(() => new Response('<html>Just a moment cf-chl-</html>'));
     const err = await c.web.get(WEB_HISTORY, { id: 52 }).catch((e) => e);
     expect(err).toMatchObject({ kind: 'auth' });
+    expect(err.cause).toBeInstanceOf(SourceUnavailableError);
     expect(stopsCrawl(err)).toBe(true);
     expect(c.times).toHaveLength(1);
   });
