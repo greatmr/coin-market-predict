@@ -2852,13 +2852,27 @@ body.signed-out .shell {
   }
 }
 @media (max-width: 720px) {
+  /* Mobile browsers resize the viewport while their toolbars collapse; `background-attachment:
+     fixed` makes them repaint (and drag fixed bars) mid-scroll, so paint the gradient on the
+     root instead. */
+  html {
+    background: linear-gradient(160deg, var(--bg-1), var(--bg-2)) no-repeat;
+    min-height: 100%;
+  }
+  body {
+    background: transparent;
+    min-height: 100dvh;
+  }
   .rail {
     top: auto;
     left: 10px;
     right: 10px;
-    bottom: 10px;
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px));
     width: auto;
     height: 62px;
+    /* Own compositing layer: the bar stays pinned to the bottom edge during toolbar resize. */
+    transform: translateZ(0);
+    will-change: transform;
     flex-direction: row;
     padding: 6px 8px;
     border-radius: 22px;
@@ -2882,7 +2896,7 @@ body.signed-out .shell {
   }
   .shell {
     margin: 0;
-    padding: 16px 16px 96px;
+    padding: 16px 16px calc(96px + env(safe-area-inset-bottom, 0px));
   }
   .top h1 {
     font-size: 23px;
