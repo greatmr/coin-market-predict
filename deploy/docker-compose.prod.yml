@@ -1,0 +1,56 @@
+# Production stack for the shared server (manual deploy; see docs/deployment.md).
+# Isolated from the other services there (checked 2026-11-10: dimension-*, extraction-engine, maple,
+# services_*; host ports 22/80/443/2354/2355 in use, 3000/8000 reserved by the extraction_engine vhost):
+#   - unique compose project name: containers, network and volumes are prefixed coins-predicts-prod
+#   - private network; Postgres is NOT published to the host
+#   - the app listens on 127.0.0.1:${APP_PORT} only (default 38417); host Nginx proxies to it
+# Run from the repo root:
+#   docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod up -d --build
+name: coins-predicts-prod
+
+services:
+  postgres:
+    image: postgres:17.6-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-coins}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}
+      POSTGRES_DB: ${POSTGRES_DB:-coins}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: coins-predicts:prod
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: ../.env.prod
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-coins}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-coins}
+      HOST: 0.0.0.0
+      PORT: 3000
+      RUN_MIGRATIONS: "true"
+    ports:
+      - "127.0.0.1:${APP_PORT:-38417}:3000"
+    volumes:
+      - app_var:/app/var
+    networks: [internal]
+
+networks:
+  internal:
+
+volumes:
+  pgdata:
+  app_var:
