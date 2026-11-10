@@ -336,6 +336,20 @@ function passCell(status, multiple, reason) {
     multBar(m, status),
   );
 }
+/** Weighted points (weighted_star_v1): a lower bound when a window is N/A; strength in the tooltip. */
+function pointsCell(points, complete, strength) {
+  if (points === null || points === undefined) return el('span', { class: 'muted' }, '—');
+  const s = num(strength);
+  return el(
+    'span',
+    {
+      class: complete ? 'pts' : 'pts lower',
+      title: `${complete ? 'Weighted points' : 'Confirmed lower bound: a window is N/A'} (3d 60 · 7d 25 · 30d 15 per YES)${isNum(s) ? `; strength ${s.toFixed(2)}` : ''}`,
+    },
+    `${complete ? '' : '≥ '}${points}`,
+  );
+}
+
 const stars = (n) =>
   el(
     'span',
@@ -1303,7 +1317,7 @@ const PAGES = {
   ],
   queue: [
     'Review queue',
-    'Eligible coins whose rolling-24h VMC is at least 1.5× one of their own 3, 7 or 30-day means. For human chart review.',
+    'Eligible coins whose rolling-24h VMC is at least 1.5× one of their own 3, 7 or 30-day means, ranked by stars, then weighted points (3d 60 · 7d 25 · 30d 15). For human chart review.',
   ],
   eligible: [
     'Eligible',
@@ -1907,7 +1921,12 @@ function renderRules() {
         `VMC = volume ÷ market cap. Current = the rolling-24h quote, stale after ${st.maxQuoteAgeMinutes} min.`,
         'Means of completed UTC daily ratios over exactly the last 3, 7, 14 and 30 days. A missing or invalid day makes only its windows N/A.',
         `YES when current ≥ ${r.passMultiple} × the mean (3d, 7d, 30d; 14d is context only). Stars = number of YES.`,
-      ].map((t) => el('li', null, t)),
+        st.ranking
+          ? `Queue order (${st.ranking.version}): stars, then weighted points (3d ${st.ranking.points[3]} · 7d ${st.ranking.points[7]} · 30d ${st.ranking.points[30]} per YES; an N/A earns none and makes the score a lower bound), complete scores first, then weighted strength (multiples capped at ${st.ranking.strengthCap}), then the 3-day multiple, then CMC id. Weights are a product choice, not a probability.`
+          : null,
+      ]
+        .filter(Boolean)
+        .map((t) => el('li', null, t)),
     ),
   );
 }
@@ -1986,12 +2005,21 @@ async function loadQueueStrip(sc) {
 
 /* ============================== Sheets ============================== */
 
+const pointsCol = {
+  label: 'Points',
+  num: true,
+  title: 'Weighted points: 3d 60, 7d 25, 30d 15 per YES. The queue is ranked by stars, then points.',
+  render: (r) => pointsCell(r.weightedPassPoints, r.scoreComplete, r.weightedStrength),
+};
 const sheetCols = (sheet) =>
   [
     sheet === 'queue'
       ? { label: '#', num: true, render: (r) => r.queueOrder }
       : { label: 'Rank', num: true, render: (r) => r.rank ?? '—' },
     { label: 'Coin', render: coinCell },
+    // On the queue, stars and weighted points are the ranking: show them first.
+    sheet === 'queue' ? { label: 'Stars', render: (r) => stars(r.stars) } : null,
+    sheet === 'queue' ? pointsCol : null,
     sheet === 'queue' ? { label: 'Rank', num: true, render: (r) => r.rank ?? '—' } : null,
     { label: 'Market cap', num: true, render: (r) => fmtUsd(r.capUsd) },
     {
@@ -2029,7 +2057,8 @@ const sheetCols = (sheet) =>
           ? el('span', { class: 'muted', title: reasonText(r.avg14dReason) }, 'N/A')
           : fmtVmc(r.vmc14dAvg),
     },
-    { label: 'Stars', render: (r) => stars(r.stars) },
+    sheet === 'queue' ? null : { label: 'Stars', render: (r) => stars(r.stars) },
+    sheet === 'eligible' ? pointsCol : null,
     sheet === 'eligible' || sheet === 'queue'
       ? null
       : {
@@ -3872,6 +3901,12 @@ const fwdCols = () => [
   { label: 'Coin', render: coinCell },
   { label: 'Stars', render: (r) => stars(r.starCount) },
   {
+    label: 'Points',
+    num: true,
+    title: 'Weighted points at detection (weighted_star_v1)',
+    render: (r) => pointsCell(r.weightedPassPoints, r.scoreComplete, r.weightedStrength),
+  },
+  {
     label: 'Detected',
     render: (r) =>
       el('span', { title: `${utc(r.detectedAt)} (UTC date ${r.detectedUtcDate})` }, fmtTime(r.detectedAt)),
@@ -4031,6 +4066,22 @@ function renderForwardSummary(s) {
       s.cohort,
     ),
   );
+  const groupCols = [
+    { label: 'Group', render: (g) => el('b', null, g.group) },
+    { label: 'Events', num: true, render: (g) => fmtInt(g.events) },
+    { label: 'Coins', num: true, render: (g) => fmtInt(g.distinctAssets) },
+    { label: 'Final', num: true, render: (g) => fmtInt(g.final) },
+    { label: 'Pending', num: true, render: (g) => fmtInt(g.pending) },
+    { label: 'Incomplete', num: true, render: (g) => fmtInt(g.incomplete) },
+    {
+      label: 'Median',
+      num: true,
+      title: 'Median final peak return (FINAL events only); mean, p25 and p75 are in the export',
+      render: (g) => fmtPct(g.finalReturns.median),
+    },
+  ];
+  put($('forward-patterns'), table(groupCols, s.cohortByPattern || [], { empty: 'No events yet.' }));
+  put($('forward-bands'), table(groupCols, s.cohortByPointsBand || [], { empty: 'No events yet.' }));
   const all = s.cohort.find((g) => g.group === 'all');
   put(
     $('forward-dist'),

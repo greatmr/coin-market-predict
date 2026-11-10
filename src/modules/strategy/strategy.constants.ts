@@ -26,6 +26,24 @@ export const RULES = {
   requiredDailyRows: 30,
 } as const;
 
+/**
+ * Review Queue ranking (Weighted Star Ranking addendum, 10 Nov 2026; operator decision D3). It is
+ * versioned apart from RULESET_VERSION because it changes no calculation — stars, passes and every
+ * eligibility rule stay as they are — only the queue order and the ranking fields. Changing a
+ * weight, the cap or a sort key bumps RANKING_RULESET_VERSION; stored scores are never rewritten.
+ * The weights are an initial product decision, not a measured probability.
+ */
+export const RANKING_RULESET_VERSION = 'weighted_star_v1';
+
+export const RANKING = {
+  /** Points per YES (3d 60, 7d 25, 30d 15; 100 in all). A NO or an N/A earns none. */
+  points: { 3: 60, 7: 25, 30: 15 },
+  /** Weights of the capped multiples in weighted_strength, a tie-break only. */
+  strengthWeights: { 3: '0.60', 7: '0.25', 30: '0.15' },
+  /** Each multiple is capped at this value inside weighted_strength only, never where it is stored. */
+  strengthCap: '3.0',
+} as const;
+
 export type WindowDays = (typeof RULES.windows)[number];
 export type PassWindow = (typeof RULES.passWindows)[number];
 

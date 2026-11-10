@@ -64,6 +64,12 @@ export interface ForwardEventRow {
   multiple3d: string | null;
   multiple7d: string | null;
   multiple30d: string | null;
+  /** Detection-time ranking (weighted star ranking): pattern, points, completeness, strength. */
+  passPattern: string;
+  weightedPassPoints: number | null;
+  scoreComplete: boolean | null;
+  weightedStrength: string | null;
+  rankingRulesetVersion: string | null;
   currentVmc: string | null;
   lbankPairs: string[];
   rulesetVersion: string;
@@ -253,6 +259,11 @@ export class ForwardReadService {
         multiple3d: s(e.multiple3d),
         multiple7d: s(e.multiple7d),
         multiple30d: s(e.multiple30d),
+        passPattern: `${e.pass3d}/${e.pass7d}/${e.pass30d}`,
+        weightedPassPoints: e.weightedPassPoints,
+        scoreComplete: e.scoreComplete,
+        weightedStrength: s(e.weightedStrength),
+        rankingRulesetVersion: e.rankingRulesetVersion,
         currentVmc: s(e.currentVmc),
         lbankPairs: (e.lbankPairs ?? []).map((p) => p.marketPair),
         rulesetVersion: e.rulesetVersion,
@@ -388,6 +399,11 @@ export class ForwardReadService {
             detectedUtcDate: true,
             evaluationEnd: true,
             status: true,
+            pass3d: true,
+            pass7d: true,
+            pass30d: true,
+            weightedPassPoints: true,
+            scoreComplete: true,
             resultVersion: true,
             effectiveHorizonHours: true,
             qualityFlags: true,
@@ -441,6 +457,9 @@ export class ForwardReadService {
           peakKind: (o?.peakKind as 'EXACT' | 'LOWER_BOUND' | 'NONE' | undefined) ?? null,
           peakReturnPct: o?.ret ? new D(o.ret) : null,
           effectiveHorizonHours: e.effectiveHorizonHours,
+          passes: [e.pass3d, e.pass7d, e.pass30d] as const,
+          weightedPassPoints: e.weightedPassPoints,
+          scoreComplete: e.scoreComplete,
         };
       }),
     );
@@ -509,6 +528,9 @@ export class ForwardReadService {
       coverage,
       warnings,
       cohort: cohort.groups.map(cohortGroupJson),
+      /** By detection-time pass pattern and weighted-points band (weighted star ranking). */
+      cohortByPattern: cohort.patterns.map(cohortGroupJson),
+      cohortByPointsBand: cohort.pointsBands.map(cohortGroupJson),
     };
   }
 

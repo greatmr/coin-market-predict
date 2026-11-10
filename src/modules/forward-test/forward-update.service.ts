@@ -245,7 +245,9 @@ export class ForwardUpdateService {
             o.missingDates.length &&
             e.evaluationEnd.getTime() >= now.getTime() - MISSING_DATA_RETRY_DAYS * DAY_MS
           )
-            waiting.push(`${e.symbol} (CMC ${e.cmcId}) ${o.missingDates.join(', ')}`);
+            waiting.push(
+              `${e.symbol} (CMC ${e.cmcId}, ${e.starCount}★ ${e.detectedUtcDate}) lacks ${o.missingDates.join(', ')}`,
+            );
         } catch (err) {
           report.failedEvents++;
           if (report.failedEvents <= 5)

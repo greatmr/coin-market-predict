@@ -43,7 +43,7 @@ import { ScanRun } from '../scan/entities/scan-run.entity.js';
 import { Provider } from '../sources/entities/provider.entity.js';
 import { SourceHealth } from '../sources/entities/source-health.entity.js';
 import { DEFAULT_OPEN_COOLDOWN_MS } from '../sources/http/polite-client.js';
-import { RULES } from '../strategy/index.js';
+import { RANKING, RULES } from '../strategy/index.js';
 import { TelegramDelivery } from '../telegram/entities/telegram-delivery.entity.js';
 import { VenueCrawl } from '../venues/entities/venue-crawl.entity.js';
 import { VenueDecision } from '../venues/entities/venue-decision.entity.js';
@@ -113,6 +113,10 @@ const LIST_COLUMNS = [
   'flags',
   'inQueue',
   'queueOrder',
+  'weightedPassPoints',
+  'scoreComplete',
+  'weightedStrength',
+  'rankingRulesetVersion',
 ] as const;
 
 /** LIKE pattern for a literal substring (Postgres' default escape character is the backslash). */
@@ -120,6 +124,36 @@ const likeContains = (s: string) => `%${s.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
 /** A search term that can be a CMC id (an `integer` column). */
 const asCmcId = (s: string) =>
   /^\d{1,10}$/.test(s) && Number(s) <= 2_147_483_647 ? Number(s) : null;
+/**
+ * The weighted star ranking of one stored row with its formulas (weighted_star_v1). Recomputed from
+ * the stored statuses for display; the stored score is what the queue was sorted by.
+ */
+function rankingTrace(r: ScanResult) {
+  const passes = [
+    [3, r.pass3d, r.multiple3d],
+    [7, r.pass7d, r.multiple7d],
+    [30, r.pass30d, r.multiple30d],
+  ] as const;
+  const cap = RANKING.strengthCap;
+  return {
+    version: r.rankingRulesetVersion,
+    stars: r.stars,
+    weightedPassPoints: r.weightedPassPoints,
+    scoreComplete: r.scoreComplete,
+    weightedStrength:
+      r.weightedStrength === null ? null : new D(r.weightedStrength.toString()).toFixed(),
+    queueOrder: r.queueOrder,
+    pointsFormula:
+      r.weightedPassPoints === null
+        ? 'not ranked (scanned before weighted_star_v1)'
+        : `${passes.map(([d, s]) => `${RANKING.points[d]}×${s === 'YES' ? 1 : 0}${s === 'N/A' ? ' (N/A)' : ''}`).join(' + ')} = ${r.weightedPassPoints}${r.scoreComplete ? '' : ' (confirmed lower bound: a window is N/A)'}`,
+    strengthFormula:
+      r.weightedStrength === null
+        ? 'N/A (needs three valid multiples)'
+        : `${passes.map(([d, , m]) => `${RANKING.strengthWeights[d]} × min(${new D(m!.toString()).toFixed()}, ${cap})`).join(' + ')} = ${new D(r.weightedStrength.toString()).toFixed()}`,
+  };
+}
+
 /** Drop the surrogate key that TypeORM selects for hydration but the API never exposed. */
 const withoutId = <T extends { id?: unknown }>({ id: _id, ...rest }: T) => rest;
 
@@ -716,6 +750,7 @@ export class ReadModelService {
         effectiveNow: effective,
       },
       windows,
+      ranking: rankingTrace(record),
       eligibility: {
         status: record.eligibilityStatus,
         reasons: record.eligibilityReasons,

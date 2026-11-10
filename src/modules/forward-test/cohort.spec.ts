@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { D, type DValue } from '../../common/utils/decimal.js';
 
+import { type PassStatus, rankingScore } from '../strategy/index.js';
+
 import { type CohortEvent, cohortReport, quantile, stats } from './cohort.js';
 import { eventWindow } from './forward-rules.js';
 import type { ForwardEventStatus } from './forward.constants.js';
@@ -16,8 +18,25 @@ function ev(
   detectedAt: string,
   status: ForwardEventStatus,
   ret: string | null,
+  passes: [PassStatus, PassStatus, PassStatus] = (
+    [
+      ['YES', 'NO', 'NO'],
+      ['YES', 'YES', 'NO'],
+      ['YES', 'YES', 'YES'],
+    ] as const
+  )[stars - 1]!.slice() as [PassStatus, PassStatus, PassStatus],
+  scored = true,
 ): CohortEvent {
   const w = eventWindow(new Date(detectedAt));
+  const [p3, p7, p30] = passes;
+  const r = rankingScore({
+    pass3d: p3,
+    pass7d: p7,
+    pass30d: p30,
+    multiple3d: null,
+    multiple7d: null,
+    multiple30d: null,
+  });
   return {
     eventId: `e${++seq}`,
     cmcId,
@@ -29,6 +48,9 @@ function ev(
     peakKind: ret === null ? 'NONE' : status === 'FINAL' ? 'EXACT' : 'LOWER_BOUND',
     peakReturnPct: ret === null ? null : d(ret),
     effectiveHorizonHours: w.effectiveHorizonHours,
+    passes,
+    weightedPassPoints: scored ? r.weightedPassPoints : null,
+    scoreComplete: scored ? r.scoreComplete : null,
   };
 }
 
@@ -119,5 +141,42 @@ describe('star-group report (p.9)', () => {
     expect(r.overlaps.get('e1')!.sort()).toEqual(['e2', 'e3']);
     expect(r.overlaps.get('e4')).toBeUndefined();
     expect(r.assetEventCounts.get(123)).toBe(3);
+  });
+});
+
+describe('by pass pattern and weighted-points band (weighted star ranking § 5)', () => {
+  const events = [
+    ev(2, 1, '2026-11-10T10:00:00Z', 'FINAL', '30', ['NO', 'YES', 'YES']),
+    ev(1, 2, '2026-11-10T11:00:00Z', 'FINAL', '10', ['YES', 'NO', 'NO']),
+    ev(2, 3, '2026-11-10T12:00:00Z', 'FINAL', '20', ['YES', 'YES', 'NO']),
+    ev(2, 4, '2026-11-10T13:00:00Z', 'TRACKING', '5', ['YES', 'YES', 'NO']),
+    ev(2, 5, '2026-11-10T14:00:00Z', 'FINAL', '50', ['N/A', 'YES', 'YES']),
+    ev(3, 6, '2026-11-10T15:00:00Z', 'FINAL', '70', ['YES', 'YES', 'YES'], false),
+  ];
+  const r = cohortReport(events);
+
+  it('groups by detection-time pass pattern, in the queue order of the pattern', () => {
+    expect(r.patterns.map((g) => [g.group, g.events, g.final, g.pending])).toEqual([
+      ['YES/YES/YES', 1, 1, 0],
+      ['YES/YES/NO', 2, 1, 1],
+      ['NO/YES/YES', 1, 1, 0],
+      ['N/A/YES/YES', 1, 1, 0],
+      ['YES/NO/NO', 1, 1, 0],
+    ]);
+    // FINAL events only: the TRACKING 5 % never enters the aggregate.
+    expect(str(r.patterns[1]!.finalReturns.median)).toBe('20');
+    expect(r.patterns.every((g) => g.dimension === 'pass_pattern')).toBe(true);
+  });
+
+  it('bands complete scores by points; incomplete and unscored events are kept apart', () => {
+    expect(r.pointsBands.map((g) => [g.group, g.events, g.finalReturns.n])).toEqual([
+      ['75–100 points', 2, 1],
+      ['50–74 points', 1, 1],
+      ['25–49 points', 1, 1],
+      ['0–24 points', 0, 0],
+      ['incomplete score (lower bound)', 1, 1],
+      ['no score (detected before weighted_star_v1)', 1, 1],
+    ]);
+    expect(r.groups.find((g) => g.group === 'all')!.events).toBe(6);
   });
 });

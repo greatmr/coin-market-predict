@@ -6,6 +6,7 @@ import { M005Venues1793923200005 } from './1793923200005-M005Venues.js';
 import { M006ScanAndReviews1793923200006 } from './1793923200006-M006ScanAndReviews.js';
 import { M007Users1793923200007 } from './1793923200007-M007Users.js';
 import { M008ForwardTest1793923200008 } from './1793923200008-M008ForwardTest.js';
+import { M009WeightedStarRanking1793923200009 } from './1793923200009-M009WeightedStarRanking.js';
 
 /**
  * Every migration, in order, listed explicitly (no glob, so TypeScript tests and compiled ESM load
@@ -21,4 +22,5 @@ export const MIGRATIONS = [
   M006ScanAndReviews1793923200006,
   M007Users1793923200007,
   M008ForwardTest1793923200008,
+  M009WeightedStarRanking1793923200009,
 ];

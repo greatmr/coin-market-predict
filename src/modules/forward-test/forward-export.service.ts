@@ -34,6 +34,11 @@ export const EVENT_COLUMNS = [
   'multiple_3d',
   'multiple_7d',
   'multiple_30d',
+  'pass_pattern',
+  'weighted_pass_points',
+  'score_complete',
+  'weighted_strength',
+  'ranking_ruleset_version',
   'current_vmc',
   'lbank_pairs',
   'ruleset_version',
@@ -68,6 +73,7 @@ export const EVENT_COLUMNS = [
 ] as const;
 
 export const COHORT_COLUMNS = [
+  'dimension',
   'group',
   'events',
   'distinct_assets',
@@ -130,6 +136,8 @@ const NUMERIC = new Set<string>([
   'multiple_3d',
   'multiple_7d',
   'multiple_30d',
+  'weighted_pass_points',
+  'weighted_strength',
   'current_vmc',
   'effective_horizon_hours',
   'highest_future_high_usd',
@@ -139,7 +147,7 @@ const NUMERIC = new Set<string>([
   'expected_days',
   'result_version',
   'asset_event_count',
-  ...COHORT_COLUMNS.filter((c) => c !== 'group'),
+  ...COHORT_COLUMNS.filter((c) => c !== 'group' && c !== 'dimension'),
   'count',
   'price_usd',
 ]);
@@ -171,6 +179,11 @@ function eventCells(e: ForwardEventRow, label: string): Cell[] {
     e.multiple3d,
     e.multiple7d,
     e.multiple30d,
+    e.passPattern,
+    e.weightedPassPoints,
+    e.scoreComplete === null ? null : e.scoreComplete ? 'TRUE' : 'FALSE',
+    e.weightedStrength,
+    e.rankingRulesetVersion,
     e.currentVmc,
     e.lbankPairs.join('; '),
     e.rulesetVersion,
@@ -244,8 +257,14 @@ export class ForwardExportService {
         .sort((a, b) => b.detectedAt.localeCompare(a.detectedAt) || b.starCount - a.starCount)
         .map((e) => eventCells(e, label));
     const groupName = (g: string) => (g === 'all' ? 'all' : `${g}_star`);
-    const cohort: Cell[][] = summary.cohort.map((g) => [
-      groupName(g.group),
+    // By star count, then by pass pattern and weighted-points band (weighted star ranking § 5).
+    const cohort: Cell[][] = [
+      ...summary.cohort,
+      ...summary.cohortByPattern,
+      ...summary.cohortByPointsBand,
+    ].map((g) => [
+      g.dimension,
+      g.dimension === 'stars' ? groupName(g.group) : g.group,
       g.events,
       g.distinctAssets,
       g.final,

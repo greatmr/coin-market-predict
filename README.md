@@ -7,7 +7,8 @@ Hourly cryptocurrency **screening for human review**, implementing the Two-Tier 
   or tokenized assets, and tradable on LBank Spot; compare each coin's current rolling-24h
   volume / market cap (VMC) with the mean of its own completed daily VMC over the last 3, 7 and
   30 UTC days. A coin enters the **Review Queue** when the current VMC is at least 1.5× at least
-  one of those means.
+  one of those means; the queue is ranked by stars (one per YES), then weighted points (3d 60 ·
+  7d 25 · 30d 15).
 - **Tier 2 (human):** review each queued coin's venues and 1D chart, and optionally record a
   manual LBank Spot trade plan. The system validates and stores the record; it never trades.
 - **Star Event Forward Test (automatic add-on):** the first 1/2/3-star detection per coin, UTC

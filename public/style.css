@@ -2005,6 +2005,15 @@ select option {
   grid-column: 1 / -1;
 }
 
+/* Weighted points (queue ranking) */
+.pts {
+  font-weight: 600;
+}
+.pts.lower {
+  color: var(--muted);
+  font-weight: 500;
+}
+
 /* Forward test */
 .fwd-notice {
   margin: 0 0 4px;

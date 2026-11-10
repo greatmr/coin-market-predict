@@ -32,7 +32,7 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M6.5 17.5l11-11" /></svg><span>Excluded</span><b class="count" id="count-excluded">0</b>
       </button>
       <button role="tab" id="t-forward" data-tab="forward" aria-controls="tab-forward">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18l5-6 4 3 7-9" /><path d="M15 6h5v5" /></svg><span>Forward test</span><b class="count" id="count-forward">0</b>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18l5-6 4 3 7-9" /><path d="M15 6h5v5" /></svg><span>Forward test</span><b class="count" id="count-forward"></b>
       </button>
       <button role="tab" id="t-batches" data-tab="batches" aria-controls="tab-batches">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-6 4 12 2-6h6" /></svg><span>Runs &amp; health</span>
@@ -175,6 +175,10 @@
         <div class="panel">
           <div class="panel-head"><h2>Star groups</h2><span class="hint">return statistics use FINAL events only; several events of one coin or one day are correlated</span></div>
           <div class="table-wrap" id="forward-cohorts"></div>
+        </div>
+        <div class="grid-2">
+          <div class="panel"><div class="panel-head"><h2>By pass pattern</h2><span class="hint">3d / 7d / 30d at detection; median and mean of FINAL events</span></div><div class="table-wrap" id="forward-patterns"></div></div>
+          <div class="panel"><div class="panel-head"><h2>By weighted points</h2><span class="hint">complete scores in fixed bands; incomplete scores apart</span></div><div class="table-wrap" id="forward-bands"></div></div>
         </div>
         <div class="grid-2">
           <div class="panel"><div class="panel-head"><h2>Final peak return</h2><span class="hint">all stars; display bins, not thresholds</span></div><div id="forward-dist"></div></div>

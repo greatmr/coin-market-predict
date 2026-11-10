@@ -38,7 +38,7 @@ export class McpService {
       defineTool({
         name: 'get_scan_results',
         description:
-          'Rows of one Tier 1 sheet for the latest (or given) batch: queue (eligible with ≥1 YES, in PDF order), eligible, needs_review, excluded, or all. Each row has rank, cap, rolling-24h volume, current VMC, 3/7/14/30-day means, 3/7/30-day multiples with YES/NO/N/A and reason codes, stars, eligibility reasons, LBank pair status and the latest human review.',
+          'Rows of one Tier 1 sheet for the latest (or given) batch: queue (eligible with ≥1 YES, ranked by stars, then weighted points 3d 60 / 7d 25 / 30d 15, complete score first, weighted strength, 3-day multiple, CMC id), eligible, needs_review, excluded, or all. Each row has rank, cap, rolling-24h volume, current VMC, 3/7/14/30-day means, 3/7/30-day multiples with YES/NO/N/A and reason codes, stars, eligibility reasons, LBank pair status, the weighted star ranking (points, score_complete, strength, ranking version) and the latest human review.',
         scope: 'read',
         input: {
           sheet: z.enum(['queue', 'eligible', 'needs_review', 'excluded', 'all']).optional(),
@@ -132,7 +132,7 @@ export class McpService {
       defineTool({
         name: 'get_forward_test_summary',
         description:
-          'Star Event Forward Test: 1/2/3-star cohorts (event and distinct-asset counts, FINAL / incomplete / pending counts, mean / median / p25 / p75 of the final peak return, distributions, detection hours, effective horizons, correlated same-asset or same-day events), High coverage, the last trigger and daily update, and freshness warnings. The peak return is an observed maximum High from the detection price, not a trade or realized P/L.',
+          'Star Event Forward Test: cohorts by star count, detection-time pass pattern and weighted-points band (event and distinct-asset counts, FINAL / incomplete / pending counts, mean / median / p25 / p75 of the final peak return, distributions, detection hours, effective horizons, correlated same-asset or same-day events), High coverage, the last trigger and daily update, and freshness warnings. The peak return is an observed maximum High from the detection price, not a trade or realized P/L.',
         scope: 'read',
         input: {},
         output: json,

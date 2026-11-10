@@ -34,7 +34,7 @@ VMC or star rule changed, so `RULESET_VERSION` is unchanged. Module boundary:
 
 | Surface | What |
 |---|---|
-| Dashboard | **Forward test** tab: star groups, final-return distribution, detection hours, Active / Final / Incomplete / All events, rejected triggers, downloads, *Update Highs now* |
+| Dashboard | **Forward test** tab: star groups, pass-pattern and weighted-points tables, final-return distribution, detection hours, Active / Final / Incomplete / All events, rejected triggers, downloads, *Update Highs now* |
 | API | `GET /api/forward` (report), `GET /api/forward/events?view=active\|final\|incomplete\|all&stars=&search=`, `GET /api/forward/events/:id`, `GET /api/forward/rejections`, `GET /api/forward/export/<sheet>.csv\|workbook.xlsx` (`exports:read`), `POST /api/forward/update` (`scan:operate`) |
 | MCP (read-only) | `get_forward_test_summary`, `get_forward_events`, `get_forward_event` |
 | CLI | `forward:status`, `forward:events`, `forward:update`, `forward:export` (§ 12) |
@@ -58,6 +58,7 @@ identity and the `market_snapshot` row) — the same data as the `Review_Queue` 
 | `pass_3d/7d/30d`, `multiple_3d/7d/30d`, `current_vmc`, `vmc_3d/7d/14d/30d_avg` | same names | `scan_result` | |
 | `lbank_pairs`, `queue_order`, `rank`, `cap_usd`, `volume_24h_usd`, `symbol`, `name`, `slug` | same names | `scan_result` | |
 | `ruleset_version`, `config_version`, `inputs_hash` | same names | `scan_result` | Tier 1 lineage |
+| `weighted_pass_points`, `score_complete`, `weighted_strength`, `ranking_ruleset_version` | same names | `scan_result` | the weighted star ranking known at detection ([strategy § 6a](strategy-two-tier-vmc.md#6a-weighted-star-ranking-weighted_star_v1-operator-decision-d3)); a later score on the same key never replaces it (F13) |
 | `platform_chain`, `platform_address` | — | `cmc_asset` | contract / network evidence |
 | `snapshot_id` | — | `market_snapshot.id` | provenance link (`SET NULL`) |
 | `scan_snapshot` | every column | the whole `scan_result` row | kept because reprocessing replaces scan rows |
@@ -166,7 +167,7 @@ because seven calendar dates elapsed.
 
 | Spec | Table | Content |
 |---|---|---|
-| `forward_events` | `forward_event` | the immutable detection snapshot (§ 3), `deadline_168h`, `evaluation_end`, `effective_horizon_hours`, `rules_version`; tracking state `status`, `quality_flags`, `result_version`, `last_update_at`, `finalized_at`. Unique key § 4; checks `star_count BETWEEN 1 AND 3`, `snapshot_price_usd > 0`; trigger `forward_event_immutable_snapshot` |
+| `forward_events` | `forward_event` | the immutable detection snapshot (§ 3, including the ranking fields since M009), `deadline_168h`, `evaluation_end`, `effective_horizon_hours`, `rules_version`; tracking state `status`, `quality_flags`, `result_version`, `last_update_at`, `finalized_at`. Unique key § 4; checks `star_count BETWEEN 1 AND 3`, `snapshot_price_usd > 0`; trigger `forward_event_immutable_snapshot` |
 | `forward_highs` | `forward_high` | `event_id`, `date_utc`, `period_start/end`, `source`, `source_revision_id` (→ `daily_metric_revision`), `revision`, `high_usd`, `time_high`, `quote_currency`, `observed_at` (retrieved), `eligibility`, `reason`, `is_current`, `superseded_at` |
 | `forward_outcomes` | `forward_outcome` | one row per `result_version`: `status`, `coverage_status`, `peak_kind` (EXACT / LOWER_BOUND / NONE), `peak_high_usd`, `peak_high_id`, `peak_at`, `peak_time_precision`, `peak_period_start/end`, `peak_return_pct`, `extension_peak_flag`, `effective_horizon_hours`, `day0_state`, covered / completed days, missing and invalid dates, reasons, the High rows used, `finalized_at`, `rules_version` |
 | watchlist | `forward_test_watchlist` | one row per coin: identity and contract evidence at the first event, first / last event time, event count. Events reference it (`RESTRICT`): removing a coin can never delete its history |
@@ -190,7 +191,8 @@ shown as `≥ x %`. The initial price is never overwritten.
 `Events_Active` (OPEN, TRACKING, AWAITING_FINAL_DAY), `Events_Final`, `Events_Incomplete`, with
 `event_id, cmc_id, symbol, name, detected_at_utc, detected_utc_date, detection_hour_utc,
 star_count, reference_price_usd, source_updated_at_utc, source_batch_id, pass_3d, pass_7d,
-pass_30d, multiple_3d, multiple_7d, multiple_30d, current_vmc, lbank_pairs, ruleset_version,
+pass_30d, multiple_3d, multiple_7d, multiple_30d, pass_pattern, weighted_pass_points,
+score_complete, weighted_strength, ranking_ruleset_version, current_vmc, lbank_pairs, ruleset_version,
 deadline_168h_utc, evaluation_end_utc, effective_horizon_hours, status, coverage_status,
 peak_kind, highest_future_high_usd, high_time_utc, high_interval_start_utc,
 high_interval_end_utc, high_time_precision, peak_return_pct, extension_peak_flag, day0_state,
@@ -198,7 +200,11 @@ completed_days, covered_days, expected_days, missing_dates, invalid_dates, data_
 result_version, revision_reason, rules_version, last_update_utc, finalized_at_utc,
 asset_event_count, overlapping_event_ids, data_label`.
 
-**Star-group report** (`Cohort_Summary`, groups 1★ / 2★ / 3★ / all): events, distinct coins,
+**Star-group report** (`Cohort_Summary`, one row per group with its `dimension`: star count
+1★ / 2★ / 3★ / all; detection-time **pass pattern** such as `NO/YES/YES`, listed in the queue order
+of the pattern; and **weighted-points band** — complete scores in fixed equal-width bands 75–100,
+50–74, 25–49, 0–24 points, with incomplete (lower-bound) scores and events detected before the
+ranking in groups of their own, F14): events, distinct coins,
 FINAL / incomplete / pending (open + tracking + awaiting) counts; over **FINAL events only** the
 mean, median, p25, p75, minimum and maximum `peak_return_pct` (percentiles: linear interpolation
 between order statistics, Hyndman–Fan type 7); correlation counts (coins with several events and
@@ -243,6 +249,8 @@ successful update.
 | Detection snapshot immutable | e2e › *keeps the detection snapshot immutable in the database* |
 | Hourly pipeline on the synthetic market: one event per published queue row, none on reprocessing or re-runs, daily update to FINAL / INCOMPLETE_DAY0, peaks recomputable from the stored Highs, export with checksums | e2e › *records the published queue as events…* |
 | A forward-test failure never fails the hourly run | e2e › *a forward-test failure never fails the hourly run* |
+| Ranking addendum § 5–6: the same coin keeps 2 stars twice on one UTC date with different points → one 2-star event with the first snapshot (YES/YES/NO, 85, strength 1.91); a later 3-star result → its own event; the snapshot is immutable | e2e › *snapshots the ranking known at detection…*; pipeline events copy the scanner's ranking (e2e › *records the published queue…*) |
+| Outcomes compared by star count, pass pattern and weighted-points band, with counts and quality | `cohort.spec.ts` › *by pass pattern and weighted-points band* |
 
 ## 12. Runbook
 
@@ -296,12 +304,14 @@ the previous commit and rebuild. Do not run `db:revert` on real data.
 | F10 | Distribution bins are display bins; percentiles are type 7 | p.9 asks for p25 / p75 and the distribution without definitions |
 | F11 | `time_high` / `time_low` are outside the daily row's content hash | Capturing them must not create revisions or change Tier 1 lineage |
 | F12 | Statuses change at each daily update, not hourly; the tab shows when it last ran | "Check future highs once per day" (p.2) |
+| F13 | The ranking fields are copied from the published scan row like every other scanner field; events detected before `weighted_star_v1` keep NULL (never back-filled) | Ranking addendum § 5: features known at detection, never rewritten |
+| F14 | Weighted-points bands are equal-width and fixed in advance (75–100, 50–74, 25–49, 0–24); only complete scores are banded | The addendum names "weighted score bands" without boundaries; fixed bands keep the later evaluation of the weights out of sample |
 
 ## 14. Unresolved upstream data gaps
 
 | Id | Gap | Effect | What would close it |
 |---|---|---|---|
-| U1 | No verified CMC route returns intraday OHLC (a true post-detection High) for the signal day | Day 0 is settled only by CMC's `timeHigh` or the shortcut; otherwise `INCOMPLETE_DAY0` with a lower bound. How often depends on how often a coin's daily High comes before the detection hour and is never exceeded later (synthetic demo: 10 of 920 events; not a live estimate) | An intraday High source, after a [source assessment](../.claude/skills/source-assessment/SKILL.md) and an operator decision; it would add `forward_high` rows for the partial day |
+| U1 | No verified CMC route returns intraday OHLC (a true post-detection High) for the signal day | Day 0 is settled only by CMC's `timeHigh` or the shortcut; otherwise `INCOMPLETE_DAY0` with a lower bound. How often depends on how often a coin's daily High comes before the detection hour and is never exceeded later (synthetic demo: 10 of 1,047 events; not a live estimate) | An intraday High source, after a [source assessment](../.claude/skills/source-assessment/SKILL.md) and an operator decision; it would add `forward_high` rows for the partial day |
 | U2 | `time_high` exists only for daily rows stored after M008 | None for events (no backfill); a source change of `timeHigh` alone is not stored as a revision (F11) | — |
 | U3 | No LBank reference price or LBank High is captured | The metric is CMC-only by design (p.5) | A separately captured LBank reference with its own label |
 | U4 | The existing listing parser carries the price as a JavaScript number before storage | CMC publishes it as a JSON number, so its shortest representation is stored; source text beyond that is not kept | Keep the exact listing text in the crawler (not needed for this metric) |

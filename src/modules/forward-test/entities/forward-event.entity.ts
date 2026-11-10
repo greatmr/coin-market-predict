@@ -169,6 +169,23 @@ export class ForwardEvent {
   @Column({ name: 'queue_order', type: 'integer', nullable: true })
   queueOrder!: number | null;
 
+  /**
+   * Ranking fields known at detection (weighted star ranking, addendum § 5), part of the immutable
+   * snapshot: a later score on the same key never overwrites them. NULL for events detected before
+   * the ranking existed; never back-filled.
+   */
+  @Column({ name: 'weighted_pass_points', type: 'integer', nullable: true })
+  weightedPassPoints!: number | null;
+
+  @Column({ name: 'score_complete', type: 'boolean', nullable: true })
+  scoreComplete!: boolean | null;
+
+  @DecimalColumn(65, 30, { name: 'weighted_strength', nullable: true })
+  weightedStrength!: DValue | null;
+
+  @Column({ name: 'ranking_ruleset_version', type: 'text', nullable: true })
+  rankingRulesetVersion!: string | null;
+
   @Column({ name: 'lbank_pairs', type: 'jsonb' })
   lbankPairs!: ResolvedPair[];
 

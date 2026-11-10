@@ -26,7 +26,8 @@ backtests and the six-month VMC baseline. See `docs/strategy-two-tier-vmc.md` §
 3. **Tier 1 rules** (p.3–19): rank 101–1200, circulating cap ≥ $15M, listed ≥ 60 days, not a
    stablecoin or tokenized asset, a verified LBank Spot pair; daily VMC means over exactly the
    last 3 / 7 / 14 / 30 completed UTC days; YES iff current ≥ 1.5 × mean (14d context only);
-   stars = YES count; queue order per p.14. Exact decimal arithmetic; missing or ambiguous inputs
+   stars = YES count; queue ranked by stars, then weighted points (3d 60 · 7d 25 · 30d 15;
+   Weighted Star Ranking Addendum, D3, `weighted_star_v1`). Exact decimal arithmetic; missing or ambiguous inputs
    give N/A or NEEDS_REVIEW with a reason, never a guess.
 4. **Semantics**: UTC storage; USD values; circulating market cap (never FDV); rolling-24h volume
    kept separate from daily volume; provider update, crawl and scan times kept apart; nulls carry
@@ -67,7 +68,8 @@ backtests and the six-month VMC baseline. See `docs/strategy-two-tier-vmc.md` §
 ## Acceptance criteria
 - `npm test` and `npm run test:db` pass offline, including the PDF's acceptance cases (p.19:
   A exact 1.5 boundary, B ranks / cap / age boundaries, C mean of ratios, D missing day,
-  E zero / stale / unverified inputs, F queue order); fixture mode runs end to end (fixture crawl
+  E zero / stale / unverified inputs; F queue order, superseded by the weighted star ranking's own
+  acceptance cases); fixture mode runs end to end (fixture crawl
   → PostgreSQL → Tier 1 scan → exports → dashboard / MCP → Telegram dry run).
 - Fixture data is labelled synthetic everywhere it appears (DB flag, dashboard, exports, Telegram).
 - A batch is never COMPLETE unless every listed coin was stored and ranks 1–1200 are contiguous.

@@ -48,6 +48,11 @@ export interface TriggerRow extends TriggerCandidate {
   pass7d: PassStatus;
   pass30d: PassStatus;
   queueOrder: number | null;
+  /** Ranking fields of the published row, snapshotted as they were (weighted star ranking § 5). */
+  weightedPassPoints: number | null;
+  scoreComplete: boolean | null;
+  weightedStrength: DValue | null;
+  rankingRulesetVersion: string | null;
   lbankPairs: ResolvedPair[];
   rulesetVersion: string;
   configVersion: string;
@@ -165,6 +170,10 @@ export class ForwardCaptureService {
         pass7d: r.pass7d,
         pass30d: r.pass30d,
         queueOrder: r.queueOrder,
+        weightedPassPoints: r.weightedPassPoints,
+        scoreComplete: r.scoreComplete,
+        weightedStrength: dec(r.weightedStrength),
+        rankingRulesetVersion: r.rankingRulesetVersion,
         lbankPairs: r.lbankPairs,
         rulesetVersion: r.rulesetVersion,
         configVersion: r.configVersion,
@@ -361,6 +370,10 @@ export class ForwardCaptureService {
         pass7d: row.pass7d,
         pass30d: row.pass30d,
         queueOrder: row.queueOrder,
+        weightedPassPoints: row.weightedPassPoints,
+        scoreComplete: row.scoreComplete,
+        weightedStrength: text(row.weightedStrength) as never,
+        rankingRulesetVersion: row.rankingRulesetVersion,
         lbankPairs: row.lbankPairs as never,
         rulesetVersion: row.rulesetVersion,
         configVersion: row.configVersion,

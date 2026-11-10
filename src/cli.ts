@@ -502,6 +502,11 @@ function renderTrace(t: Record<string, unknown>): string {
     assetClass: string;
     classSource: string;
   };
+  const ranking = t.ranking as {
+    version: string | null;
+    pointsFormula: string;
+    strengthFormula: string;
+  };
   const lb = t.lbank as {
     status: string;
     reason: string | null;
@@ -536,6 +541,7 @@ function renderTrace(t: Record<string, unknown>): string {
       ...(w.comparison ? [`    ${w.comparison}`] : []),
     ]),
     '',
+    `Ranking ${ranking.version ?? 'none (scanned before weighted_star_v1)'}: points ${ranking.pointsFormula}; strength ${ranking.strengthFormula}`,
     `Stars ${r.stars} · eligibility ${elig.status}${elig.reasons.length ? ` (${elig.reasons.join(', ')})` : ''} · class ${elig.assetClass} [${elig.classSource}]`,
     `LBank ${lb.status}${lb.reason ? ` (${lb.reason})` : ''}: ${lb.pairs.map((p) => `${p.marketPair} ${p.mapping}/${p.trading}`).join('; ') || 'no pairs'}`,
     `queue ${r.inQueue ? `#${r.queueOrder}` : 'no'} · flags ${[...(r.flags as string[]), ...(r.venueFlags as string[])].join(', ') || 'none'}`,
@@ -578,6 +584,14 @@ function renderForwardSummary(s: Awaited<ReturnType<ForwardReadService['summary'
       ].join(' '),
     ),
     '',
+    '',
+    ...forwardGroupTable('By detection-time pass pattern (3d/7d/30d)', s.cohortByPattern),
+    '',
+    ...forwardGroupTable(
+      'By weighted-points band (complete scores; incomplete scores apart)',
+      s.cohortByPointsBand,
+    ),
+    '',
     `Correlated observations (all): ${(() => {
       const c = s.cohort.find((g) => g.group === 'all')!.correlation;
       return `${c.assetsWithMultipleEvents} assets with several events (${c.eventsOnRepeatedAssets} events), ${c.sameAssetOverlaps} overlapping same-asset pairs, ${c.datesWithMultipleEvents} of ${c.detectionDates} detection dates with several events`;
@@ -587,6 +601,20 @@ function renderForwardSummary(s: Awaited<ReturnType<ForwardReadService['summary'
     s.notice,
   ];
   return lines.join('\n');
+}
+
+function forwardGroupTable(
+  title: string,
+  groups: Awaited<ReturnType<ForwardReadService['summary']>>['cohortByPattern'],
+): string[] {
+  return [
+    `${title}:`,
+    `  ${'group'.padEnd(44)} events  coins  final  incompl  pending |  n   median     mean`,
+    ...groups.map(
+      (g) =>
+        `  ${g.group.padEnd(44)} ${String(g.events).padStart(6)} ${String(g.distinctAssets).padStart(6)} ${String(g.final).padStart(6)} ${String(g.incomplete).padStart(8)} ${String(g.pending).padStart(8)} | ${String(g.finalReturns.n).padStart(3)} ${pct(g.finalReturns.median).padStart(9)} ${pct(g.finalReturns.mean).padStart(9)}`,
+    ),
+  ];
 }
 
 function renderForwardEvents(rows: ForwardEventRow[], total: number): string {

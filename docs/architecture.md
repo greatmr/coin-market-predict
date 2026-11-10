@@ -76,7 +76,8 @@ a stored batch from saved data under the same lease, without crawling.
 Tables are snake_case; entities live in each module's `entities/` and are registered in
 `src/database/entities.ts`. The schema is created only by the raw-SQL migrations in
 `src/database/migrations/` (M001 enum types · M002 platform · M003 market data · M004 daily
-metrics · M005 venues · M006 scan and reviews · M007 users · M008 forward test), applied with
+metrics · M005 venues · M006 scan and reviews · M007 users · M008 forward test · M009 weighted
+star ranking), applied with
 `npm run db:migrate`; a test fails
 when entities and migrations disagree. Conventions and their reasons:
 [ADR-0001](adr/0001-typeorm-modular-layout.md).
@@ -91,7 +92,7 @@ when entities and migrations disagree. Conventions and their reasons:
 | `daily_metric`, `daily_metric_revision`, `daily_fetch_state` | daily-metrics | Effective completed-day row per coin and date, every revision with source route, parameters and response SHA-256 (and, since M008, the source's time of the day's High / Low), per-coin fetch state |
 | `venue_crawl`, `venue_pair_event` | venues | LBank pair feed / asset market-pair crawls (pairs as JSON) and LBank listing / absence events |
 | `venue_decision`, `venue_mapping_task` | venues | Reviewer decisions (mapping confirmed / rejected, verified tradable, not tradable) and open ambiguous-ticker tasks |
-| `scan_run`, `scan_result` | scan | One scan per batch (queue status, counts, warnings, export state) and one row per coin with every value, status, reason, the daily window used, inputs hash, ruleset and config versions |
+| `scan_run`, `scan_result` | scan | One scan per batch (queue status, counts, warnings, export state) and one row per coin with every value, status, reason, the daily window used, inputs hash, ruleset and config versions, and the weighted star ranking (points, completeness, strength, `ranking_ruleset_version`) behind `queue_order` |
 | `review` | reviews | Append-only Tier 1 / Tier 2 review revisions with the Tier 1 snapshot they were made against |
 | `forward_test_watchlist`, `forward_event` | forward-test | One row per coin with events (automatic, no approval); one event per (coin, UTC date, star count) with its immutable detection snapshot (a database trigger refuses changes), window and tracking status |
 | `forward_high`, `forward_outcome` | forward-test | Each included day's High per event and source revision (superseded rows kept); versioned outcomes (peak, return, coverage, extension flag) |

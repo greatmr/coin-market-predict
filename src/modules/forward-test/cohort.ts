@@ -1,5 +1,7 @@
 import { D, type DValue } from '../../common/utils/decimal.js';
 
+import { type PassStatus, rankingScore } from '../strategy/index.js';
+
 import {
   ACTIVE_EVENT_STATUSES,
   type ForwardEventStatus,
@@ -7,10 +9,11 @@ import {
 } from './forward.constants.js';
 
 /**
- * Star-group comparison (PDF p.9), pure and exact. Primary aggregates use only FINAL events (every
- * included period covered, exact peak); everything else is counted, never averaged in. Events of
- * one asset or one day are correlated observations: they are identified, not treated as
- * independent trades.
+ * Star-group comparison (PDF p.9), pure and exact, by star count, by detection-time pass pattern
+ * and by weighted-points band (Weighted Star Ranking addendum § 5). Primary aggregates use only
+ * FINAL events (every included period covered, exact peak); everything else is counted, never
+ * averaged in. Events of one asset or one day are correlated observations: they are identified,
+ * not treated as independent trades. Nothing here feeds back into a score.
  */
 
 export interface CohortEvent {
@@ -24,7 +27,28 @@ export interface CohortEvent {
   peakKind: PeakKind | null;
   peakReturnPct: DValue | null;
   effectiveHorizonHours: DValue;
+  /** Detection-time 3d / 7d / 30d results (the pattern label is derived, never parsed). */
+  passes: readonly [PassStatus, PassStatus, PassStatus];
+  /** Detection-time weighted pass points and completeness; null when detected before the ranking. */
+  weightedPassPoints: number | null;
+  scoreComplete: boolean | null;
 }
+
+/**
+ * Bands of weighted pass points, compared on complete scores only (an incomplete score is a lower
+ * bound and gets its own group). Equal-width and fixed in advance: display bands, not thresholds.
+ */
+export const POINTS_BANDS: ReadonlyArray<{ label: string; min: number; max: number }> = [
+  { label: '75–100 points', min: 75, max: 100 },
+  { label: '50–74 points', min: 50, max: 74 },
+  { label: '25–49 points', min: 25, max: 49 },
+  { label: '0–24 points', min: 0, max: 24 },
+];
+export const INCOMPLETE_SCORE_GROUP = 'incomplete score (lower bound)';
+
+/** Display label of a 3d / 7d / 30d result triple, e.g. `N/A/YES/YES`. */
+export const passPattern = (p: readonly [PassStatus, PassStatus, PassStatus]) => p.join('/');
+export const UNSCORED_GROUP = 'no score (detected before weighted_star_v1)';
 
 export interface Bin {
   label: string;
@@ -83,9 +107,12 @@ export function stats(values: readonly DValue[]): Stats {
   };
 }
 
+export type CohortDimension = 'stars' | 'pass_pattern' | 'points_band';
+
 export interface CohortGroup {
-  /** 1, 2 or 3 stars, or every event. */
-  group: '1' | '2' | '3' | 'all';
+  dimension: CohortDimension;
+  /** Stars `1` / `2` / `3` / `all`, a pass pattern (`YES/NO/N/A`) or a points band. */
+  group: string;
   events: number;
   distinctAssets: number;
   final: number;
@@ -113,7 +140,12 @@ export interface CohortGroup {
 }
 
 export interface CohortReport {
+  /** By star count, then all events. */
   groups: CohortGroup[];
+  /** By detection-time pass pattern, in queue order of the pattern (stars, points, complete). */
+  patterns: CohortGroup[];
+  /** By weighted-points band (complete scores), then incomplete and unscored events. */
+  pointsBands: CohortGroup[];
   /** eventId → ids of the same asset's other events whose windows overlap (any star count). */
   overlaps: Map<string, string[]>;
   /** cmcId → number of events (any star count). */
@@ -158,7 +190,11 @@ export function overlapMap(events: readonly Span[]): Map<string, string[]> {
   return out;
 }
 
-function group(key: CohortGroup['group'], events: readonly CohortEvent[]): CohortGroup {
+function group(
+  dimension: CohortDimension,
+  key: string,
+  events: readonly CohortEvent[],
+): CohortGroup {
   const byStatus = Object.fromEntries(
     (['OPEN', 'TRACKING', 'AWAITING_FINAL_DAY', 'FINAL', 'INCOMPLETE'] as const).map((s) => [
       s,
@@ -182,6 +218,7 @@ function group(key: CohortGroup['group'], events: readonly CohortEvent[]): Cohor
   for (const e of events) perDate.set(e.detectedUtcDate, (perDate.get(e.detectedUtcDate) ?? 0) + 1);
   const repeated = [...perAsset.values()].filter((n) => n > 1);
   return {
+    dimension,
     group: key,
     events: events.length,
     distinctAssets: perAsset.size,
@@ -214,15 +251,68 @@ export function cohortReport(events: readonly CohortEvent[]): CohortReport {
   const overlaps = overlapMap(events);
   const assetEventCounts = new Map<number, number>();
   for (const e of events) assetEventCounts.set(e.cmcId, (assetEventCounts.get(e.cmcId) ?? 0) + 1);
+
+  // `N/A` contains a slash, so a label is never split back into statuses.
+  const byPattern = new Map<string, CohortEvent['passes']>();
+  for (const e of events) byPattern.set(passPattern(e.passes), e.passes);
+  const patternRank = (pattern: string) => {
+    const [p3, p7, p30] = byPattern.get(pattern)!;
+    return rankingScore({
+      pass3d: p3,
+      pass7d: p7,
+      pass30d: p30,
+      multiple3d: null,
+      multiple7d: null,
+      multiple30d: null,
+    });
+  };
+  const patterns = [...byPattern.keys()].sort((a, b) => {
+    const x = patternRank(a);
+    const y = patternRank(b);
+    return (
+      y.stars - x.stars ||
+      y.weightedPassPoints - x.weightedPassPoints ||
+      Number(y.scoreComplete) - Number(x.scoreComplete) ||
+      a.localeCompare(b)
+    );
+  });
+  const scored = events.filter((e) => e.weightedPassPoints !== null && e.scoreComplete !== null);
+  const unscored = events.filter((e) => e.weightedPassPoints === null || e.scoreComplete === null);
   return {
     groups: [
       ...(['1', '2', '3'] as const).map((s) =>
         group(
+          'stars',
           s,
           events.filter((e) => String(e.stars) === s),
         ),
       ),
-      group('all', events),
+      group('stars', 'all', events),
+    ],
+    patterns: patterns.map((p) =>
+      group(
+        'pass_pattern',
+        p,
+        events.filter((e) => passPattern(e.passes) === p),
+      ),
+    ),
+    pointsBands: [
+      ...POINTS_BANDS.map((b) =>
+        group(
+          'points_band',
+          b.label,
+          scored.filter(
+            (e) =>
+              e.scoreComplete && e.weightedPassPoints! >= b.min && e.weightedPassPoints! <= b.max,
+          ),
+        ),
+      ),
+      group(
+        'points_band',
+        INCOMPLETE_SCORE_GROUP,
+        scored.filter((e) => !e.scoreComplete),
+      ),
+      ...(unscored.length ? [group('points_band', UNSCORED_GROUP, unscored)] : []),
     ],
     overlaps,
     assetEventCounts,

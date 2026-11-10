@@ -28,6 +28,7 @@ import {
   type PairHistoryView,
   type PassWindow,
   type QueueStatus,
+  RANKING_RULESET_VERSION,
   REASON,
   RULES,
   RULESET_VERSION,
@@ -43,6 +44,7 @@ import {
   inReviewQueue,
   needsDailyRows,
   notEvaluated,
+  rankingScore,
   resolveLbank,
 } from '../strategy/index.js';
 import { VenueCrawl } from '../venues/entities/venue-crawl.entity.js';
@@ -356,6 +358,7 @@ export class ScanService {
         finishedAt: null,
         attempts: () => 'attempts + 1',
         rulesetVersion: RULESET_VERSION,
+        rankingRulesetVersion: RANKING_RULESET_VERSION,
         configVersion: cv,
         overridesVersion: ctx.overrides.version,
         error: null,
@@ -368,6 +371,7 @@ export class ScanService {
         providerId: batch.providerId,
         isLive: batch.isLive,
         rulesetVersion: RULESET_VERSION,
+        rankingRulesetVersion: RANKING_RULESET_VERSION,
         configVersion: cv,
         overridesVersion: ctx.overrides.version,
         startedAt,
@@ -408,7 +412,8 @@ export class ScanService {
       evaluated.map((a) => a.cmcId),
     );
 
-    const rows: Array<ScanRow & { _m3: DValue | null }> = [];
+    // Unrounded sort keys (the stored values are rounded for storage only).
+    const rows: Array<ScanRow & { _m3: DValue | null; _strength: DValue | null }> = [];
     for (const a of ctx.assets) {
       const isEvaluated = needsDailyRows(a.eligibility);
       const rowsFor = daily.get(a.cmcId) ?? new Map<string, DailyInput>();
@@ -427,6 +432,15 @@ export class ScanService {
         : notEvaluated();
       const windows = ev.windows;
       const stars = isEvaluated ? ev.stars : 0;
+      // Weighted star ranking (weighted_star_v1): from the same comparisons, never a new pass.
+      const rank = rankingScore({
+        pass3d: comparisons[3].status,
+        pass7d: comparisons[7].status,
+        pass30d: comparisons[30].status,
+        multiple3d: comparisons[3].multiple,
+        multiple7d: comparisons[7].multiple,
+        multiple30d: comparisons[30].multiple,
+      });
       const venue: VenueSummary | null = isEvaluated
         ? this.strategy.venueSummary(a.cmcId, markets.get(a.cmcId) ?? null, computedAt)
         : null;
@@ -509,6 +523,10 @@ export class ScanService {
         flags,
         inQueue: false,
         queueOrder: null,
+        weightedPassPoints: rank.weightedPassPoints,
+        scoreComplete: rank.scoreComplete,
+        weightedStrength: forStorage(rank.weightedStrength),
+        rankingRulesetVersion: RANKING_RULESET_VERSION,
         diagnostics: isEvaluated
           ? {
               quoteAgeSeconds:
@@ -532,30 +550,22 @@ export class ScanService {
         configVersion: cv,
         computedAt,
         _m3: comparisons[3].multiple,
+        _strength: rank.weightedStrength,
       });
     }
 
     const queue = rows.filter((r) =>
       inReviewQueue({ eligibilityStatus: r.eligibilityStatus, stars: r.stars }),
     );
-    queue.sort((x, y) =>
-      compareQueue(
-        {
-          cmcId: x.cmcId,
-          pass3d: x.pass3d,
-          pass7d: x.pass7d,
-          pass30d: x.pass30d,
-          multiple3d: x._m3,
-        },
-        {
-          cmcId: y.cmcId,
-          pass3d: y.pass3d,
-          pass7d: y.pass7d,
-          pass30d: y.pass30d,
-          multiple3d: y._m3,
-        },
-      ),
-    );
+    const sortKey = (r: (typeof rows)[number]) => ({
+      cmcId: r.cmcId,
+      stars: r.stars,
+      weightedPassPoints: r.weightedPassPoints!,
+      scoreComplete: r.scoreComplete!,
+      weightedStrength: r._strength,
+      multiple3d: r._m3,
+    });
+    queue.sort((x, y) => compareQueue(sortKey(x), sortKey(y)));
     queue.forEach((r, i) => {
       r.inQueue = true;
       r.queueOrder = i + 1;
@@ -573,7 +583,7 @@ export class ScanService {
 
     const counts = await this.countsAndWarnings(ctx, rows, queue.length, extraWarnings);
     const tasks = ctx.assets.flatMap((a) => a.lbank.tasks.map((t) => ({ ...t, cmcId: a.cmcId })));
-    const persistable = rows.map(({ _m3, ...r }) => r);
+    const persistable = rows.map(({ _m3, _strength, ...r }) => r);
     await this.db.transaction(async (m) => {
       await m.getRepository(ScanResult).delete({ batchId: batch.id });
       await insertRows(m, ScanResult, persistable as never);

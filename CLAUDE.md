@@ -19,7 +19,9 @@ never real orders. Spec: `docs/strategy-two-tier-vmc.md`. Purpose and open decis
   `tier1/` (eligibility, vmc, lbank, venue-summary, review-queue), `tier2/review-rules.ts`,
   `overrides/`, and `StrategyService`. No I/O; other modules import it only via
   `modules/strategy/index.js` (ESLint-enforced). Any rule change bumps `RULESET_VERSION` and the
-  strategy doc.
+  strategy doc. The Review Queue order is the weighted star ranking (`tier1/review-queue.ts`,
+  strategy doc § 6a): a weight / cap / sort-key change bumps `RANKING_RULESET_VERSION` instead and
+  never rewrites stored scores.
 - **Star Event Forward Test** (`src/modules/forward-test/`, `docs/forward-test.md`,
   `docs/adr/0004-forward-test-module.md`): an add-on that reads published Tier 1 results and never
   changes them. One event per (CMC id, UTC date, stars), first insert wins; the detection snapshot

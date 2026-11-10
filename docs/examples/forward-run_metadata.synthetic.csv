@@ -8,21 +8,21 @@ notice,"Observed maximum future High from the CMC detection price: a hypothetica
 primary_aggregates,"FINAL events only (every included period covered, exact peak)"
 percentiles,linear interpolation between order statistics (type 7)
 return_bins,"< 0 % | 0 – 5 % | 5 – 10 % | 10 – 20 % | 20 – 50 % | 50 – 100 % | ≥ 100 % (display bins, not thresholds)"
-events,920
+events,1047
 watchlist_assets,205
-status_OPEN,0
+status_OPEN,127
 status_TRACKING,541
-status_AWAITING_FINAL_DAY,192
-status_FINAL,175
+status_AWAITING_FINAL_DAY,104
+status_FINAL,263
 status_INCOMPLETE,12
-covered_days,3995
+covered_days,4730
 completed_days,4803
-missing_days,741
+missing_days,3
 invalid_days,0
-day0_unresolved_events,67
-last_trigger_utc,2026-11-09T18:08:30.000Z
-last_update_utc,2026-11-10T18:50:50.017Z
+day0_unresolved_events,70
+last_trigger_utc,2026-11-10T19:34:44.647Z
+last_update_utc,2026-11-10T19:35:56.266Z
 last_update_status,partial
-last_successful_update_utc,2026-11-10T18:50:52.041Z
-warnings,"SYNTHETIC: fixture data, not market data; for demonstration only. | UPDATE_PARTIAL (2026-11-10T18:50:50.017Z): 739 events lack a High for a completed day, retried after 3 h: GAPD (CMC 990007) 2026-11-05; F0441 (CMC 990541) 2026-11-09; F0614 (CMC 990714) 2026-11-09; … | INCOMPLETE_DAY0: 10 events cannot be finalized — the signal day's High came before detection (or its time is unknown), no later High reached it, and no intraday High source is configured. Their peaks are lower bounds."
-export_generated_at_utc,2026-11-10T18:50:50.017Z
+last_successful_update_utc,2026-11-10T19:35:58.304Z
+warnings,"SYNTHETIC: fixture data, not market data; for demonstration only. | UPDATE_PARTIAL (2026-11-10T19:35:56.266Z): 3 events lack a High for a completed day, retried after 3 h: GAPD (CMC 990007, 3★ 2026-11-01) lacks 2026-11-05; GAPD (CMC 990007, 3★ 2026-11-02) lacks 2026-11-05; GAPD (CMC 990007, 3★ 2026-11-04) lacks 2026-11-05 | INCOMPLETE_DAY0: 10 events cannot be finalized — the signal day's High came before detection (or its time is unknown), no later High reached it, and no intraday High source is configured. Their peaks are lower bounds."
+export_generated_at_utc,2026-11-10T19:35:56.266Z

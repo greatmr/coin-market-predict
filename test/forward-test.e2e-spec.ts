@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DAY_MS } from '../src/common/utils/dates.js';
-import { D } from '../src/common/utils/decimal.js';
+import { D, type DValue } from '../src/common/utils/decimal.js';
 import { slotOf } from '../src/common/utils/time.js';
 import { DailyMetricsService } from '../src/modules/daily-metrics/daily-metrics.service.js';
 import { ForwardEvent } from '../src/modules/forward-test/entities/forward-event.entity.js';
@@ -27,6 +27,7 @@ import { IngestionService } from '../src/modules/ingestion/ingestion.service.js'
 import { PipelineService } from '../src/modules/pipeline/pipeline.service.js';
 import { ScanResult } from '../src/modules/scan/entities/scan-result.entity.js';
 import type { DailySourceRow } from '../src/modules/sources/source.types.js';
+import { type PassStatus, rankingScore } from '../src/modules/strategy/index.js';
 
 import { makeApp, resetDb } from './utils/helpers.js';
 
@@ -87,6 +88,32 @@ async function batch(crawledAt: string, status: 'COMPLETE' | 'INCOMPLETE' = 'COM
   } satisfies TriggerBatch;
 }
 
+/** The scanner's comparisons for a pass pattern (YES → 2.0×, NO → 1.2×) with their ranking fields. */
+function ranked(
+  pattern: [PassStatus, PassStatus, PassStatus],
+  multiples?: [string, string, string],
+) {
+  const m = pattern.map((p, i) =>
+    p === 'N/A' ? null : new D(multiples?.[i] ?? (p === 'YES' ? '2' : '1.2')),
+  ) as [DValue | null, DValue | null, DValue | null];
+  const fields = {
+    pass3d: pattern[0],
+    pass7d: pattern[1],
+    pass30d: pattern[2],
+    multiple3d: m[0],
+    multiple7d: m[1],
+    multiple30d: m[2],
+  };
+  const r = rankingScore(fields);
+  return {
+    ...fields,
+    weightedPassPoints: r.weightedPassPoints,
+    scoreComplete: r.scoreComplete,
+    weightedStrength: r.weightedStrength,
+    rankingRulesetVersion: 'weighted_star_v1',
+  };
+}
+
 /** A published Review Queue row as the scanner would hand it over (synthetic values). */
 function row(
   cmcId: number | null,
@@ -97,6 +124,7 @@ function row(
 ): TriggerRow {
   const at = t(observedAt);
   const yes = (n: number) => (stars >= n ? 'YES' : 'NO');
+  const rank = ranked([yes(1), yes(2), yes(3)]);
   return {
     cmcId,
     stars,
@@ -122,12 +150,7 @@ function row(
     vmc7dAvg: new D('0.1'),
     vmc14dAvg: new D('0.1'),
     vmc30dAvg: new D('0.1'),
-    multiple3d: new D('2'),
-    multiple7d: new D('2'),
-    multiple30d: new D('2'),
-    pass3d: yes(1),
-    pass7d: yes(2),
-    pass30d: yes(3),
+    ...rank,
     queueOrder: 1,
     lbankPairs: [],
     rulesetVersion: 'vmc-tier1-1',
@@ -258,6 +281,71 @@ describe('trigger: the first observation per (asset, UTC date, stars) — PDF p.
     expect(rows.every((r) => r.assetEventCount === 3 && r.overlappingEventIds.length === 2)).toBe(
       true,
     );
+  });
+
+  it('snapshots the ranking known at detection; a later score on the same key changes nothing (ranking § 5)', async () => {
+    const id = 321;
+    const first = await sight(
+      row(
+        id,
+        2,
+        '10',
+        '2026-11-10T10:00:00.000Z',
+        ranked(['YES', 'YES', 'NO'], ['2.2', '1.7', '1.1']),
+      ),
+    );
+    // Same UTC date, still 2 stars, but now NO/YES/YES (40 points): no new event, nothing rewritten.
+    const same = await sight(
+      row(
+        id,
+        2,
+        '11',
+        '2026-11-10T11:00:00.000Z',
+        ranked(['NO', 'YES', 'YES'], ['1.4', '1.6', '1.8']),
+      ),
+    );
+    const three = await sight(
+      row(id, 3, '12', '2026-11-10T15:00:00.000Z', ranked(['YES', 'YES', 'YES'])),
+    );
+    expect([
+      first.created.length,
+      same.created.length,
+      same.ignored.length,
+      three.created.length,
+    ]).toEqual([1, 0, 1, 1]);
+    const events = await ctx
+      .repo(ForwardEvent)
+      .find({ where: { cmcId: id }, order: { detectedAt: 'ASC' } });
+    expect(
+      events.map((e) => [
+        e.starCount,
+        `${e.pass3d}/${e.pass7d}/${e.pass30d}`,
+        e.weightedPassPoints,
+        e.scoreComplete,
+        e.weightedStrength?.toFixed() ?? null,
+        e.rankingRulesetVersion,
+        e.snapshotPriceUsd.toFixed(),
+      ]),
+    ).toEqual([
+      [2, 'YES/YES/NO', 85, true, '1.91', 'weighted_star_v1', '10'],
+      [3, 'YES/YES/YES', 100, true, '2', 'weighted_star_v1', '12'],
+    ]);
+    // Part of the immutable detection snapshot.
+    await expect(
+      ctx.db.query(`UPDATE forward_event SET weighted_pass_points = 40 WHERE id = $1`, [
+        events[0]!.id,
+      ]),
+    ).rejects.toThrow(/immutable/);
+    const rows = (
+      await ctx.app.get(ForwardReadService).events({ view: 'all', limit: 5, offset: 0 })
+    ).rows;
+    expect(rows.find((r) => r.starCount === 2)).toMatchObject({
+      passPattern: 'YES/YES/NO',
+      weightedPassPoints: 85,
+      scoreComplete: true,
+      weightedStrength: '1.91',
+      rankingRulesetVersion: 'weighted_star_v1',
+    });
   });
 
   it('concurrent workers cannot create a duplicate (atomic unique key)', async () => {
@@ -515,6 +603,18 @@ describe('hourly pipeline integration on the synthetic fixture', () => {
         q.priceUsd!.toFixed(),
         'OPEN',
         false,
+      ]);
+      // The scanner's ranking at detection, copied as published.
+      expect([
+        e.weightedPassPoints,
+        e.scoreComplete,
+        e.weightedStrength?.toFixed() ?? null,
+        e.rankingRulesetVersion,
+      ]).toEqual([
+        q.weightedPassPoints,
+        q.scoreComplete,
+        q.weightedStrength?.toFixed() ?? null,
+        'weighted_star_v1',
       ]);
       expect(e.detectedAt.toISOString()).toBe(crawl.crawledAt.toISOString());
     }
