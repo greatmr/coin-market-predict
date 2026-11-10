@@ -71,6 +71,11 @@ function parseDate(v: string): Date | null {
   return null;
 }
 
+/** A full ISO instant only: a date without a time must never become a time of the High. */
+function parseInstant(v: string): Date | null {
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(v) ? parseDate(v) : null;
+}
+
 /** Exact decimal text from a CSV cell, or null (the daily validity rules handle null/negative). */
 function cleanNumber(v: string | undefined): string | null {
   if (v === undefined) return null;
@@ -97,7 +102,9 @@ export function parseCmcHistoryCsv(text: string, cmcId: number, now: Date): CsvP
   const iO = idx('open'),
     iH = idx('high'),
     iL = idx('low'),
-    iC = idx('close');
+    iC = idx('close'),
+    iTimeHigh = idx('timehigh'),
+    iTimeLow = idx('timelow');
   if (iOpen < 0 || iVol < 0 || iCap < 0) {
     throw new Error(
       `CSV must contain date/timeOpen, volume and marketCap columns; found: ${cols.join(', ')}`,
@@ -136,6 +143,8 @@ export function parseCmcHistoryCsv(text: string, cmcId: number, now: Date): CsvP
       high: cell(iH),
       low: cell(iL),
       close: cell(iC),
+      timeHigh: iTimeHigh >= 0 ? parseInstant(f[iTimeHigh] ?? '') : null,
+      timeLow: iTimeLow >= 0 ? parseInstant(f[iTimeLow] ?? '') : null,
       invalidReasons: reasons,
       periodStart: new Date(`${dateUtc}T00:00:00Z`),
       periodEnd: close ?? new Date(`${dateUtc}T23:59:59.999Z`),

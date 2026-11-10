@@ -55,7 +55,9 @@ existing crawler batch (hourly CMC listing)          ← trigger: after each suc
 human: venue decision, event day, LBank verification (Tier 1); chart review + trade plan (Tier 2)
 ```
 
-No second hourly fetch job and no 72-hour backfill (p.12). A missing batch is a visible gap and is
+No second hourly fetch job and no 72-hour backfill (p.12). The Star Event Forward Test add-on
+([forward-test.md](forward-test.md)) runs after `notify` on the published queue; it reads Tier 1
+results and changes none of the rules in this document. A missing batch is a visible gap and is
 never filled with invented snapshots (p.12, p.18).
 
 ## 4. Eligibility (p.3, p.9, p.10, p.18)

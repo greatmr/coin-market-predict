@@ -158,6 +158,9 @@ describe('MCP server', () => {
         'get_snapshots',
         'list_assets',
         'get_run_status',
+        'get_forward_test_summary',
+        'get_forward_events',
+        'get_forward_event',
       ]),
     );
     const writer = await connect('write');
@@ -179,6 +182,23 @@ describe('MCP server', () => {
     );
     const bad = await reader.callTool({ name: 'get_asset_trace', arguments: { cmcId: '990001' } });
     expect(bad.isError).toBe(true);
+
+    // Forward test: the run's published queue became OPEN events (read-only views of them).
+    const fwd = await reader.callTool({ name: 'get_forward_test_summary', arguments: {} });
+    expect(JSON.stringify(fwd.structuredContent)).toMatch(/"rulesVersion":"star-forward-1"/);
+    const events = await reader.callTool({
+      name: 'get_forward_events',
+      arguments: { view: 'active', limit: 3 },
+    });
+    const rows = (events.structuredContent as { data: { rows: Array<{ eventId: string }> } }).data
+      .rows;
+    expect(rows.length).toBeGreaterThan(0);
+    expect(JSON.stringify(events.structuredContent)).toMatch(/"status":"OPEN"/);
+    const one = await reader.callTool({
+      name: 'get_forward_event',
+      arguments: { eventId: rows[0]!.eventId },
+    });
+    expect(JSON.stringify(one.structuredContent)).toMatch(/"scanSnapshot"/);
   });
 });
 

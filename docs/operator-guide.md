@@ -178,6 +178,29 @@ A failed export never replaces the previous one. Files are pruned after
 `EXPORT_RETENTION_DAYS`; the database keeps every result, so `npm run cli -- tier1:export
 --batch <id>` regenerates them.
 
+## 5a. Star Event Forward Test
+
+Every hourly run whose Review Queue is published records each eligible 1/2/3-star coin as an
+event at the scan's CMC price — the first one per coin, UTC day and star count — and adds the coin
+to the automatic forward-test watchlist. No approval step exists. Once per closed UTC day the run
+stores each event's daily Highs and recomputes the highest High after detection, until the end of
+the UTC day containing detection + 168 h. Rules, statuses, fields and gaps:
+[forward-test.md](forward-test.md).
+
+- **Forward test** tab: star groups (FINAL events only in the return statistics), the final-return
+  distribution, detection hours, Active / Final / Incomplete / All events, rejected triggers,
+  downloads (needs `exports:read`) and *Update Highs now* (needs `scan:operate`).
+- A return shown as `≥ x %` is provisional (window open, final day pending or a day missing); only
+  FINAL events have an exact peak. The return is the highest later High against the detection
+  price — not a trade, not realized profit — and no "pumped" threshold exists.
+- Warnings: `FRESHNESS` / `UPDATE_FAILED` — the daily update has not run successfully; check the
+  run's `forward` stage and the source health. `UPDATE_PARTIAL` — some Highs are not published
+  yet; retried automatically. `INCOMPLETE_DAY0` — the signal day's High came before detection and no
+  later High reached it; without an intraday source this cannot be settled, so the peak stays a
+  lower bound.
+- Reprocessing a batch, *Reprocess latest batch* and the LBank refresh never create events, and
+  signals from before deployment are not backfilled.
+
 ## 6. Command reference
 
 | Command                                         | Purpose                                                                            |
@@ -192,6 +215,10 @@ A failed export never replaces the previous one. Files are pruned after
 | `daily:import-csv --id CMC_ID --file F`         | Import a CMC "Download CSV" history file as completed daily rows                   |
 | `telegram:preview [--batch ID] [--fake]`        | Print the Telegram summary without sending                                         |
 | `source:reset --provider coinmarketcap_web`     | Clear a suspended source after fixing the cause                                    |
+| `forward:status [--json]`                       | Forward test: star groups, High coverage, last trigger and daily update, warnings  |
+| `forward:events [--view V] [--stars N] [--json]` | Forward-test events (`active`, `final`, `incomplete`, `all`) with their latest outcome |
+| `forward:update`                                | Run the daily High update now (normally automatic), then write its export          |
+| `forward:export`                                | Write the forward-test CSVs, workbook and manifest                                 |
 
 ## 7. Troubleshooting
 

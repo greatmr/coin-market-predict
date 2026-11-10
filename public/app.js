@@ -102,6 +102,7 @@ const S = {
     excluded: { page: 0, search: '', view: 'table' },
   },
   drawer: { cmcId: null, batchId: null, returnFocus: null },
+  forward: { view: 'active', stars: '', search: '', page: 0 },
   priceRange: 'daily',
   detailTab: 'review',
   me: null,
@@ -246,6 +247,7 @@ const STAGES = [
   ['venues', 'Venues'],
   ['export', 'Export'],
   ['notify', 'Notify'],
+  ['forward', 'Forward test'],
 ];
 
 const statusLabel = (dot, text, title) =>
@@ -410,11 +412,11 @@ const kv = (pairs) =>
     pairs.filter(Boolean).map(([k, v]) => el('div', null, el('dt', null, k), el('dd', null, v))),
   );
 
-function pager(container, { page, pageSize, total, onPage }) {
+function pager(container, { page, pageSize, total, onPage, unit = 'coins' }) {
   const pages = Math.max(1, Math.ceil(total / pageSize));
   put(
     container,
-    el('span', null, `${fmtInt(total)} coins, page ${page + 1} of ${pages}`),
+    el('span', null, `${fmtInt(total)} ${unit}, page ${page + 1} of ${pages}`),
     el(
       'button',
       { type: 'button', class: 'btn', disabled: page === 0, onclick: () => onPage(page - 1) },
@@ -1314,6 +1316,10 @@ const PAGES = {
   excluded: [
     'Excluded',
     'Coins with at least one failed hard filter. Their windows are not evaluated.',
+  ],
+  forward: [
+    'Forward test',
+    'The first priced 1, 2 and 3-star detection per coin, UTC day and star count, followed to the end of the UTC day containing detection + 168 h. The return is the highest later High against the detection price: not a trade, not realized profit.',
   ],
   batches: ['Runs & health', "Crawl batches, pipeline runs and the source's request budget."],
   exports: [
@@ -3773,6 +3779,357 @@ async function loadExports() {
   );
 }
 
+/* ============================== Forward test ============================== */
+
+const FWD_STATUS = {
+  OPEN: ['', 'Open'],
+  TRACKING: ['accent', 'Tracking'],
+  AWAITING_FINAL_DAY: ['warning', 'Awaiting final day'],
+  FINAL: ['good', 'Final'],
+  INCOMPLETE: ['serious', 'Incomplete'],
+};
+const FWD_PAGE = 100;
+const FWD_FLAG_TEXT = {
+  INCOMPLETE_DAY0: 'day 0 not provable',
+  DAY0_UNRESOLVED: 'day 0 open',
+  FINAL_DAY_PENDING: 'final day pending',
+  HIGH_MISSING: 'High missing',
+  HIGH_INVALID: 'High invalid',
+  PEAK_TIE_UNOBSERVED_DAY0: 'tie with day 0',
+  CONTRACT_EVIDENCE_CHANGED: 'contract changed',
+};
+
+/** Percent for display only (the API and exports keep every digit). */
+function fmtPct(x) {
+  x = num(x);
+  if (!isNum(x)) return '—';
+  const a = Math.abs(x);
+  return `${x > 0 ? '+' : ''}${x.toFixed(a >= 100 ? 0 : a >= 10 ? 1 : 2)}%`;
+}
+function fwdFlag(code) {
+  const [k, ...rest] = String(code).split(':');
+  return `${FWD_FLAG_TEXT[k] || k.replace(/_/g, ' ').toLowerCase()}${rest.length ? ` ${rest.join(':')}` : ''}`;
+}
+function fwdReturn(r) {
+  const o = r.outcome;
+  if (!o || o.peakReturnPct === null) return el('span', { class: 'muted' }, '—');
+  const exact = o.peakKind === 'EXACT';
+  return el(
+    'span',
+    {
+      class: exact ? 'fwd-ret' : 'fwd-ret provisional',
+      title: exact
+        ? 'Final: every included day covered. Highest later High ÷ detection price − 1.'
+        : 'Provisional lower bound: the window is still open, the final day is pending or a day is not covered.',
+    },
+    `${exact ? '' : '≥ '}${fmtPct(o.peakReturnPct)}`,
+  );
+}
+function fwdPeak(r) {
+  const o = r.outcome;
+  if (!o || !o.peakHighUsd) return el('span', { class: 'muted' }, '—');
+  return el(
+    'div',
+    { class: 'fwd-peak' },
+    el('b', null, fmtPrice(o.peakHighUsd)),
+    el(
+      'span',
+      {
+        class: 'muted small',
+        title:
+          o.peakTimePrecision === 'UTC_DAY'
+            ? 'Only the UTC day of this High is known.'
+            : 'Time of the High as published by the source.',
+      },
+      o.peakAt ? fmtTime(o.peakAt) : `${fmtDay(o.peakDate)}, time unknown`,
+    ),
+    o.extensionPeakFlag === 'TRUE'
+      ? chip('after 168 h', { title: 'Inside the end-of-day extension.' })
+      : o.extensionPeakFlag === 'UNKNOWN'
+        ? chip('168 h?', { title: 'The time precision cannot show whether this came after 168 h.' })
+        : null,
+  );
+}
+/** The scanner's 3d / 7d / 30d results at detection, compact (multiples, YES in colour). */
+function fwdWindows(r) {
+  return el(
+    'span',
+    { class: 'fwd-windows' },
+    [
+      ['3d', r.pass3d, r.multiple3d],
+      ['7d', r.pass7d, r.multiple7d],
+      ['30d', r.pass30d, r.multiple30d],
+    ].map(([d, status, m]) =>
+      el(
+        'span',
+        { class: `pass ${status === 'YES' ? 'yes' : status === 'NO' ? 'no' : 'na'}`, title: `${d}: ${status}` },
+        el('b', null, status === 'N/A' ? 'N/A' : fmtMult(m)),
+      ),
+    ),
+  );
+}
+const fwdCols = () => [
+  { label: 'Coin', render: coinCell },
+  { label: 'Stars', render: (r) => stars(r.starCount) },
+  {
+    label: 'Detected',
+    render: (r) =>
+      el('span', { title: `${utc(r.detectedAt)} (UTC date ${r.detectedUtcDate})` }, fmtTime(r.detectedAt)),
+  },
+  {
+    label: 'Price',
+    num: true,
+    title: 'CMC USD price of the qualifying scan: a reference, not a fill',
+    render: (r) => fmtPrice(r.referencePriceUsd),
+  },
+  { label: 'Highest High', render: fwdPeak },
+  { label: 'Return', num: true, render: fwdReturn },
+  { label: 'Status', render: (r) => lab(FWD_STATUS, r.status) },
+  {
+    label: 'Days',
+    num: true,
+    title: 'Included days with an eligible High / completed included days (8 in all)',
+    render: (r) => (r.outcome ? `${r.outcome.coveredDays}/${r.outcome.completedDays}` : '0/0'),
+  },
+  {
+    label: 'Window ends',
+    render: (r) =>
+      el(
+        'span',
+        {
+          title: `168 h at ${utc(r.deadline168h)}; included until ${utc(r.evaluationEnd)} (${Number(r.effectiveHorizonHours).toFixed(1)} h)`,
+        },
+        fmtTime(r.evaluationEnd),
+      ),
+  },
+  { label: '3d · 7d · 30d', title: 'Scanner results at detection', render: fwdWindows },
+  {
+    label: 'Notes',
+    render: (r) =>
+      el(
+        'span',
+        { class: 'chips' },
+        r.qualityFlags.map((f) =>
+          chip(fwdFlag(f), { tone: /^(INCOMPLETE|HIGH_)/.test(f) ? 'warn' : null, title: f }),
+        ),
+        r.overlappingEventIds.length
+          ? chip(`${r.overlappingEventIds.length} overlapping`, {
+              title: 'Other events of this coin with overlapping windows: correlated, not independent.',
+            })
+          : null,
+      ),
+  },
+];
+
+/** 24 columns, one per UTC hour of detection. */
+function hourColumns(values) {
+  const max = Math.max(1, ...values);
+  return el(
+    'div',
+    { class: 'fwd-hours' },
+    values.map((v, h) => {
+      const bar = el('i', { title: `${String(h).padStart(2, '0')}:00 UTC: ${v} events` });
+      bar.style.height = `${Math.max(v ? 6 : 2, (v / max) * 100)}%`;
+      return el(
+        'span',
+        null,
+        el('b', null, bar),
+        el('small', null, h % 6 === 0 ? String(h).padStart(2, '0') : ''),
+      );
+    }),
+  );
+}
+
+function renderForwardSummary(s) {
+  const by = s.counts.byStatus;
+  const active = by.OPEN + by.TRACKING + by.AWAITING_FINAL_DAY;
+  $('count-forward').textContent = fmtInt(active);
+  put(
+    $('forward-note'),
+    // The synthetic-data banner is already shown for the whole dashboard.
+    s.warnings
+      .filter((w) => !w.startsWith('SYNTHETIC'))
+      .map((w) => el('div', { class: 'banner inline' }, w)),
+    el('p', { class: 'muted small fwd-notice' }, s.notice),
+  );
+  const last = s.lastUpdate;
+  put(
+    $('forward-tiles'),
+    el(
+      'div',
+      { class: 'tile' },
+      el('span', { class: 'tile-label' }, 'Events'),
+      el('b', null, fmtInt(s.counts.events)),
+      el('span', { class: 'muted small' }, `on ${fmtInt(s.counts.watchlistAssets)} coins`),
+    ),
+    el(
+      'div',
+      { class: 'tile' },
+      el('span', { class: 'tile-label' }, 'Active · Final · Incomplete'),
+      el('b', null, `${fmtInt(active)} · ${fmtInt(by.FINAL)} · ${fmtInt(by.INCOMPLETE)}`),
+      el('span', { class: 'muted small' }, `${fmtInt(by.AWAITING_FINAL_DAY)} awaiting the final day`),
+    ),
+    el(
+      'div',
+      { class: 'tile' },
+      el('span', { class: 'tile-label' }, 'Daily High update'),
+      el('b', null, last ? lab(RUN, last.status) : 'Not yet'),
+      el(
+        'span',
+        { class: 'muted small' },
+        last ? `${fmtAgo(last.startedAt)}, for ${fmtDay(last.updateDate)}` : 'after the first UTC day closes',
+      ),
+    ),
+    el(
+      'div',
+      { class: 'tile' },
+      el('span', { class: 'tile-label' }, 'High coverage'),
+      el(
+        'b',
+        null,
+        `${fmtInt(s.coverage.coveredDays)} / ${fmtInt(s.coverage.completedDays)} days`,
+      ),
+      el(
+        'span',
+        { class: 'muted small' },
+        `${fmtInt(s.coverage.missingDays)} missing, ${fmtInt(s.coverage.day0Unresolved)} with day 0 unproven`,
+      ),
+    ),
+  );
+  const groupLabel = (g) => (g.group === 'all' ? el('b', null, 'All') : stars(Number(g.group)));
+  put(
+    $('forward-cohorts'),
+    table(
+      [
+        { label: 'Group', render: groupLabel },
+        { label: 'Events', num: true, render: (g) => fmtInt(g.events) },
+        { label: 'Coins', num: true, render: (g) => fmtInt(g.distinctAssets) },
+        { label: 'Final', num: true, render: (g) => fmtInt(g.final) },
+        { label: 'Pending', num: true, render: (g) => fmtInt(g.pending) },
+        { label: 'Incomplete', num: true, render: (g) => fmtInt(g.incomplete) },
+        { label: 'Median', num: true, render: (g) => fmtPct(g.finalReturns.median) },
+        { label: 'Mean', num: true, render: (g) => fmtPct(g.finalReturns.mean) },
+        {
+          label: 'P25 – P75',
+          num: true,
+          render: (g) =>
+            g.finalReturns.n ? `${fmtPct(g.finalReturns.p25)} – ${fmtPct(g.finalReturns.p75)}` : '—',
+        },
+        {
+          label: 'Min – max',
+          num: true,
+          render: (g) =>
+            g.finalReturns.n ? `${fmtPct(g.finalReturns.min)} – ${fmtPct(g.finalReturns.max)}` : '—',
+        },
+        {
+          label: 'Correlated',
+          title: 'Coins with several events, and overlapping same-coin windows',
+          render: (g) =>
+            `${fmtInt(g.correlation.assetsWithMultipleEvents)} coins · ${fmtInt(g.correlation.sameAssetOverlaps)} overlaps`,
+        },
+      ],
+      s.cohort,
+    ),
+  );
+  const all = s.cohort.find((g) => g.group === 'all');
+  put(
+    $('forward-dist'),
+    all && all.finalReturns.n
+      ? hbars(all.returnDistribution.map((b) => ({ label: b.label, value: b.count })))
+      : el('div', { class: 'empty' }, 'No FINAL event yet: an event finishes the day after its window ends.'),
+  );
+  put($('forward-hours'), all && all.events ? hourColumns(all.detectionHourUtc) : el('div', { class: 'empty' }, 'No events yet.'));
+  put(
+    $('forward-actions'),
+    can('exports:read')
+      ? ['workbook.xlsx', 'events_final.csv', 'events_active.csv', 'cohort_summary.csv'].map((f) =>
+          el('a', { class: 'chip link-chip', href: `/api/forward/export/${f}` }, f),
+        )
+      : null,
+    can('scan:operate')
+      ? el('button', { type: 'button', class: 'btn', onclick: (e) => void forwardUpdateNow(e) }, 'Update Highs now')
+      : null,
+  );
+}
+
+async function loadForward() {
+  const st = S.forward;
+  const q = new URLSearchParams({
+    view: st.view,
+    limit: String(FWD_PAGE),
+    offset: String(st.page * FWD_PAGE),
+  });
+  if (st.stars) q.set('stars', st.stars);
+  if (st.search) q.set('search', st.search);
+  const [sum, ev, rej] = await Promise.all([
+    api('forward'),
+    api(`forward/events?${q}`),
+    api('forward/rejections?limit=50'),
+  ]);
+  renderForwardSummary(sum);
+  put(
+    $('forward-events'),
+    table(fwdCols(), ev.rows, {
+      empty: st.search
+        ? `No event matches “${st.search}”.`
+        : st.view === 'active'
+          ? 'No active event. Eligible 1, 2 and 3-star coins of a published queue are recorded automatically.'
+          : 'No events in this view.',
+      onRow: (r, tr) => openAsset(r.cmcId, null, tr),
+    }),
+  );
+  pager($('forward-pager'), {
+    page: st.page,
+    pageSize: FWD_PAGE,
+    total: ev.total,
+    unit: 'events',
+    onPage: (pg) => {
+      st.page = pg;
+      void loadForward().catch(showError('forward-events'));
+    },
+  });
+  put(
+    $('forward-rejections'),
+    table(
+      [
+        { label: 'Batch', render: (r) => fmtTime(r.slotTime) },
+        {
+          label: 'Coin',
+          render: (r) => (r.cmcId ? `${r.symbol || ''} (${r.cmcId})` : el('span', { class: 'muted' }, 'no CMC id')),
+        },
+        { label: 'Stars', render: (r) => (r.starCount >= 1 && r.starCount <= 3 ? stars(r.starCount) : String(r.starCount)) },
+        {
+          label: 'Reasons',
+          render: (r) => el('span', { class: 'chips' }, r.reasons.map((x) => chip(reasonText(x), { title: x }))),
+        },
+      ],
+      rej,
+      { empty: 'No rejected trigger.' },
+    ),
+  );
+}
+
+async function forwardUpdateNow(e) {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  try {
+    const r = await apiPost('forward/update');
+    if (!r.ok) toast(r.reason || 'The update did not run.', 'warning');
+    else toast(`Highs updated: ${r.update.outcomes.versions} outcomes changed, ${r.update.newlyFinal} newly final.`);
+    await loadForward();
+  } catch (err) {
+    toast(`Update failed: ${err.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function setForwardSeg(id, attr, value) {
+  $(id)
+    .querySelectorAll('button')
+    .forEach((b) => b.setAttribute('aria-pressed', String(b.dataset[attr] === value)));
+}
+
 /* ============================== Telegram access ============================== */
 
 let accessBusy = false;
@@ -4442,6 +4799,7 @@ const TABS = [
   'eligible',
   'needs_review',
   'excluded',
+  'forward',
   'batches',
   'exports',
   'access',
@@ -4466,6 +4824,7 @@ const showError = (where) => (e) => {
 
 async function loadTab(tab) {
   if (SHEETS.includes(tab)) await loadSheet(tab).catch(showError(tab));
+  else if (tab === 'forward') await loadForward().catch(showError('forward-events'));
   else if (tab === 'batches') await loadBatches().catch(showError('batches'));
   else if (tab === 'exports') await loadExports().catch(showError('exports'));
   else if (tab === 'access') await loadAccess().catch(showError('access-pending'));
@@ -4584,6 +4943,35 @@ function wire() {
       .querySelectorAll('.view-seg button')
       .forEach((b) => b.addEventListener('click', () => setSheetView(sheet, b.dataset.view)));
   }
+  let fwdTimer = null;
+  $('forward-search').addEventListener('input', (e) => {
+    clearTimeout(fwdTimer);
+    fwdTimer = setTimeout(() => {
+      S.forward.search = e.target.value.trim();
+      S.forward.page = 0;
+      void loadForward().catch(showError('forward-events'));
+    }, 250);
+  });
+  $('forward-view')
+    .querySelectorAll('button')
+    .forEach((b) =>
+      b.addEventListener('click', () => {
+        S.forward.view = b.dataset.view;
+        S.forward.page = 0;
+        setForwardSeg('forward-view', 'view', b.dataset.view);
+        void loadForward().catch(showError('forward-events'));
+      }),
+    );
+  $('forward-stars')
+    .querySelectorAll('button')
+    .forEach((b) =>
+      b.addEventListener('click', () => {
+        S.forward.stars = b.dataset.stars;
+        S.forward.page = 0;
+        setForwardSeg('forward-stars', 'stars', b.dataset.stars);
+        void loadForward().catch(showError('forward-events'));
+      }),
+    );
   $('missed-retry-all').addEventListener(
     'click',
     () => void deliveryAction('telegram/retry', {}, 'Retried all missed'),

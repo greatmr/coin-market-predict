@@ -9,6 +9,11 @@ Queue to Tier 2, a human TradingView chart review with an optional, manually com
 trade plan. Results go to a dashboard, exports, an MCP server and a Telegram channel. Outputs are
 review material, not predictions or trading signals.
 
+Add-on (operator handoff, 10 Nov 2026; `docs/forward-test.md`): the **Star Event Forward Test**
+records the first priced 1/2/3-star detection per coin, UTC day and star count and measures the
+highest later High until the end of the UTC day containing detection + 168 h, compared by star
+group. A descriptive measurement, not a trade, a signal or a profit claim.
+
 (Superseded on 2026-11-05: the momentum "surge screen", Claude agent reviews, paper trading,
 backtests and the six-month VMC baseline. See `docs/strategy-two-tier-vmc.md` § 10.)
 
@@ -34,6 +39,10 @@ backtests and the six-month VMC baseline. See `docs/strategy-two-tier-vmc.md` §
    compact summary with dry-run mode.
 7. **Human review** (p.15, p.24–27): venue decision, event day, LBank verification, chart review
    fields, final decision, manual trade plan validation; append-only revisions.
+8. **Forward test** (add-on): automatic events from the published Review Queue (no approval),
+   unique per (CMC id, UTC date, stars), immutable reference price, daily Highs of the same
+   coin's CMC USD series only, never a pre-signal High or Close, FINAL only after the final day's
+   High; versioned outcomes and a star-group report on FINAL events.
 
 ## Assumptions
 - Single operator, personal research use; one deployment.
@@ -82,3 +91,6 @@ backtests and the six-month VMC baseline. See `docs/strategy-two-tier-vmc.md` §
 5. **Storage retention.** Default `RETENTION_DETAIL_DAYS=30`: afterwards, coins outside the Tier 1
    band keep one snapshot per UTC day and scan rows excluded only by rank/cap keep one batch per
    UTC day. Set `0` to keep all hourly detail.
+6. **Intraday High for the signal day.** No verified source gives a post-detection intraday High;
+   such events stay `INCOMPLETE_DAY0` (lower bound) unless CMC's `timeHigh` or a later High settles
+   them. Adding a source needs a source assessment (`docs/forward-test.md` § 14).

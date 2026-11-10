@@ -7,7 +7,7 @@ import { DataSource } from 'typeorm';
 
 import { RedactingLogger } from './common/logging/redacting.logger.js';
 import { redact } from './common/security/redact.js';
-import { sha256 } from './common/utils/decimal.js';
+import { D, sha256 } from './common/utils/decimal.js';
 import { slotOf } from './common/utils/time.js';
 
 import { type AppConfig, describeConfig } from './config/index.js';
@@ -19,6 +19,12 @@ import { USER_ROLES, type UserRole } from './modules/auth/permissions.js';
 import { BOOTSTRAP_OWNER, UserError, UsersService } from './modules/auth/users.service.js';
 import { parseCmcHistoryCsv } from './modules/daily-metrics/csv-import.js';
 import { DailyMetricsService } from './modules/daily-metrics/daily-metrics.service.js';
+import { ForwardExportService } from './modules/forward-test/forward-export.service.js';
+import {
+  type EventView,
+  type ForwardEventRow,
+  ForwardReadService,
+} from './modules/forward-test/forward-read.service.js';
 import { IngestionService } from './modules/ingestion/ingestion.service.js';
 import { PipelineService } from './modules/pipeline/pipeline.service.js';
 import { ReadModelService } from './modules/read-model/read-model.service.js';
@@ -55,6 +61,13 @@ const HELP = `Coins Predicts CLI — Two-Tier VMC strategy (docs/strategy-two-ti
   daily:import-csv --id CMC_ID --file history.csv
                                Import a CSV downloaded from the coin's CMC "Historical Data" page
                                as completed daily rows (manual source, revisions kept)
+
+  Star Event Forward Test (docs/forward-test.md; events are recorded by the hourly run)
+  forward:status [--json]      Star-group report, High coverage, last trigger and daily update
+  forward:events [--view active|final|incomplete|all] [--stars 1|2|3] [--json]
+                               Events with their latest outcome (provisional or final)
+  forward:update               Run the daily High update now (under the pipeline lease), then export
+  forward:export               Write the event export and star-group report (CSV + XLSX + manifest)
   telegram:preview [--batch ID] [--fake]
                                Print the Telegram summary (latest batch, or a fake-data layout)
   telegram:test [--sample]     Verify bot token + chat and send one test message
@@ -234,6 +247,37 @@ async function main() {
           ...counts,
           note: 'Rows apply from the next scan; run `tier1:scan` to reprocess the latest batch now.',
         });
+        break;
+      }
+      case 'forward:status': {
+        const s = await ctx.get(ForwardReadService).summary();
+        out(process.argv.includes('--json') ? s : renderForwardSummary(s));
+        break;
+      }
+      case 'forward:events': {
+        const view = (arg('--view') ?? 'active') as EventView;
+        const stars = arg('--stars') === undefined ? undefined : Number(arg('--stars'));
+        if (
+          !['active', 'final', 'incomplete', 'all'].includes(view) ||
+          (stars !== undefined && ![1, 2, 3].includes(stars))
+        )
+          throw new Error(
+            'usage: forward:events [--view active|final|incomplete|all] [--stars 1|2|3] [--json]',
+          );
+        const r = await ctx.get(ForwardReadService).events({ view, stars, limit: 500, offset: 0 });
+        out(process.argv.includes('--json') ? r : renderForwardEvents(r.rows, r.total));
+        break;
+      }
+      case 'forward:update': {
+        const r = await ctx.get(PipelineService).runForwardUpdate();
+        out(r);
+        if ('skipped' in r || ('status' in r.update && r.update.status === 'failed'))
+          process.exitCode = 1;
+        break;
+      }
+      case 'forward:export': {
+        const r = await ctx.get(ForwardExportService).write(new Date());
+        out({ path: r.path, files: r.files });
         break;
       }
       case 'telegram:preview': {
@@ -498,6 +542,79 @@ function renderTrace(t: Record<string, unknown>): string {
     `ruleset ${r.rulesetVersion} · config ${r.configVersion} · inputs ${r.inputsHash} · computed ${r.computedAt}`,
   ];
   return lines.join('\n');
+}
+
+/** Display rounding only (the JSON output and exports keep full precision). */
+const pct = (v: string | null) => (v === null ? '—' : `${new D(v).toFixed(2)} %`);
+
+/** Star-group report as text (PDF p.9): FINAL events only in the return statistics. */
+function renderForwardSummary(s: Awaited<ReturnType<ForwardReadService['summary']>>): string {
+  const by = s.counts.byStatus as Record<string, number>;
+  const lines = [
+    `Star Event Forward Test (${s.rulesVersion}) · ${s.providerName}${s.isLive === false ? '   [SYNTHETIC fixture data]' : ''}`,
+    `Horizon: ${s.horizon.rule}`,
+    `Events ${s.counts.events} on ${s.counts.watchlistAssets} assets · ${Object.entries(by)
+      .map(([k, v]) => `${k} ${v}`)
+      .join(' · ')}`,
+    `Last trigger ${s.lastTrigger ? `${s.lastTrigger.triggeredAt} (queue ${s.lastTrigger.queueStatus ?? '—'}: ${s.lastTrigger.created} new, ${s.lastTrigger.ignored} already recorded, ${s.lastTrigger.rejected} rejected)` : 'never'}`,
+    `Last daily update ${s.lastUpdate ? `${s.lastUpdate.startedAt} for ${s.lastUpdate.updateDate}: ${s.lastUpdate.status}` : 'never'}; last successful ${s.lastSuccessfulUpdate?.finishedAt ?? 'never'}`,
+    `High coverage: ${s.coverage.coveredDays}/${s.coverage.completedDays} completed days covered, ${s.coverage.missingDays} missing, ${s.coverage.invalidDays} invalid, ${s.coverage.day0Unresolved} events with day 0 unresolved`,
+    '',
+    'group  events assets  final incompl pending | n    median      mean        p25         p75   (final peak_return_pct)',
+    ...s.cohort.map((g) =>
+      [
+        (g.group === 'all' ? 'all' : `${g.group}★`).padEnd(6),
+        String(g.events).padStart(6),
+        String(g.distinctAssets).padStart(6),
+        String(g.final).padStart(6),
+        String(g.incomplete).padStart(7),
+        String(g.pending).padStart(7),
+        ' |',
+        String(g.finalReturns.n).padEnd(4),
+        pct(g.finalReturns.median).padStart(10),
+        pct(g.finalReturns.mean).padStart(10),
+        pct(g.finalReturns.p25).padStart(10),
+        pct(g.finalReturns.p75).padStart(10),
+      ].join(' '),
+    ),
+    '',
+    `Correlated observations (all): ${(() => {
+      const c = s.cohort.find((g) => g.group === 'all')!.correlation;
+      return `${c.assetsWithMultipleEvents} assets with several events (${c.eventsOnRepeatedAssets} events), ${c.sameAssetOverlaps} overlapping same-asset pairs, ${c.datesWithMultipleEvents} of ${c.detectionDates} detection dates with several events`;
+    })()}`,
+    ...(s.warnings.length ? ['', ...s.warnings.map((w) => `! ${w}`)] : []),
+    '',
+    s.notice,
+  ];
+  return lines.join('\n');
+}
+
+function renderForwardEvents(rows: ForwardEventRow[], total: number): string {
+  if (!rows.length) return 'No events in this view.';
+  return [
+    `${rows.length} of ${total} events (newest first)`,
+    'detected (UTC)     ★ symbol      cmc_id   ref price      status              peak High      return       peak at / interval        flags',
+    ...rows.map((e) => {
+      const o = e.outcome;
+      const ret = o?.peakReturnPct
+        ? `${o.peakKind === 'EXACT' ? '' : '≥'}${pct(o.peakReturnPct)}`
+        : '—';
+      return [
+        e.detectedAt.slice(0, 16).replace('T', ' '),
+        String(e.starCount),
+        e.symbol.slice(0, 10).padEnd(10),
+        String(e.cmcId).padStart(7),
+        new D(e.referencePriceUsd).toSignificantDigits(8).toFixed().padStart(13),
+        e.status.padEnd(19),
+        (o?.peakHighUsd ? new D(o.peakHighUsd).toSignificantDigits(8).toFixed() : '—').padStart(13),
+        ret.padStart(11),
+        (o?.peakAt ? o.peakAt.slice(0, 16).replace('T', ' ') : (o?.peakDate ?? '—')).padEnd(24),
+        e.qualityFlags.join(',') || '',
+      ].join('  ');
+    }),
+    '',
+    '≥ = provisional lower bound (window open, final day pending or coverage incomplete).',
+  ].join('\n');
 }
 
 function fakePreview(tz: string): string[] {

@@ -3,6 +3,7 @@ import { APP_GUARD } from '@nestjs/core';
 
 import { AuthGuard } from '../auth/auth.guard.js';
 import { AuthModule, OwnerBootstrap } from '../auth/auth.module.js';
+import { ForwardTestModule } from '../forward-test/forward-test.module.js';
 import { PipelineModule } from '../pipeline/pipeline.module.js';
 import { ReadModelModule } from '../read-model/read-model.module.js';
 import { ReviewsModule } from '../reviews/reviews.module.js';
@@ -14,6 +15,7 @@ import { AssetsController } from './assets.controller.js';
 import { AuthController } from './auth.controller.js';
 import { DashboardController } from './dashboard.controller.js';
 import { ExportsController } from './exports.controller.js';
+import { ForwardController } from './forward.controller.js';
 import { LbankController } from './lbank.controller.js';
 import { PipelineController } from './pipeline.controller.js';
 import { ReviewsController } from './reviews.controller.js';
@@ -36,6 +38,7 @@ import { UsersController } from './users.controller.js';
     VenuesModule,
     TelegramModule,
     AuthModule,
+    ForwardTestModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: AuthGuard }, OwnerBootstrap],
   controllers: [
@@ -49,6 +52,7 @@ import { UsersController } from './users.controller.js';
     LbankController,
     PipelineController,
     TelegramAccessController,
+    ForwardController,
   ],
 })
 export class DashboardModule {}

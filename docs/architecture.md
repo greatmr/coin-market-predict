@@ -9,12 +9,13 @@ return, or calls an LLM.
 ```
                  ┌───────────────────── NestJS application (one process) ─────────────────────┐
  cron (UTC) ───▶ │ PipelineService (DB lease + pipeline_stage rows), one run per UTC hour        │
-                 │  discover ─ collect ─ lbank ─ daily ─ scan ─ venues ─ export ─ notify          │
+                 │  discover ─ collect ─ lbank ─ daily ─ scan ─ venues ─ export ─ notify ─ forward│
                  │     │  MarketDataSource (listing)    Tier1Source (daily rows, LBank / asset    │
                  │     │  fixture | CMC website | CMC API | CoinGecko      market pairs)          │
                  │  ScanService: eligibility → VMC windows → pass/stars → queue  (StrategyModule) │
                  │  ExportService: CSV per sheet + XLSX workbook + manifest (sha256)              │
                  │  ReviewService: append-only Tier 1 / Tier 2 review records, LBank decisions    │
+                 │  ForwardTest: star events from the published queue, daily High update          │
                  │                                                                                │
                  │ REST /api/* ─▶ dashboard (public/)   MCP /mcp + stdio (read-only)   Telegram   │
                  └──────────────────────────────────────┬─────────────────────────────────────────┘
@@ -41,6 +42,7 @@ Layout and database conventions follow the operator's standard NestJS + TypeORM 
 | `modules/daily-metrics/` | Completed UTC daily rows with every revision, per-coin fetch state, manual CSV import |
 | `modules/venues/` | LBank Spot pair list, CMC Markets venue rows, listing events, reviewer decisions, mapping tasks |
 | `modules/scan/` | Tier 1 scan of a batch with the strategy (`scan_run`, `scan_result`) |
+| `modules/forward-test/` | Star Event Forward Test ([forward-test.md](forward-test.md), [ADR-0004](adr/0004-forward-test-module.md)): trigger on the published Review Queue, automatic `forward_test_watchlist`, daily High update with revisions, versioned outcomes, star-group report and export. Pure rules in `forward-rules.ts` / `cohort.ts` |
 | `modules/exports/` | CSV per sheet + XLSX workbook + SHA-256 manifest |
 | `modules/reviews/` | Append-only Tier 1 / Tier 2 reviews and LBank decisions, validated by the strategy's Tier 2 rules |
 | `modules/pipeline/` | Orchestrator, DB lease, scheduler, restart recovery, storage retention |
@@ -61,10 +63,11 @@ Layout and database conventions follow the operator's standard NestJS + TypeORM 
 | `scan` | Deterministic Tier 1 evaluation of every coin in the batch; writes `scan_run` + `scan_result` rows, queue order, warnings, LBank mapping tasks | fatal (the run fails; the previous scan stays the latest valid one) |
 | `venues` | CMC Markets venue rows for review candidates (≤ `TIER1_VENUE_MAX_ASSETS_PER_RUN`, refreshed every `TIER1_VENUE_REFRESH_HOURS`) | non-fatal: rows show `VENUE_DATA_PENDING` |
 | `export` | CSV per sheet + XLSX workbook + manifest into `TIER1_EXPORT_DIR`; written to a temp directory and renamed only on success | non-fatal: the previous export remains the latest valid file |
-| `notify` | Telegram summary of the batch (dry run by default); retention runs afterwards | Telegram retries on its own 5-minute schedule |
+| `notify` | Telegram summary of the batch (dry run by default) | Telegram retries on its own 5-minute schedule |
+| `forward` | Forward test: one event per new (coin, UTC date, stars) of the published queue; the daily High update when a UTC day has closed (or missing Highs are due for a retry), then its export; retention runs afterwards | non-fatal: outcomes keep their previous version; the next run tries again |
 
 A run whose non-fatal stages degraded finishes `partial` with the reasons in
-`pipeline_run.metrics.degraded`. Each stage logs `[███░░░░░] n/8 stage · done in Xs`;
+`pipeline_run.metrics.degraded`. Each stage logs `[███░░░░░] n/9 stage · done in Xs`;
 `pipeline_run.current_stage` and `pipeline_stage` rows drive the dashboard step bar.
 `npm run cli -- tier1:scan --batch <id>` (or the dashboard's *Reprocess latest batch*) recomputes
 a stored batch from saved data under the same lease, without crawling.
@@ -73,7 +76,8 @@ a stored batch from saved data under the same lease, without crawling.
 Tables are snake_case; entities live in each module's `entities/` and are registered in
 `src/database/entities.ts`. The schema is created only by the raw-SQL migrations in
 `src/database/migrations/` (M001 enum types · M002 platform · M003 market data · M004 daily
-metrics · M005 venues · M006 scan and reviews), applied with `npm run db:migrate`; a test fails
+metrics · M005 venues · M006 scan and reviews · M007 users · M008 forward test), applied with
+`npm run db:migrate`; a test fails
 when entities and migrations disagree. Conventions and their reasons:
 [ADR-0001](adr/0001-typeorm-modular-layout.md).
 
@@ -84,11 +88,14 @@ when entities and migrations disagree. Conventions and their reasons:
 | `crawl_batch` | ingestion | One per provider + UTC hour: crawl time, status + reasons, listed / collected counts, missing and duplicate ranks |
 | `market_snapshot` | ingestion | One validated observation per coin per UTC hour, with `null_reasons` |
 | `cmc_asset`, `cmc_asset_change` | ingestion | CMC-id-keyed metadata (symbol, name, slug, tags, date added, platform) and every change to it |
-| `daily_metric`, `daily_metric_revision`, `daily_fetch_state` | daily-metrics | Effective completed-day row per coin and date, every revision with source route, parameters and response SHA-256, per-coin fetch state |
+| `daily_metric`, `daily_metric_revision`, `daily_fetch_state` | daily-metrics | Effective completed-day row per coin and date, every revision with source route, parameters and response SHA-256 (and, since M008, the source's time of the day's High / Low), per-coin fetch state |
 | `venue_crawl`, `venue_pair_event` | venues | LBank pair feed / asset market-pair crawls (pairs as JSON) and LBank listing / absence events |
 | `venue_decision`, `venue_mapping_task` | venues | Reviewer decisions (mapping confirmed / rejected, verified tradable, not tradable) and open ambiguous-ticker tasks |
 | `scan_run`, `scan_result` | scan | One scan per batch (queue status, counts, warnings, export state) and one row per coin with every value, status, reason, the daily window used, inputs hash, ruleset and config versions |
 | `review` | reviews | Append-only Tier 1 / Tier 2 review revisions with the Tier 1 snapshot they were made against |
+| `forward_test_watchlist`, `forward_event` | forward-test | One row per coin with events (automatic, no approval); one event per (coin, UTC date, star count) with its immutable detection snapshot (a database trigger refuses changes), window and tracking status |
+| `forward_high`, `forward_outcome` | forward-test | Each included day's High per event and source revision (superseded rows kept); versioned outcomes (peak, return, coverage, extension flag) |
+| `forward_trigger_run`, `forward_trigger_rejection`, `forward_update_run` | forward-test | Each reading of a published queue (created / ignored / rejected), rejected rows with reasons, each daily High update |
 | `pipeline_run`, `pipeline_stage`, `job_lease` | pipeline | Runs per slot with stage status and metrics; the lease that prevents overlapping runs |
 | `telegram_delivery` | telegram | Every report part per recipient with status and attempts |
 | `app_state` | app-state | Small durable values (Telegram access list and offset, retention watermark, fixture anchor) |
@@ -123,7 +130,8 @@ UTC hour; daily rows exist only for screen candidates. Rules
 - Export files older than `EXPORT_RETENTION_DAYS` (default 7) are deleted; the database keeps
   every result, so an export can be regenerated with `tier1:export --batch <id>`.
 - `RETENTION_SNAPSHOT_DAYS > 0` deletes older snapshots outright (default 0 keeps everything).
-- Reviews, decisions, daily rows, crawl batches and runs are never pruned.
+- Reviews, decisions, daily rows, crawl batches and runs are never pruned; neither is any
+  forward-test table (events, Highs, outcomes, triggers, rejections, update runs).
 
 ## Reliability
 - **Non-overlap**: in-process flag + `job_lease` (atomic upsert using DB time, heartbeat). Scans,
@@ -176,7 +184,8 @@ decision in `intend.md`: confirm the data provider's terms.
 - **External hosts → `/mcp`** (Streamable HTTP, stateless, bearer token, DNS-rebinding
   protection on loopback) or **stdio** (`npm run mcp:stdio`). Tools: `get_scan_summary`,
   `get_scan_results`, `get_asset_trace`, `list_batches`, `get_mapping_tasks`, `get_coverage`,
-  `get_snapshots`, `list_assets`, `get_run_status`; resources `coins://tier1/queue/latest`,
+  `get_snapshots`, `list_assets`, `get_run_status`, `get_forward_test_summary`,
+  `get_forward_events`, `get_forward_event`; resources `coins://tier1/queue/latest`,
   `coins://runs/latest`. There are no write tools.
 - PostgreSQL is the single source of truth for all three.
 

@@ -63,6 +63,7 @@ const STAGE_LABELS: Record<string, string> = {
   venues: 'Reading CMC Markets venues for review candidates',
   export: 'Writing CSV and XLSX exports',
   notify: 'Preparing the Telegram summary',
+  forward: 'Forward test: recording star events and updating Highs',
 };
 
 /** Columns of a result-sheet row (heavy lineage and diagnostics stay in the trace). */

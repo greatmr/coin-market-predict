@@ -55,6 +55,17 @@ export class DailyMetricRevision extends HasBigintId {
   @DecimalColumn(38, 18, { name: 'close_usd', nullable: true })
   closeUsd!: DValue | null;
 
+  /**
+   * The source's documented time of the day's High / Low (CMC `timeHigh` / `timeLow`). Captured
+   * since M008 for the forward test; NULL for rows stored earlier or when the source gives none.
+   * Not part of `contentHash`, so capturing it never creates a revision on its own.
+   */
+  @Column({ name: 'time_high', type: 'timestamptz', nullable: true })
+  timeHigh!: Date | null;
+
+  @Column({ name: 'time_low', type: 'timestamptz', nullable: true })
+  timeLow!: Date | null;
+
   @Column({ type: 'boolean' })
   valid!: boolean;
 

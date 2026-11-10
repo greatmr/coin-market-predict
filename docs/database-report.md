@@ -128,7 +128,7 @@ run bookkeeping       ─► PipelineRun, PipelineStage, JobLease, SourceHealth,
 | `MarketSnapshot` | Every hour for `RETENTION_DETAIL_DAYS` (default 30). Afterwards, coins outside the Tier 1 band (rank 101–1200, or unranked with cap ≥ $15M) for the whole day ±72 h keep only their first snapshot of each UTC day; band coins keep every hour. `RETENTION_SNAPSHOT_DAYS` > 0 additionally deletes snapshots older than that (default 0 = keep). |
 | `ScanResult` | Every batch for `RETENTION_DETAIL_DAYS`. Afterwards, rows excluded **only** by `RANK_OUT_OF_RANGE` / `MARKET_CAP_BELOW_MIN` keep the first batch of each UTC day; all other rows are kept. |
 | Export files | Removed from disk after `EXPORT_RETENTION_DAYS` (default 7); the database keeps the history. |
-| Everything else | Never pruned: batches, runs, stages, daily rows and revisions, fetch state, venue crawls and events, identity and change log, reviews, decisions, Telegram deliveries. |
+| Everything else | Never pruned: batches, runs, stages, daily rows and revisions, fetch state, venue crawls and events, identity and change log, reviews, decisions, Telegram deliveries, and every forward-test table (watchlist, events, Highs, outcomes, trigger runs, rejections, update runs; added 2026-11-10, M008). |
 
 Thinning works through whole UTC days older than the cutoff, at most three days per run,
 resuming from the `retention.detailThinnedUntil.<provider>` watermark. It has not run yet: the

@@ -142,6 +142,8 @@ export class DailyMetricsService {
             highUsd: p.r.high,
             lowUsd: p.r.low,
             closeUsd: p.r.close,
+            timeHigh: p.r.timeHigh ?? null,
+            timeLow: p.r.timeLow ?? null,
             valid: p.valid,
             invalidReasons: p.invalidReasons,
             periodStart: p.r.periodStart,
@@ -199,9 +201,12 @@ export class DailyMetricsService {
    */
   async refresh(
     providerId: string,
-    batch: { id: string; crawledAt: Date },
+    /** The crawl batch (provenance of new revisions), or `id: null` for a refresh outside a scan. */
+    batch: { id: string | null; crawledAt: Date },
     candidates: Array<{ cmcId: number; slug: string | null }>,
     onProgress?: (done: number, total: number) => void,
+    /** Tighter bounds for a secondary caller (the forward test); defaults to the daily stage's. */
+    limits: { maxMinutes?: number } = {},
   ): Promise<DailyRefreshReport> {
     const asOfDate = isoDate(batch.crawledAt);
     const latest = addDays(asOfDate, -1);
@@ -257,7 +262,7 @@ export class DailyMetricsService {
     report.due = due.length;
     if (!due.length) return { ...report, remaining: candidates.length - have.size };
 
-    const deadline = Date.now() + this.cfg.TIER1_DAILY_MAX_MINUTES * 60_000;
+    const deadline = Date.now() + (limits.maxMinutes ?? this.cfg.TIER1_DAILY_MAX_MINUTES) * 60_000;
     let allowance = await this.health.spendableRequests(providerId, now);
     let consecutiveFailures = 0;
     const planned = Math.min(due.length, this.cfg.TIER1_DAILY_MAX_ASSETS_PER_RUN);
