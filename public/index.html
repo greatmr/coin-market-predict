@@ -46,6 +46,9 @@
       <button role="tab" id="t-users" data-tab="users" aria-controls="tab-users">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20a6.5 6.5 0 0 1 13 0" /><path d="M16 4.5a3.5 3.5 0 0 1 0 7" /><path d="M18 14.5a6.5 6.5 0 0 1 3.5 5.5" /></svg><span>Users</span>
       </button>
+      <button role="tab" id="t-settings" data-tab="settings" aria-controls="tab-settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21v-7" /><path d="M4 10V3" /><path d="M12 21v-9" /><path d="M12 8V3" /><path d="M20 21v-5" /><path d="M20 12V3" /><path d="M1 14h6" /><path d="M9 8h6" /><path d="M17 16h6" /></svg><span>Settings</span><b class="count" id="count-settings"></b>
+      </button>
       <button role="tab" id="t-account" data-tab="account" aria-controls="tab-account" class="rail-account">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" /><path d="M4 20a8 8 0 0 1 16 0" /></svg><span>My account</span>
       </button>
@@ -247,6 +250,20 @@
             <div class="panel-head"><h2>What each role can do</h2></div>
             <div id="role-matrix"></div>
           </div>
+        </div>
+      </section>
+
+      <!-- Settings (owner) -->
+      <section id="tab-settings" class="tab" role="tabpanel" aria-labelledby="t-settings" hidden>
+        <div id="settings-notes" class="settings-notes"></div>
+        <div id="settings-groups" class="settings-groups"></div>
+        <div class="panel">
+          <div class="panel-head"><h2>Change history</h2><span class="hint">every save, reset and import, newest first</span></div>
+          <div class="table-wrap" id="settings-history"></div>
+        </div>
+        <div id="settings-bar" class="settings-bar" role="region" aria-label="Unsaved settings" hidden>
+          <span id="settings-bar-text"></span>
+          <span class="row-actions"><button type="button" class="btn" id="settings-discard">Discard</button><button type="button" class="btn primary" id="settings-save">Save changes</button></span>
         </div>
       </section>
 

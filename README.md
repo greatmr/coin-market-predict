@@ -35,7 +35,7 @@ Hourly cryptocurrency **screening for human review**, implementing the Two-Tier 
 |---|---|
 | Market data | **Synthetic fixture by default** (labelled SYNTHETIC everywhere). Live: CMC website collector (no key) — the only live source with daily history and LBank pairs |
 | LBank pairs | From the Markets section of CMC's LBank exchange page, fetched once and refreshed every 30 days or on demand (dashboard button / `lbank:refresh`). A listed pair counts as tradable unless a reviewer marks it otherwise; no trading status is available from any source used |
-| Telegram | Dry-run by default; live with `TELEGRAM_MODE=live` + bot token + chat id |
+| Telegram | Dry-run by default; live with the Telegram mode setting `live` + bot token + chat id |
 | Dashboard / MCP / PostgreSQL | Live (local) |
 
 ## Requirements
@@ -52,7 +52,7 @@ TypeORM setup and raw-SQL migrations in `src/database`. Details:
 ## Setup
 ```bash
 npm ci
-cp .env.example .env              # then edit; never commit .env
+cp .env.example .env              # database + credentials only; never commit .env
 docker compose up -d postgres     # PostgreSQL 17 on 127.0.0.1:5433, volume coins_pgdata
 npm run db:migrate                # builds, then applies the committed TypeORM migrations
 npm run cli -- config:check       # validates config; secrets shown as <set>/<not set>
@@ -68,7 +68,14 @@ npm start                         # dashboard http://127.0.0.1:3000 + hourly sch
 npm run dev                       # watch mode
 ```
 The scheduler runs `PIPELINE_CRON` (default minute 7 of every hour, UTC) and retries Telegram
-every 5 minutes. On startup it records missed hours and runs the current hour if needed.
+every 5 minutes.
+
+Operational settings (data source, schedule, request budgets, Tier 1 bounds, LBank cadence,
+retention, Telegram mode, time zone, …) are managed by the owner in the dashboard under
+**Settings** and stored in the database; `.env` keeps the database connection, credentials, the
+proxy / cookie set-up and file paths. A variable set in the environment still wins (the dashboard
+shows it locked), e.g. `TELEGRAM_MODE=dry_run npm run cli -- run-once`. Details:
+[operator-guide § 3b](docs/operator-guide.md#3b-settings), [ADR-0005](docs/adr/0005-dashboard-settings.md). On startup it records missed hours and runs the current hour if needed.
 One run: discover → collect (crawl batch) → LBank pairs → daily rows → scan → venue rows →
 export (CSV + XLSX) → Telegram → forward test (new star events; the daily High update once per
 closed UTC day). Details: [docs/architecture.md](docs/architecture.md#pipeline-stages).
@@ -76,12 +83,14 @@ closed UTC day). Details: [docs/architecture.md](docs/architecture.md#pipeline-s
 CLI (`npm run cli -- help`): `run-once`, `discover`, `tier1:scan`, `tier1:export`,
 `tier1:trace --id <cmcId>`, `tier1:batches`, `lbank:status`, `lbank:refresh`,
 `daily:import-csv`, `telegram:preview`, `telegram:test`, `telegram:deliver`, `source:reset`,
-`forward:status`, `forward:events`, `forward:update`, `forward:export`.
+`forward:status`, `forward:events`, `forward:update`, `forward:export`, `settings:list`,
+`settings:set`, `settings:reset`, `settings:import-env`, `settings:history`.
 
 ### Live data (CMC website collector, no key)
-```dotenv
-DATA_SOURCE=coinmarketcap_web
-CMC_WEB_MONTHLY_REQUEST_BUDGET=30000
+Under **Settings → Market data source** choose `coinmarketcap_web` (then restart the app; the
+monthly website budget defaults to 30,000 requests), or from the shell:
+```bash
+npm run cli -- settings:set DATA_SOURCE coinmarketcap_web   # applies at the next start
 ```
 The first live run fetches 35 completed days per screen candidate (about one request each at
 30 requests/minute), spread over the first two or three runs; windows stay N/A until their days
@@ -90,12 +99,12 @@ arrive. The website routes are not a supported API and may change or block acces
 adapters (`DATA_SOURCE=coinmarketcap|coingecko`) supply listings only, so every window is N/A.
 
 ### Telegram
-Create a bot with @BotFather, then set `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` and
-`TELEGRAM_MODE=live`. Each batch sends one compact summary: the batch time, counts, and a two-line card per
+Create a bot with @BotFather, put `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env`, then set
+the Telegram delivery mode to `live` under **Settings**. Each batch sends one compact summary: the batch time, counts, and a two-line card per
 Review Queue coin (stars, current VMC, 3d / 7d / 30d multiples with YES in bold). Tap a coin name and the bot replies with that
 coin's details (a `t.me/<bot>?start=coin_<id>` link; before the bot has looked up its own
 username the card shows `/coin_<id>` instead). A withheld or empty queue says why. The batch's Excel workbook (all five sheets, ~2 MB)
-follows as a file unless the queue is withheld (`TELEGRAM_ATTACH_EXPORT=none` turns this off).
+follows as a file unless the queue is withheld (setting `TELEGRAM_ATTACH_EXPORT=none` turns this off).
 Preview first:
 ```bash
 npm run cli -- telegram:preview --fake   # layout with invented numbers

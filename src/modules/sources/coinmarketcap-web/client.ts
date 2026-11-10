@@ -75,9 +75,15 @@ export class CmcWebClient {
 
   constructor(
     readonly http: PoliteHttpClient,
-    private readonly cacheMs = 60_000,
+    private cacheMs = 60_000,
     private readonly now: () => Date = () => new Date(),
   ) {}
+
+  /** New response cache lifetime (dashboard setting); 0 turns the cache off. */
+  setCacheMs(ms: number) {
+    this.cacheMs = ms;
+    if (ms <= 0) this.cache.clear();
+  }
 
   get requestsMade() {
     return this.http.requestsMade;

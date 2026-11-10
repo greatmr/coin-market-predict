@@ -6,11 +6,11 @@ import { basename } from 'node:path';
 import { DataSource } from 'typeorm';
 
 import { RedactingLogger } from './common/logging/redacting.logger.js';
-import { redact } from './common/security/redact.js';
+import { redact, registerSecretsFromEnv } from './common/security/redact.js';
 import { D, sha256 } from './common/utils/decimal.js';
 import { slotOf } from './common/utils/time.js';
 
-import { type AppConfig, describeConfig } from './config/index.js';
+import { describeConfig, resolveFileSecrets } from './config/index.js';
 import { loadConfigOrExit } from './config/load-config.js';
 
 import { buildDataSourceOptions } from './database/typeorm-options.js';
@@ -28,6 +28,8 @@ import {
 import { IngestionService } from './modules/ingestion/ingestion.service.js';
 import { PipelineService } from './modules/pipeline/pipeline.service.js';
 import { ReadModelService } from './modules/read-model/read-model.service.js';
+import { SETTINGS_HELP, settingsCommand } from './modules/settings/settings.cli.js';
+import { loadSavedSettings } from './modules/settings/settings.store.js';
 import { isCmcIdProvider } from './modules/sources/cmc-id-providers.js';
 import { SourceHealthService } from './modules/sources/source-health.service.js';
 import { parseDocumentPart } from './modules/telegram/attachment.js';
@@ -82,7 +84,10 @@ const HELP = `Coins Predicts CLI — Two-Tier VMC strategy (docs/strategy-two-ti
                                Set a new password and unlock the account (--keep: no forced change)
   users:reset-owner            Recovery: make "owner" an active owner with password "owner"
                                (changed at first sign-in), unlocked, all its sessions ended
-`;
+${SETTINGS_HELP}`;
+
+/** The CLI never runs the schedule (the web server does), whatever the settings say. */
+const FORCED = { SCHEDULER_ENABLED: 'false' };
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(name);
@@ -95,7 +100,34 @@ async function main() {
     process.stdout.write(HELP);
     return;
   }
-  const cfg = loadConfigOrExit({ ...process.env, SCHEDULER_ENABLED: 'false' });
+  if (cmd.startsWith('settings:')) {
+    process.exitCode = await settingsCommand(cmd, process.argv.slice(3), process.env, (text) =>
+      process.stdout.write(`${text}\n`),
+    );
+    return;
+  }
+  if (cmd === 'db:migrate' || cmd === 'db:status' || cmd === 'db:revert') {
+    // Only the connection is needed, so neither the saved settings (whose table a migration may
+    // still have to create) nor the rest of the configuration can keep migrations from running.
+    const env = resolveFileSecrets(process.env);
+    registerSecretsFromEnv(env);
+    await database(cmd, env);
+    return;
+  }
+  // Dashboard settings apply to the CLI as to the server (the environment still wins). Commands
+  // that need no database fall back to the environment alone when it is unreachable.
+  const offline =
+    cmd === 'config:check' || (cmd === 'telegram:preview' && process.argv.includes('--fake'));
+  const saved = await loadSavedSettings(process.env, { attempts: offline ? 1 : 3 }).catch(
+    (err: unknown) => {
+      if (!offline) throw err;
+      process.stderr.write(
+        `note: ${err instanceof Error ? err.message : String(err)}; showing the environment alone\n`,
+      );
+      return {};
+    },
+  );
+  const cfg = loadConfigOrExit({ ...process.env, ...FORCED }, saved);
   if (cmd === 'config:check') {
     process.stdout.write(`${JSON.stringify(describeConfig(cfg), null, 2)}\n`);
     return;
@@ -106,14 +138,11 @@ async function main() {
     );
     return;
   }
-  if (cmd === 'db:migrate' || cmd === 'db:status' || cmd === 'db:revert') {
-    await database(cmd, cfg);
-    return;
-  }
 
-  const ctx = await NestFactory.createApplicationContext(AppModule.forRoot(cfg, { http: false }), {
-    logger: new RedactingLogger(),
-  });
+  const ctx = await NestFactory.createApplicationContext(
+    AppModule.forRoot(cfg, { http: false, inputs: { env: process.env, forced: FORCED } }),
+    { logger: new RedactingLogger() },
+  );
   const out = (v: unknown) =>
     process.stdout.write(`${typeof v === 'string' ? v : JSON.stringify(v, null, 2)}\n`);
   try {
@@ -428,12 +457,11 @@ async function readSecret(prompt: string): Promise<string> {
  * Schema migrations without booting the application: the same connection options and migration
  * list as the app (`database/typeorm-options.ts`), each migration in its own transaction.
  */
-async function database(cmd: 'db:migrate' | 'db:status' | 'db:revert', cfg: AppConfig) {
-  const dataSource = new DataSource(
-    buildDataSourceOptions(
-      (key) => cfg[key as keyof AppConfig] as string | number | boolean | undefined,
-    ),
-  );
+async function database(
+  cmd: 'db:migrate' | 'db:status' | 'db:revert',
+  env: Record<string, string | undefined>,
+) {
+  const dataSource = new DataSource(buildDataSourceOptions((key) => env[key]?.trim()));
   await dataSource.initialize();
   try {
     if (cmd === 'db:migrate') {

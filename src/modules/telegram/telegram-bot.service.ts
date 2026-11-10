@@ -9,7 +9,7 @@ import {
 import { redact } from '../../common/security/redact.js';
 import { formatInZone, sleep } from '../../common/utils/time.js';
 
-import { APP_CONFIG, type AppConfig } from '../../config/index.js';
+import { APP_CONFIG, type AppConfig, LiveConfig } from '../../config/index.js';
 
 import { AppStateService } from '../app-state/app-state.service.js';
 import { PipelineService } from '../pipeline/pipeline.service.js';
@@ -53,6 +53,9 @@ export class TelegramBotService implements OnApplicationBootstrap, OnApplication
   private readonly log = new Logger('TelegramBot');
   private abort = new AbortController();
   private running = false;
+  /** Each polling loop owns one generation; stopping or restarting retires the old loop. */
+  private generation = 0;
+  private unsubscribe: (() => void) | null = null;
 
   constructor(
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
@@ -64,24 +67,44 @@ export class TelegramBotService implements OnApplicationBootstrap, OnApplication
     private readonly pipeline: PipelineService,
     private readonly access: TelegramAccessService,
     private readonly admin: TelegramAdminService,
+    private readonly live: LiveConfig,
   ) {}
 
   onApplicationBootstrap() {
-    if (
-      !this.cfg.TELEGRAM_BOT_TOKEN ||
-      !this.cfg.TELEGRAM_CHAT_ID ||
-      !this.cfg.TELEGRAM_COMMANDS_ENABLED
-    )
-      return;
-    this.running = true;
-    void this.api('setMyCommands', { commands: COMMANDS }).catch(() => undefined);
-    void this.telegram.loadBotUsername();
-    void this.loop();
-    this.log.log('listening for bot commands (/report, /status, /vmc, /coin, /run, /help)');
+    // TELEGRAM_COMMANDS_ENABLED is a dashboard setting: turning it off or on stops or starts polling.
+    this.unsubscribe = this.live.onChange((changed) => {
+      if (changed.has('TELEGRAM_COMMANDS_ENABLED')) this.sync();
+    });
+    this.sync();
   }
 
   onApplicationShutdown() {
+    this.unsubscribe?.();
+    this.stopPolling();
+  }
+
+  private sync() {
+    const wanted = Boolean(
+      this.cfg.TELEGRAM_BOT_TOKEN &&
+      this.cfg.TELEGRAM_CHAT_ID &&
+      this.cfg.TELEGRAM_COMMANDS_ENABLED,
+    );
+    if (wanted && !this.running) {
+      this.running = true;
+      this.abort = new AbortController();
+      void this.api('setMyCommands', { commands: COMMANDS }).catch(() => undefined);
+      void this.telegram.loadBotUsername();
+      void this.loop(++this.generation);
+      this.log.log('listening for bot commands (/report, /status, /vmc, /coin, /run, /help)');
+    } else if (!wanted && this.running) {
+      this.stopPolling();
+      this.log.log('stopped listening for bot commands (turned off in the settings)');
+    }
+  }
+
+  private stopPolling() {
     this.running = false;
+    this.generation++;
     this.abort.abort();
   }
 
@@ -105,10 +128,11 @@ export class TelegramBotService implements OnApplicationBootstrap, OnApplication
     };
   }
 
-  private async loop() {
+  private async loop(generation: number) {
+    const active = () => this.running && generation === this.generation;
     let offset = Number((await this.state.get(OFFSET_KEY)) ?? 0);
     let failures = 0;
-    while (this.running) {
+    while (active()) {
       try {
         const r = await this.api(
           'getUpdates',
@@ -146,7 +170,7 @@ export class TelegramBotService implements OnApplicationBootstrap, OnApplication
           }
         }
       } catch (err) {
-        if (!this.running) return;
+        if (!active()) return;
         failures++;
         // Network drops are normal; the loop retries with backoff (4 s … 60 s) and logs the recovery.
         this.log.warn(

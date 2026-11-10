@@ -8,7 +8,7 @@ import { insertRows } from '../../common/entities/insert.js';
 import { redact } from '../../common/security/redact.js';
 import { type Clock, addHours, slotOf, systemClock } from '../../common/utils/time.js';
 
-import { APP_CONFIG, type AppConfig } from '../../config/index.js';
+import { APP_CONFIG, type AppConfig, LiveConfig } from '../../config/index.js';
 
 import {
   DailyMetricsService,
@@ -73,6 +73,7 @@ export class PipelineService {
     private readonly retention: RetentionService,
     private readonly health: SourceHealthService,
     private readonly forward: ForwardTestService,
+    private readonly live: LiveConfig,
   ) {}
 
   get providerId() {
@@ -87,13 +88,18 @@ export class PipelineService {
     return this.db.getRepository(PipelineStage);
   }
 
-  /** Take the pipeline lease (no overlap within or across instances); the caller must release it. */
+  /**
+   * Take the pipeline lease (no overlap within or across instances); the caller must release it.
+   * The lease also holds this process's configuration: a dashboard setting saved during the run
+   * applies after it, so one run never mixes two configurations.
+   */
   private async takeLease(): Promise<{ release: () => Promise<void> } | { skipped: string }> {
     if (this.inProcess) return { skipped: 'a run is already in progress in this process' };
     const holder = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
     if (!(await this.leases.acquire(PIPELINE_LEASE, holder, LEASE_TTL_MS)))
       return { skipped: 'another instance holds the pipeline lease' };
     this.inProcess = true;
+    const unhold = this.live.hold();
     const beat = setInterval(
       () => void this.leases.heartbeat(PIPELINE_LEASE, holder, LEASE_TTL_MS).catch(() => undefined),
       60_000,
@@ -102,6 +108,7 @@ export class PipelineService {
       release: async () => {
         clearInterval(beat);
         this.inProcess = false;
+        unhold();
         await this.leases.release(PIPELINE_LEASE, holder).catch(() => undefined);
       },
     };
@@ -601,7 +608,9 @@ export class PipelineService {
    * Restart recovery: record hours that were missed while the app was down (a missing batch is a
    * visible gap, never filled with invented snapshots), then run the current slot if allowed.
    */
-  async recoverOnStartup(): Promise<{ missedRecorded: number; ran: RunOutcome | null }> {
+  async recoverOnStartup(
+    reason = 'application was not running during this hour',
+  ): Promise<{ missedRecorded: number; ran: RunOutcome | null }> {
     const providerId = this.providerId;
     const current = slotOf(this.clock.now());
     const last = await this.runs.findOne({
@@ -623,7 +632,7 @@ export class PipelineService {
               startedAt: this.clock.now(),
               finishedAt: this.clock.now(),
               isLiveData: this.ingestion.source.info.isLive,
-              error: 'application was not running during this hour',
+              error: reason,
             },
           ],
           { ignoreConflicts: true },

@@ -27,10 +27,11 @@ describe('dashboard roles', () => {
       expect(can('reviewer', p)).toBe(false);
   });
 
-  it('keeps user management and the Telegram audience owner-only', () => {
+  it('keeps user management, the Telegram audience and the settings owner-only', () => {
     for (const role of USER_ROLES) {
       expect(can(role, 'users:manage')).toBe(role === 'owner');
       expect(can(role, 'telegram:manage')).toBe(role === 'owner');
+      expect(can(role, 'settings:manage')).toBe(role === 'owner');
     }
   });
 });

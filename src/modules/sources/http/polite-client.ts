@@ -88,6 +88,17 @@ export class PoliteHttpClient {
     this.fetchImpl = opts.fetchImpl ?? fetch;
   }
 
+  /** New rate limit, monthly budget or attempt count (dashboard settings), from the next request. */
+  setLimits(
+    limits: Partial<
+      Pick<PoliteClientOptions, 'requestsPerMinute' | 'monthlyBudget' | 'maxAttempts'>
+    >,
+  ) {
+    for (const [key, value] of Object.entries(limits))
+      if (typeof value === 'number' && Number.isFinite(value) && value > 0)
+        this.o[key as 'requestsPerMinute' | 'monthlyBudget' | 'maxAttempts'] = value;
+  }
+
   /** Serialized GET returning parsed JSON. Concurrency is always 1 per client. */
   async getJson<T>(url: string): Promise<T> {
     return JSON.parse(await this.getText(url)) as T;

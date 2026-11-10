@@ -72,6 +72,7 @@ async function request(method, path, body) {
     err.status = r.status;
     err.code = code;
     err.detail = detail;
+    err.errors = res && Array.isArray(res.errors) ? res.errors : [];
     if (!path.startsWith('auth/')) {
       if (code === 'AUTH_REQUIRED') showAuth('login', 'Your session ended. Sign in again.');
       else if (code === 'PASSWORD_CHANGE_REQUIRED') showAuth('change');
@@ -83,6 +84,7 @@ async function request(method, path, body) {
 const api = (path) => request('GET', path);
 const apiPost = (path, body) => request('POST', path, body);
 const apiPatch = (path, body) => request('PATCH', path, body);
+const apiPut = (path, body) => request('PUT', path, body);
 const apiDelete = (path) => request('DELETE', path, {});
 
 const num = (x) => (x === null || x === undefined || x === '' ? null : Number(x));
@@ -1342,6 +1344,10 @@ const PAGES = {
   ],
   access: ['Telegram', 'Who receives the hourly report, and reports that did not arrive.'],
   users: ['Users', 'Who can sign in to this dashboard, and what each role may see and do.'],
+  settings: [
+    'Settings',
+    'How the screen runs: schedule, source limits, retention, Telegram. Saved here and applied without editing .env; credentials and the database connection stay in the server environment.',
+  ],
   account: ['My account', 'Your username, your password, and what your role allows.'],
 };
 
@@ -4387,7 +4393,7 @@ async function loadAccess() {
 /* ============================== Sign-in, account and users ============================== */
 
 const ROLE_TEXT = {
-  owner: ['Owner', 'Everything, including users and the Telegram audience.'],
+  owner: ['Owner', 'Everything, including users, settings and the Telegram audience.'],
   analyzer: [
     'Analyzer',
     'Every data page, run health and exports; can reprocess a batch and refresh the LBank list.',
@@ -4402,6 +4408,7 @@ const PERMISSION_TEXT = {
   'scan:operate': 'Reprocess a batch, refresh the LBank list and retry a failed crawl',
   'telegram:manage': 'Manage Telegram members and re-send reports',
   'users:manage': 'Add, change and remove users',
+  'settings:manage': 'Change the settings (schedule, source limits, retention, Telegram)',
 };
 
 function showAuth(mode, notice) {
@@ -4842,6 +4849,524 @@ function wireAccounts() {
   $('sign-out').addEventListener('click', () => void signOut());
 }
 
+/* ============================== Settings (owner) ============================== */
+
+/** The settings page: the server's view, unsaved edits (draft / reset) and per-field errors. */
+const SETTINGS = { view: null, draft: {}, reset: new Set(), errors: {}, general: '' };
+
+const SOURCE_TEXT = {
+  environment: [
+    'Environment',
+    'Set in the server environment (.env / .env.prod), which takes precedence. Remove it there and restart the app to manage it here.',
+  ],
+  dashboard: ['Saved here', 'Saved in this dashboard.'],
+  default: [
+    'Default',
+    'Neither the environment nor the dashboard sets it: the built-in default applies.',
+  ],
+};
+const CHANGE_SOURCE = { dashboard: 'Dashboard', cli: 'CLI', import_env: 'Import' };
+
+const settingByKey = (key) =>
+  SETTINGS.view ? SETTINGS.view.settings.find((x) => x.key === key) : undefined;
+
+function settingText(s, v) {
+  if (v === null || v === undefined || v === '') return s && s.optional ? 'auto' : '—';
+  if (!s) return String(v);
+  if (s.kind === 'bool') return v ? 'On' : 'Off';
+  return `${typeof v === 'number' ? nf({ maximumFractionDigits: 2 }).format(v) : v}${s.unit ? ` ${s.unit}` : ''}`;
+}
+
+const hasSettingDraft = () => Object.keys(SETTINGS.draft).length > 0 || SETTINGS.reset.size > 0;
+
+/** What a field shows: the unsaved edit, the value a reset returns to, or the value in force. */
+function settingShown(s) {
+  if (SETTINGS.reset.has(s.key)) return s.default;
+  if (Object.hasOwn(SETTINGS.draft, s.key)) return SETTINGS.draft[s.key];
+  // An optional setting nobody set is "auto": an empty field with the derived value as placeholder.
+  return s.optional && s.source === 'default' ? null : s.value;
+}
+
+function draftValue(s, raw) {
+  if (s.kind === 'bool') return Boolean(raw);
+  const text = String(raw ?? '').trim();
+  if (s.kind === 'int' || s.kind === 'number') {
+    if (text === '') return s.optional ? null : '';
+    const n = Number(text);
+    return Number.isFinite(n) ? n : text; // the server names what is wrong with it
+  }
+  return text;
+}
+
+function editSetting(s, raw) {
+  SETTINGS.reset.delete(s.key);
+  delete SETTINGS.errors[s.key];
+  const v = draftValue(s, raw);
+  const current = s.optional && s.source === 'default' ? null : s.value;
+  if (v === current) delete SETTINGS.draft[s.key];
+  else SETTINGS.draft[s.key] = v;
+  const row = $(`row-${s.key}`);
+  if (row) {
+    row.classList.toggle('changed', Object.hasOwn(SETTINGS.draft, s.key));
+    row.classList.remove('invalid');
+    const err = row.querySelector('.setting-error');
+    if (err) err.remove();
+  }
+  updateSettingsBar();
+}
+
+function redrawSetting(s) {
+  const row = $(`row-${s.key}`);
+  if (row) row.replaceWith(settingRow(s));
+  updateSettingsBar();
+}
+
+function settingControl(s) {
+  const id = `set-${s.key}`;
+  const locked = s.source === 'environment';
+  const shown = settingShown(s);
+  const describedBy = `help-${s.key}`;
+  if (s.kind === 'bool') {
+    const box = el('input', {
+      id,
+      type: 'checkbox',
+      role: 'switch',
+      class: 'switch',
+      checked: Boolean(shown),
+      disabled: locked,
+      'aria-describedby': describedBy,
+    });
+    box.addEventListener('change', () => editSetting(s, box.checked));
+    return box;
+  }
+  if (s.kind === 'enum') {
+    const sel = el(
+      'select',
+      { id, disabled: locked, 'aria-describedby': describedBy },
+      (s.options || []).map((o) => el('option', { value: o, selected: o === shown }, o)),
+    );
+    sel.addEventListener('change', () => editSetting(s, sel.value));
+    return sel;
+  }
+  const numeric = s.kind === 'int' || s.kind === 'number';
+  const input = el('input', {
+    id,
+    type: numeric ? 'number' : 'text',
+    inputmode: numeric ? (s.kind === 'int' ? 'numeric' : 'decimal') : null,
+    min: numeric ? s.min : null,
+    max: numeric ? s.max : null,
+    step: numeric ? (s.kind === 'int' ? 1 : 'any') : null,
+    value: shown === null || shown === undefined ? '' : String(shown),
+    placeholder: s.optional ? `auto: ${settingText(s, s.value)}` : null,
+    list: s.format === 'timezone' ? 'tz-list' : null,
+    spellcheck: 'false',
+    autocomplete: 'off',
+    disabled: locked,
+    'aria-describedby': describedBy,
+  });
+  input.addEventListener('input', () => editSetting(s, input.value));
+  return input;
+}
+
+function settingRow(s) {
+  const err = SETTINGS.errors[s.key];
+  const [srcLabel, srcTitle] = SOURCE_TEXT[s.source];
+  const resetting = SETTINGS.reset.has(s.key);
+  const cls = ['setting'];
+  if (Object.hasOwn(SETTINGS.draft, s.key) || resetting) cls.push('changed');
+  if (err) cls.push('invalid');
+  if (s.source === 'environment') cls.push('locked');
+  return el(
+    'div',
+    { class: cls.join(' '), id: `row-${s.key}` },
+    el(
+      'div',
+      { class: 'setting-text' },
+      el('label', { for: `set-${s.key}` }, el('b', null, s.label)),
+      el('code', { class: 'setting-key' }, s.key),
+      el('p', { class: 'muted small', id: `help-${s.key}` }, s.help),
+      el(
+        'div',
+        { class: 'chips' },
+        el(
+          'span',
+          { class: `chip${s.source === 'dashboard' ? ' violet' : ''}`, title: srcTitle },
+          srcLabel,
+        ),
+        el(
+          'span',
+          {
+            class: 'chip',
+            title:
+              s.apply === 'live'
+                ? 'Takes effect without a restart (after a pipeline run in progress ends)'
+                : 'Read when the app starts: restart it to apply a change',
+          },
+          s.apply === 'live' ? 'Live' : 'At restart',
+        ),
+        s.source === 'environment'
+          ? el(
+              'span',
+              { class: 'chip mono', title: 'Value in the server environment' },
+              `${s.key}=${s.environment}`,
+            )
+          : null,
+        s.pending === 'restart'
+          ? el(
+              'span',
+              { class: 'chip warn' },
+              `Restart to apply · running ${settingText(s, s.running)}`,
+            )
+          : null,
+        s.pending === 'run'
+          ? el(
+              'span',
+              { class: 'chip warn' },
+              `${SETTINGS.view.waitingForRun ? 'Applies when the current run ends' : 'Applies at the next scheduled run'} · running ${settingText(s, s.running)}`,
+            )
+          : null,
+        resetting
+          ? el('span', { class: 'chip warn' }, `Resets to ${settingText(s, s.default)}`)
+          : null,
+        s.updatedBy && s.updatedAt
+          ? el(
+              'span',
+              { class: 'chip', title: fmtTime(s.updatedAt, { year: true }) },
+              `${s.updatedBy} · ${fmtAgo(s.updatedAt)}`,
+            )
+          : null,
+      ),
+      err ? el('div', { class: 'setting-error', role: 'alert' }, err) : null,
+    ),
+    el(
+      'div',
+      { class: 'setting-control' },
+      settingControl(s),
+      // Fixed cells (unit, action) keep every row's field in the same place.
+      el('span', { class: 'unit' }, s.unit && s.kind !== 'bool' ? s.unit : ''),
+      el('span', { class: 'setting-action' }, settingAction(s, resetting)),
+    ),
+  );
+}
+
+/** Reset (remove the saved value) or, once marked, Keep. */
+function settingAction(s, resetting) {
+  if (resetting)
+    return el(
+      'button',
+      {
+        type: 'button',
+        class: 'btn small',
+        onclick: () => {
+          SETTINGS.reset.delete(s.key);
+          redrawSetting(s);
+        },
+      },
+      'Keep',
+    );
+  if (s.source !== 'dashboard') return null;
+  return el(
+    'button',
+    {
+      type: 'button',
+      class: 'btn small',
+      title: `Remove the saved value: back to the default (${settingText(s, s.default)})`,
+      onclick: () => {
+        delete SETTINGS.draft[s.key];
+        delete SETTINGS.errors[s.key];
+        SETTINGS.reset.add(s.key);
+        redrawSetting(s);
+      },
+    },
+    'Reset',
+  );
+}
+
+function settingsNote(kind, ...children) {
+  return el('div', { class: `settings-note${kind ? ` ${kind}` : ''}` }, ...children);
+}
+
+function renderSettingsNotes(v) {
+  const notes = [];
+  if (v.problems.length)
+    notes.push(
+      el(
+        'div',
+        { class: 'banner inline' },
+        el('b', null, 'The saved settings do not validate with this server environment.'),
+        ' The app will refuse to start with them until this is fixed:',
+        el(
+          'ul',
+          null,
+          v.problems.map((p) => el('li', null, `${p.key}: ${p.message}`)),
+        ),
+      ),
+    );
+  if (SETTINGS.general) notes.push(el('div', { class: 'banner inline' }, SETTINGS.general));
+  if (v.waitingForRun)
+    notes.push(
+      settingsNote(
+        'warn',
+        el(
+          'p',
+          null,
+          'A pipeline run is in progress: the saved changes apply as soon as it ends, so one run never mixes two configurations.',
+        ),
+      ),
+    );
+  const restart = v.settings.filter((x) => x.pending === 'restart');
+  if (restart.length)
+    notes.push(
+      settingsNote(
+        'warn',
+        el(
+          'p',
+          null,
+          el('b', null, 'Restart the app to apply: '),
+          restart.map((x) => x.label).join(', '),
+          '. These are read once at start-up (on the server: ',
+          el('code', null, 'dc restart app'),
+          ').',
+        ),
+      ),
+    );
+  if (v.environmentKeys.length) {
+    const unsaved = v.settings.filter(
+      (x) => x.source === 'environment' && x.saved !== x.value,
+    ).length;
+    notes.push(
+      settingsNote(
+        '',
+        el(
+          'p',
+          null,
+          el('b', null, `${v.environmentKeys.length} settings come from the server environment`),
+          ' and are read-only here, because the environment takes precedence. ',
+          unsaved
+            ? 'Import copies their current values into the dashboard; then remove those lines from .env / .env.prod and restart the app to manage them here.'
+            : 'Their values are already saved here: remove those lines from .env / .env.prod and restart the app to manage them here.',
+        ),
+        unsaved
+          ? el(
+              'button',
+              { type: 'button', class: 'btn primary', onclick: () => void importSettings() },
+              'Import from environment',
+            )
+          : null,
+        el(
+          'details',
+          { class: 'settings-env-keys' },
+          el('summary', null, 'Lines to remove'),
+          el('pre', null, v.environmentKeys.join('\n')),
+        ),
+      ),
+    );
+  }
+  put($('settings-notes'), notes);
+}
+
+function renderSettings() {
+  const v = SETTINGS.view;
+  renderSettingsNotes(v);
+  put(
+    $('settings-groups'),
+    v.groups.map((g) =>
+      el(
+        'section',
+        { class: 'panel settings-group', 'aria-labelledby': `sg-${g.id}` },
+        el(
+          'div',
+          { class: 'panel-head' },
+          el('h2', { id: `sg-${g.id}` }, g.label),
+          el('span', { class: 'hint' }, g.description),
+        ),
+        el(
+          'div',
+          { class: 'settings-list' },
+          v.settings.filter((x) => x.group === g.id).map(settingRow),
+        ),
+      ),
+    ),
+  );
+  if (!$('tz-list')) {
+    const zones =
+      typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [];
+    $('tab-settings').append(
+      el(
+        'datalist',
+        { id: 'tz-list' },
+        ['UTC', ...zones.filter((z) => z !== 'UTC')].map((z) => el('option', { value: z })),
+      ),
+    );
+  }
+  const waiting = v.settings.filter((x) => x.pending).length + v.problems.length;
+  $('count-settings').textContent = waiting ? fmtInt(waiting) : '';
+  updateSettingsBar();
+}
+
+function updateSettingsBar() {
+  const n = Object.keys(SETTINGS.draft).length + SETTINGS.reset.size;
+  $('settings-bar').hidden = n === 0;
+  $('settings-bar-text').textContent = `${n} unsaved ${n === 1 ? 'change' : 'changes'}`;
+}
+
+async function loadSettings() {
+  SETTINGS.view = await api('settings');
+  renderSettings();
+  await loadSettingsHistory();
+}
+
+async function loadSettingsHistory() {
+  const rows = await api('settings/history?limit=50');
+  const value = (key, v) =>
+    v === null ? el('span', { class: 'muted' }, 'not saved') : settingText(settingByKey(key), v);
+  put(
+    $('settings-history'),
+    table(
+      [
+        { label: 'When', render: (r) => fmtTime(r.changedAt, { year: true }) },
+        { label: 'Who', render: (r) => r.changedBy },
+        {
+          label: 'Setting',
+          render: (r) =>
+            el(
+              'div',
+              { class: 'coin-text' },
+              el('b', null, (settingByKey(r.key) || { label: r.key }).label),
+              el('span', null, r.key),
+            ),
+        },
+        {
+          label: 'Change',
+          render: (r) =>
+            el('span', null, value(r.key, r.oldValue), ' → ', value(r.key, r.newValue)),
+        },
+        { label: 'Via', render: (r) => CHANGE_SOURCE[r.source] || r.source },
+      ],
+      rows,
+      { empty: 'No changes yet.' },
+    ),
+  );
+}
+
+/** "KEY: message" errors from the API, next to their fields; anything else above the groups. */
+function settingErrors(e) {
+  const out = {};
+  const general = [];
+  for (const x of e.errors || []) {
+    const m = /^([A-Z][A-Z0-9_]+): (.+)$/s.exec((x && x.message) || '');
+    if (m && settingByKey(m[1])) out[m[1]] = out[m[1]] ? `${out[m[1]]}; ${m[2]}` : m[2];
+    else if (x && x.message) general.push(x.message);
+  }
+  if (!Object.keys(out).length && !general.length) general.push(e.message);
+  return { fields: out, general: general.join(' ') };
+}
+
+function savedSummary(r) {
+  if (r.outcome === 'unchanged') return 'Nothing changed.';
+  const n = r.changes.length;
+  const head = `Saved ${n} ${n === 1 ? 'setting' : 'settings'}.`;
+  const live = r.changes.filter((c) => !r.restartRequired.includes(c.key)).length;
+  const parts = [head];
+  if (live)
+    parts.push(
+      r.outcome === 'deferred'
+        ? 'They apply when the pipeline run in progress ends.'
+        : 'In force now.',
+    );
+  if (r.restartRequired.length)
+    parts.push(`Restart the app to apply ${r.restartRequired.join(', ')}.`);
+  return parts.join(' ');
+}
+
+async function afterSettingsSaved(r) {
+  SETTINGS.view = r.view;
+  SETTINGS.draft = {};
+  SETTINGS.reset = new Set();
+  SETTINGS.errors = {};
+  SETTINGS.general = '';
+  renderSettings();
+  void loadSettingsHistory().catch(() => undefined);
+  // The display time zone, Telegram mode and schedule also show in the header and overview.
+  try {
+    S.cfg = await api('config');
+    renderHeader();
+    await refresh(true);
+  } catch {
+    /* the 30 s tick reports API errors */
+  }
+}
+
+async function saveSettings() {
+  const btn = $('settings-save');
+  btn.disabled = true;
+  try {
+    const r = await apiPut('settings', {
+      values: { ...SETTINGS.draft },
+      reset: [...SETTINGS.reset],
+    });
+    toast(savedSummary(r));
+    await afterSettingsSaved(r);
+  } catch (e) {
+    const { fields, general } = settingErrors(e);
+    SETTINGS.errors = fields;
+    SETTINGS.general = general;
+    renderSettings();
+    const first = Object.keys(fields)[0];
+    if (first)
+      $(`row-${first}`).scrollIntoView({
+        behavior: reduceMotion ? 'auto' : 'smooth',
+        block: 'center',
+      });
+    toast(first ? 'Not saved: check the highlighted settings.' : `Not saved: ${general}`, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function importSettings() {
+  const keys = SETTINGS.view.environmentKeys;
+  const done = await dialog({
+    title: 'Import from environment',
+    body: el(
+      'div',
+      { class: 'stack-form' },
+      el('p', null, `Save the current value of these ${keys.length} settings in the dashboard:`),
+      el('pre', { class: 'settings-import-keys' }, keys.join('\n')),
+      el(
+        'p',
+        { class: 'muted small' },
+        'Nothing changes now: the environment keeps precedence. Afterwards remove these lines from .env / .env.prod and restart the app; the dashboard then holds the same values and you can change them here.',
+      ),
+    ),
+    ok: 'Import',
+    onSubmit: async () => {
+      const r = await apiPost('settings/import-env', {});
+      toast(
+        r.outcome === 'unchanged'
+          ? 'Already saved: nothing to import.'
+          : `Imported ${r.changes.length} settings. Now remove those lines from the environment file and restart the app.`,
+      );
+      await afterSettingsSaved(r);
+    },
+  });
+  return done;
+}
+
+function wireSettings() {
+  $('settings-save').addEventListener('click', () => void saveSettings());
+  $('settings-discard').addEventListener('click', () => {
+    SETTINGS.draft = {};
+    SETTINGS.reset = new Set();
+    SETTINGS.errors = {};
+    SETTINGS.general = '';
+    if (SETTINGS.view) renderSettings();
+  });
+  window.addEventListener('beforeunload', (e) => {
+    if (hasSettingDraft()) e.preventDefault();
+  });
+}
+
 /* ============================== Router & refresh ============================== */
 
 const TABS = [
@@ -4855,6 +5380,7 @@ const TABS = [
   'exports',
   'access',
   'users',
+  'settings',
   'account',
 ];
 /** The permission each section needs (the rest need data:read, which every role has). */
@@ -4863,6 +5389,7 @@ const TAB_PERMISSION = {
   exports: 'exports:read',
   access: 'telegram:manage',
   users: 'users:manage',
+  settings: 'settings:manage',
 };
 const tabAllowed = (t) => t === 'account' || !TAB_PERMISSION[t] || can(TAB_PERMISSION[t]);
 const visibleTabs = () => TABS.filter(tabAllowed);
@@ -4880,6 +5407,7 @@ async function loadTab(tab) {
   else if (tab === 'exports') await loadExports().catch(showError('exports'));
   else if (tab === 'access') await loadAccess().catch(showError('access-pending'));
   else if (tab === 'users') await loadUsers().catch(showError('users-table'));
+  else if (tab === 'settings') await loadSettings().catch(showError('settings-groups'));
   else if (tab === 'account') renderAccount();
 }
 
@@ -4908,7 +5436,8 @@ async function refresh(force = false) {
   const batch = ov.scan ? ov.scan.batchId : null;
   if (force || batch !== S.lastBatch) {
     S.lastBatch = batch;
-    if (!['overview', 'access', 'users', 'account'].includes(S.tab)) await loadTab(S.tab);
+    if (!['overview', 'access', 'users', 'settings', 'account'].includes(S.tab))
+      await loadTab(S.tab);
   }
 }
 
@@ -5090,6 +5619,7 @@ async function start() {
   initTheme();
   wire();
   wireAccounts();
+  wireSettings();
   try {
     S.me = (await api('auth/me')).user;
   } catch (e) {

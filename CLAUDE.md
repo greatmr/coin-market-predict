@@ -46,6 +46,14 @@ never real orders. Spec: `docs/strategy-two-tier-vmc.md`. Purpose and open decis
   `data:read`); give any new route that is not plain market data a `@RequirePermission(...)`. The
   role table is `modules/auth/permissions.ts`. Never weaken the last-active-owner rules in
   `UsersService`. An empty database gets `owner` / `owner` (must change) on server start.
+- **Dashboard settings** (`src/modules/settings/`, catalog `src/config/settings.catalog.ts`,
+  `docs/adr/0005-dashboard-settings.md`): the owner saves operational config in `app_setting`
+  (append-only history `app_setting_change`); every entry point reads it before boot and validates
+  it with the environment (`loadConfig(env, saved)`). Precedence: environment > dashboard >
+  default. `live` keys apply in place through `LiveConfig` (held while a pipeline run holds the
+  lease); `restart` keys at the next start. Never put credentials, the DB / listen / proxy / cookie
+  settings or file paths in the catalog. A new config key: add it to the schema, and to the catalog
+  only if an owner should change it at runtime.
 - No LLM agents run in production (retired 2026-11-05; see `docs/architecture.md`).
 
 ## Commands
@@ -56,6 +64,7 @@ npm run db:migrate                      # build + apply committed migrations (db
 npm run cli -- run-once                 # one pipeline run (fixture source by default)
 npm run cli -- tier1:trace --id 990001  # calculation trace for one coin
 npm run cli -- forward:status           # forward test: star groups, coverage, warnings
+npm run cli -- settings:list            # dashboard settings: value, source (env/dashboard/default)
 npm start                               # dashboard http://127.0.0.1:3000 + scheduler (sign in: owner / owner first)
 npm run cli -- users:reset-owner        # recover the owner sign-in (owner / owner, must change)
 npm test                                # unit specs, src/**/*.spec.ts (no DB, no network)
@@ -68,6 +77,9 @@ npm run migration:generate -- src/database/migrations/<Name>  # draft from entit
 - Read `.claude/rules/` before editing the matching area; they are short.
 - Never print, grep, or cat `.env` / `secrets/` values. Check secrets by name and length only.
 - Tests use fixtures (`test/fixtures/`, `FixtureCmcMarket`); never hit live endpoints in `npm test`.
-- Telegram may be live in `.env`: run verification pipelines with `TELEGRAM_MODE=dry_run`.
+- Telegram may be live in `.env` or in the saved settings: run verification pipelines with
+  `TELEGRAM_MODE=dry_run` (an environment variable always overrides a saved setting).
+- Tests build configuration from explicit environments (`testEnv()` / `makeApp`), never from
+  `process.env`, which may hold the operator's live values.
 - Keep docs in `docs/` in sync when behaviour changes (strategy, architecture, source
   feasibility, operator guide, ADRs in `docs/adr/`).

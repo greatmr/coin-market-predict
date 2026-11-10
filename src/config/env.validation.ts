@@ -1,5 +1,8 @@
+import { validateCronExpression } from 'cron';
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
+
+import { type SavedSettings, type SettingKey, envSets, isSettingKey } from './settings.catalog.js';
 
 /** Environment variables that hold secrets. Values are never logged or exposed. */
 export const SECRET_KEYS = [
@@ -39,112 +42,142 @@ const optionalInt = (min: number, max = Number.MAX_SAFE_INTEGER) =>
     z.coerce.number().int().min(min).max(max).optional(),
   );
 
-const schema = z
-  .object({
-    NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-    HOST: z.string().default('127.0.0.1'),
-    PORT: z.coerce.number().int().min(1).max(65535).default(3000),
-    /** Either a full connection URL or the POSTGRES_* variables below (see `database/typeorm-options.ts`). */
-    DATABASE_URL: z
-      .string()
-      .optional()
-      .transform((v) => (v && v.trim().length > 0 ? v.trim() : undefined)),
-    POSTGRES_HOST: z.string().trim().optional(),
-    POSTGRES_PORT: optionalInt(1, 65535),
-    POSTGRES_USER: z.string().trim().optional(),
-    POSTGRES_PASSWORD: optionalSecret,
-    POSTGRES_DB: z.string().trim().optional(),
-    POSTGRES_SSL: bool.default(false),
-    /** Log every SQL statement (development only). */
-    DB_LOGGING: bool.default(false),
-    DISPLAY_TIMEZONE: z.string().default('Asia/Tehran'),
+/** Why a pipeline schedule is unusable, or null: five fields (no seconds), evaluated in UTC. */
+export function cronProblem(expr: string): string | null {
+  if (expr.trim().split(/\s+/).length !== 5)
+    return 'must be a five-field cron expression (minute hour day month weekday), evaluated in UTC';
+  const r = validateCronExpression(expr.trim());
+  return r.valid ? null : `is not a valid cron expression${r.error ? ` (${r.error.message})` : ''}`;
+}
 
-    DATA_SOURCE: z
-      .enum(['fixture', 'coinmarketcap', 'coinmarketcap_web', 'coingecko'])
-      .default('fixture'),
-    CMC_API_KEY: optionalSecret,
-    COINGECKO_API_KEY: optionalSecret,
-    SOURCE_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(500).default(10),
-    SOURCE_MONTHLY_REQUEST_BUDGET: z.coerce.number().int().min(1).default(9000),
-    SOURCE_MAX_MARKET_PAGES_PER_RUN: z.coerce.number().int().min(1).max(200).default(10),
-    DISCOVERY_INTERVAL_HOURS: z.coerce.number().int().min(1).default(24),
-    CMC_WEB_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(60).default(30),
-    /**
-     * Local politeness budget for the website collector (all routes). Tier 1 needs about one daily
-     * history request per screen candidate per UTC day on top of the hourly listing and LBank pairs.
-     */
-    CMC_WEB_MONTHLY_REQUEST_BUDGET: z.coerce.number().int().min(1).default(30_000),
-    CMC_WEB_MAX_RETRIES: z.coerce.number().int().min(0).max(6).default(2),
-    CMC_WEB_CACHE_SECONDS: z.coerce.number().int().min(0).max(300).default(60),
-    /**
-     * Website listing page size. 10,000 returns the whole ~8k universe in one request, which also
-     * avoids unstable ordering among the thousands of coins tied at zero market cap across pages.
-     */
-    CMC_WEB_LISTING_PAGE_SIZE: z.coerce.number().int().min(100).max(10_000).default(10_000),
+/** An IANA time zone name the runtime can format with (e.g. Asia/Tehran, UTC). */
+export function isTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
-    SCHEDULER_ENABLED: bool.default(true),
-    PIPELINE_CRON: z.string().default('7 * * * *'),
-    MISSED_RUN_POLICY: z.enum(['current_slot', 'skip']).default('current_slot'),
-    /** The crawler's documented batch interval (hourly PIPELINE_CRON), PDF p.12. */
-    CRAWL_EXPECTED_INTERVAL_MINUTES: z.coerce.number().int().min(1).max(1440).default(60),
-    /** Quote age beyond which the current observation is stale; default 2 × the crawl interval (p.12). */
-    MAX_QUOTE_AGE_MINUTES: optionalInt(1),
-    RETENTION_SNAPSHOT_DAYS: z.coerce.number().int().min(0).default(0),
-    /**
-     * After N days: snapshots of coins outside the Tier 1 rank band are thinned to the first
-     * snapshot of each UTC day, and scan rows excluded only by rank/cap to the first batch of each
-     * UTC day. 0 = keep all detail.
-     */
-    RETENTION_DETAIL_DAYS: z.coerce.number().int().min(0).default(30),
+const fields = z.object({
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  HOST: z.string().default('127.0.0.1'),
+  PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+  /** Either a full connection URL or the POSTGRES_* variables below (see `database/typeorm-options.ts`). */
+  DATABASE_URL: z
+    .string()
+    .optional()
+    .transform((v) => (v && v.trim().length > 0 ? v.trim() : undefined)),
+  POSTGRES_HOST: z.string().trim().optional(),
+  POSTGRES_PORT: optionalInt(1, 65535),
+  POSTGRES_USER: z.string().trim().optional(),
+  POSTGRES_PASSWORD: optionalSecret,
+  POSTGRES_DB: z.string().trim().optional(),
+  POSTGRES_SSL: bool.default(false),
+  /** Log every SQL statement (development only). */
+  DB_LOGGING: bool.default(false),
+  DISPLAY_TIMEZONE: z
+    .string()
+    .trim()
+    .refine(isTimeZone, 'must be an IANA time zone such as Asia/Tehran or UTC')
+    .default('Asia/Tehran'),
 
-    // --- Two-Tier VMC strategy, Tier 1 (docs/strategy-two-tier-vmc.md) --------------------
-    /** Completed UTC days requested per daily-history refresh (≥ 30 needed; extra days catch revisions). */
-    TIER1_DAILY_LOOKBACK_DAYS: z.coerce.number().int().min(30).max(120).default(35),
-    TIER1_DAILY_MAX_ASSETS_PER_RUN: z.coerce.number().int().min(0).max(20_000).default(1500),
-    TIER1_DAILY_MAX_MINUTES: z.coerce.number().min(1).max(50).default(30),
-    /** An asset whose latest completed day was not returned is retried after this many hours. */
-    TIER1_DAILY_RETRY_HOURS: z.coerce.number().min(0).max(48).default(3),
-    /**
-     * LBank Spot markets list (CMC exchange page, Markets section): fetched once, then again when
-     * the stored list is this many days old, or on demand (dashboard / `lbank:refresh`). D2.
-     */
-    LBANK_PAIRS_REFRESH_DAYS: z.coerce.number().int().min(1).max(365).default(30),
-    /** Beyond this age the stored list is stale: LBank status UNKNOWN and the queue is withheld. */
-    LBANK_PAIRS_MAX_AGE_DAYS: z.coerce.number().int().min(1).max(400).default(35),
-    /**
-     * false (operator decision D1): a pair in the LBank list counts as tradable. true: every listed
-     * pair also needs a reviewer's "Verified tradable" (the stricter assumption A7).
-     */
-    LBANK_REQUIRE_MANUAL_VERIFICATION: bool.default(false),
-    /** CMC Markets venue rows are refreshed at most this often per review candidate. */
-    TIER1_VENUE_REFRESH_HOURS: z.coerce.number().min(1).max(168).default(24),
-    TIER1_VENUE_MAX_ASSETS_PER_RUN: z.coerce.number().int().min(0).max(2000).default(60),
-    TIER1_OVERRIDES_FILE: z.string().default('config/tier1-overrides.json'),
-    TIER1_EXPORT_DIR: z.string().default('var/exports'),
-    EXPORT_RETENTION_DAYS: z.coerce.number().int().min(0).default(7),
+  DATA_SOURCE: z
+    .enum(['fixture', 'coinmarketcap', 'coinmarketcap_web', 'coingecko'])
+    .default('fixture'),
+  CMC_API_KEY: optionalSecret,
+  COINGECKO_API_KEY: optionalSecret,
+  SOURCE_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(500).default(10),
+  SOURCE_MONTHLY_REQUEST_BUDGET: z.coerce.number().int().min(1).default(9000),
+  SOURCE_MAX_MARKET_PAGES_PER_RUN: z.coerce.number().int().min(1).max(200).default(10),
+  DISCOVERY_INTERVAL_HOURS: z.coerce.number().int().min(1).default(24),
+  CMC_WEB_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(60).default(30),
+  /**
+   * Local politeness budget for the website collector (all routes). Tier 1 needs about one daily
+   * history request per screen candidate per UTC day on top of the hourly listing and LBank pairs.
+   */
+  CMC_WEB_MONTHLY_REQUEST_BUDGET: z.coerce.number().int().min(1).default(30_000),
+  CMC_WEB_MAX_RETRIES: z.coerce.number().int().min(0).max(6).default(2),
+  CMC_WEB_CACHE_SECONDS: z.coerce.number().int().min(0).max(300).default(60),
+  /**
+   * Website listing page size. 10,000 returns the whole ~8k universe in one request, which also
+   * avoids unstable ordering among the thousands of coins tied at zero market cap across pages.
+   */
+  CMC_WEB_LISTING_PAGE_SIZE: z.coerce.number().int().min(100).max(10_000).default(10_000),
 
-    TELEGRAM_MODE: z.enum(['disabled', 'dry_run', 'live']).default('dry_run'),
-    TELEGRAM_BOT_TOKEN: optionalSecret,
-    TELEGRAM_CHAT_ID: z.string().trim().optional(),
-    /** Answer /report, /status, /vmc, /run, /help (web server only). */
-    TELEGRAM_COMMANDS_ENABLED: bool.default(true),
-    /** Review Queue rows in the Telegram report. */
-    TELEGRAM_QUEUE_ROWS: z.coerce.number().int().min(1).max(30).default(10),
-    /** xlsx: attach the batch's Excel workbook to each Telegram report (not for withheld queues); none: text only. */
-    TELEGRAM_ATTACH_EXPORT: z.enum(['none', 'xlsx']).default('xlsx'),
+  SCHEDULER_ENABLED: bool.default(true),
+  PIPELINE_CRON: z
+    .string()
+    .trim()
+    .superRefine((v, ctx) => {
+      const problem = cronProblem(v);
+      if (problem) ctx.addIssue({ code: 'custom', message: problem });
+    })
+    .default('7 * * * *'),
+  MISSED_RUN_POLICY: z.enum(['current_slot', 'skip']).default('current_slot'),
+  /** The crawler's documented batch interval (hourly PIPELINE_CRON), PDF p.12. */
+  CRAWL_EXPECTED_INTERVAL_MINUTES: z.coerce.number().int().min(1).max(1440).default(60),
+  /** Quote age beyond which the current observation is stale; default 2 × the crawl interval (p.12). */
+  MAX_QUOTE_AGE_MINUTES: optionalInt(1),
+  RETENTION_SNAPSHOT_DAYS: z.coerce.number().int().min(0).default(0),
+  /**
+   * After N days: snapshots of coins outside the Tier 1 rank band are thinned to the first
+   * snapshot of each UTC day, and scan rows excluded only by rank/cap to the first batch of each
+   * UTC day. 0 = keep all detail.
+   */
+  RETENTION_DETAIL_DAYS: z.coerce.number().int().min(0).default(30),
 
-    MCP_HTTP_ENABLED: bool.default(true),
-    MCP_READ_TOKEN: optionalSecret,
-    MCP_WRITE_TOKEN: optionalSecret,
-    /** Dashboard sign-in: a session lasts this long after its last use. */
-    SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(720).default(12),
-    /** Secure flag of the session cookie: auto = only when the request arrived over HTTPS. */
-    COOKIE_SECURE: z.enum(['auto', 'true', 'false']).default('auto'),
-    /** Express "trust proxy" behind a reverse proxy (e.g. loopback, 1): correct client IP and HTTPS detection. */
-    TRUST_PROXY: z.string().trim().optional(),
-    /** Password for the bootstrap owner created on an empty database (default "owner", must be changed at first sign-in). */
-    INITIAL_OWNER_PASSWORD: optionalSecret,
-  })
+  // --- Two-Tier VMC strategy, Tier 1 (docs/strategy-two-tier-vmc.md) --------------------
+  /** Completed UTC days requested per daily-history refresh (≥ 30 needed; extra days catch revisions). */
+  TIER1_DAILY_LOOKBACK_DAYS: z.coerce.number().int().min(30).max(120).default(35),
+  TIER1_DAILY_MAX_ASSETS_PER_RUN: z.coerce.number().int().min(0).max(20_000).default(1500),
+  TIER1_DAILY_MAX_MINUTES: z.coerce.number().min(1).max(50).default(30),
+  /** An asset whose latest completed day was not returned is retried after this many hours. */
+  TIER1_DAILY_RETRY_HOURS: z.coerce.number().min(0).max(48).default(3),
+  /**
+   * LBank Spot markets list (CMC exchange page, Markets section): fetched once, then again when
+   * the stored list is this many days old, or on demand (dashboard / `lbank:refresh`). D2.
+   */
+  LBANK_PAIRS_REFRESH_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+  /** Beyond this age the stored list is stale: LBank status UNKNOWN and the queue is withheld. */
+  LBANK_PAIRS_MAX_AGE_DAYS: z.coerce.number().int().min(1).max(400).default(35),
+  /**
+   * false (operator decision D1): a pair in the LBank list counts as tradable. true: every listed
+   * pair also needs a reviewer's "Verified tradable" (the stricter assumption A7).
+   */
+  LBANK_REQUIRE_MANUAL_VERIFICATION: bool.default(false),
+  /** CMC Markets venue rows are refreshed at most this often per review candidate. */
+  TIER1_VENUE_REFRESH_HOURS: z.coerce.number().min(1).max(168).default(24),
+  TIER1_VENUE_MAX_ASSETS_PER_RUN: z.coerce.number().int().min(0).max(2000).default(60),
+  TIER1_OVERRIDES_FILE: z.string().default('config/tier1-overrides.json'),
+  TIER1_EXPORT_DIR: z.string().default('var/exports'),
+  EXPORT_RETENTION_DAYS: z.coerce.number().int().min(0).default(7),
+
+  TELEGRAM_MODE: z.enum(['disabled', 'dry_run', 'live']).default('dry_run'),
+  TELEGRAM_BOT_TOKEN: optionalSecret,
+  TELEGRAM_CHAT_ID: z.string().trim().optional(),
+  /** Answer /report, /status, /vmc, /run, /help (web server only). */
+  TELEGRAM_COMMANDS_ENABLED: bool.default(true),
+  /** Review Queue rows in the Telegram report. */
+  TELEGRAM_QUEUE_ROWS: z.coerce.number().int().min(1).max(30).default(10),
+  /** xlsx: attach the batch's Excel workbook to each Telegram report (not for withheld queues); none: text only. */
+  TELEGRAM_ATTACH_EXPORT: z.enum(['none', 'xlsx']).default('xlsx'),
+
+  MCP_HTTP_ENABLED: bool.default(true),
+  MCP_READ_TOKEN: optionalSecret,
+  MCP_WRITE_TOKEN: optionalSecret,
+  /** Dashboard sign-in: a session lasts this long after its last use. */
+  SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(720).default(12),
+  /** Secure flag of the session cookie: auto = only when the request arrived over HTTPS. */
+  COOKIE_SECURE: z.enum(['auto', 'true', 'false']).default('auto'),
+  /** Express "trust proxy" behind a reverse proxy (e.g. loopback, 1): correct client IP and HTTPS detection. */
+  TRUST_PROXY: z.string().trim().optional(),
+  /** Password for the bootstrap owner created on an empty database (default "owner", must be changed at first sign-in). */
+  INITIAL_OWNER_PASSWORD: optionalSecret,
+});
+
+const schema = fields
   .superRefine((c, ctx) => {
     if (!c.DATABASE_URL) {
       const missing = POSTGRES_REQUIRED.filter((k) => !c[k]);
@@ -214,10 +247,31 @@ const schema = z
 
 export type AppConfig = z.infer<typeof schema>;
 
+// Every dashboard setting is a configuration key: otherwise this fails to compile, naming the key.
+type UnknownSettingKeys = Exclude<SettingKey, keyof AppConfig>;
+const settingKeysAreConfigKeys: [UnknownSettingKeys] extends [never] ? true : UnknownSettingKeys =
+  true;
+void settingKeysAreConfigKeys;
+
+export interface ConfigIssue {
+  /** The variable (or `(root)`). */
+  key: string;
+  message: string;
+  /** The offending value is a saved dashboard setting (not set in the environment). */
+  fromDashboard?: boolean;
+}
+
 export class ConfigError extends Error {
-  constructor(public readonly issues: string[]) {
+  readonly issues: string[];
+
+  constructor(public readonly fields: ConfigIssue[]) {
+    const issues = fields.map(
+      (f) =>
+        `${f.key}: ${f.message}${f.fromDashboard ? ` (saved in the dashboard settings: change it there, or run \`settings:reset ${f.key}\`)` : ''}`,
+    );
     super(`Invalid configuration:\n  - ${issues.join('\n  - ')}`);
     this.name = 'ConfigError';
+    this.issues = issues;
   }
 }
 
@@ -245,16 +299,53 @@ export function resolveFileSecrets(env: NodeJS.ProcessEnv): Record<string, strin
   return out;
 }
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
+/**
+ * The input the schema validates: the environment, plus each saved dashboard setting whose key the
+ * environment leaves unset (an environment variable always wins, so a deploy can pin a value and a
+ * one-off `TELEGRAM_MODE=dry_run npm run cli -- …` still overrides the dashboard).
+ */
+export function withSavedSettings(
+  env: Record<string, string | undefined>,
+  saved: SavedSettings = {},
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...env };
+  for (const [key, value] of Object.entries(saved))
+    if (isSettingKey(key) && value !== undefined && !envSets(env, key)) out[key] = value;
+  return out;
+}
+
+/**
+ * Validate the configuration of one process: the environment (`<NAME>_FILE` secrets resolved) and
+ * the dashboard settings saved in the database (`modules/settings`), environment first.
+ */
+export function loadConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  saved: SavedSettings = {},
+): AppConfig {
   const resolved = resolveFileSecrets(env);
-  const parsed = schema.safeParse(resolved);
+  const parsed = schema.safeParse(withSavedSettings(resolved, saved));
   if (!parsed.success) {
     // Zod issue messages never include the offending value, so secrets cannot leak here.
     throw new ConfigError(
-      parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`),
+      parsed.error.issues.map((i) => {
+        const key = i.path.join('.') || '(root)';
+        return {
+          key,
+          message: i.message,
+          fromDashboard: isSettingKey(key) && saved[key] !== undefined && !envSets(resolved, key),
+        };
+      }),
     );
   }
   return parsed.data;
+}
+
+let defaults: Readonly<Record<string, unknown>> | null = null;
+
+/** Each setting's value when neither the environment nor the dashboard sets it (null = derived). */
+export function settingDefault(key: SettingKey): unknown {
+  defaults ??= fields.parse({});
+  return defaults[key] ?? null;
 }
 
 /** Non-secret view of configuration for diagnostics. Secrets show only set/unset. */

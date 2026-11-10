@@ -15,6 +15,8 @@ import { securityHeaders } from './common/security/security-headers.middleware.j
 import { describeConfig } from './config/index.js';
 import { loadConfigOrExit } from './config/load-config.js';
 
+import { loadSavedSettings } from './modules/settings/settings.store.js';
+
 import { AppModule } from './app.module.js';
 
 /** Routes outside the `/api` prefix: MCP keeps its own path (and bearer auth); `/healthz` is the liveness probe. */
@@ -41,13 +43,15 @@ function assertPortFree(port: number, host: string): Promise<void> {
 }
 
 async function main() {
-  const cfg = loadConfigOrExit();
+  // Dashboard settings first (retried while the database starts), then one validation of both.
+  const saved = await loadSavedSettings(process.env, { attempts: 10, delayMs: 3_000 });
+  const cfg = loadConfigOrExit(process.env, saved);
   await assertPortFree(cfg.PORT, cfg.HOST);
   const logger = new RedactingLogger();
-  const app = await NestFactory.create<NestExpressApplication>(AppModule.forRoot(cfg), {
-    logger,
-    bufferLogs: true,
-  });
+  const app = await NestFactory.create<NestExpressApplication>(
+    AppModule.forRoot(cfg, { inputs: { env: process.env, forced: {} } }),
+    { logger, bufferLogs: true },
+  );
   app.useLogger(logger);
   app.disable('x-powered-by');
   app.use(securityHeaders);
@@ -68,7 +72,7 @@ async function main() {
   await app.listen(cfg.PORT, cfg.HOST);
   const d = describeConfig(cfg);
   logger.log(
-    `Coins Predicts on http://${cfg.HOST}:${cfg.PORT} — data=${d.DATA_SOURCE}${cfg.DATA_SOURCE === 'fixture' ? ' (SYNTHETIC)' : ''}, strategy=Two-Tier VMC (Tier 1 scan + human review), telegram=${d.TELEGRAM_MODE}, scheduler=${cfg.SCHEDULER_ENABLED ? 'on' : 'off'}`,
+    `Coins Predicts on http://${cfg.HOST}:${cfg.PORT} — data=${d.DATA_SOURCE}${cfg.DATA_SOURCE === 'fixture' ? ' (SYNTHETIC)' : ''}, strategy=Two-Tier VMC (Tier 1 scan + human review), telegram=${d.TELEGRAM_MODE}, scheduler=${cfg.SCHEDULER_ENABLED ? 'on' : 'off'}, dashboard settings saved=${Object.keys(saved).length}`,
     'Bootstrap',
   );
 }

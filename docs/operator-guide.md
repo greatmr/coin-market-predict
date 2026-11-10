@@ -15,13 +15,17 @@ npm run cli -- run-once                # one hourly batch now
 npm start                              # dashboard http://127.0.0.1:3000 + hourly scheduler
 ```
 
+The data source, Telegram mode and the other operational values are dashboard settings (owner,
+_Settings_, [§ 3b](#3b-settings)); `.env` holds the database connection and credentials.
+
 - **Synthetic** (`DATA_SOURCE=fixture`, default): a made-up market of 1,301 coins (CMC-shaped ids
   ≥ 990001) with 29 named edge cases. Every screen says SYNTHETIC / TEST DATA. Use it to learn
   the screens; it says nothing about real markets.
 - **Live** (`DATA_SOURCE=coinmarketcap_web`): the CMC website collector, no key. The first live
   run fetches 35 days of daily rows for each screen candidate; at 30 requests/minute that is
   spread over the first two or three runs, and windows stay N/A until their days arrive.
-- Keep `TELEGRAM_MODE=dry_run` until the output looks right; `live` sends to every approved member.
+- Keep Telegram on `dry_run` (_Settings → Telegram_) until the output looks right; `live` sends to
+  every approved member.
 
 Each run takes one crawl batch per UTC hour (minute 7 by default) and writes the scan, the
 exports and the Telegram summary. Missed hours are recorded, never invented.
@@ -38,6 +42,7 @@ exports and the Telegram summary. Missed hours are recorded, never invented.
 | Runs & health       | Source, circuit and request budget; the latest run's stages on a timeline; hourly crawl batches (missing / duplicate ranks); runs; open LBank mapping tasks                                                                                                                                                                                                                      |
 | Exports             | Per-batch CSV / XLSX files with checksums                                                                                                                                                                                                                                                                                                                                        |
 | Telegram            | Missed reports, pending requests, members                                                                                                                                                                                                                                                                                                                                        |
+| Settings            | (Owner) The operational settings, where each value comes from (environment, saved here, default), whether it applies live or at restart, and the change history ([§ 3b](#3b-settings))                                                                                                                                                                                          |
 
 The queue, eligible and needs-review lists switch between **Table** and **Scatter** (current VMC
 against the coin's own 30-day mean on log scales, with the 1.5× line; click a dot to open the
@@ -116,7 +121,7 @@ Every page and API call needs a signed-in user. There are three roles:
 
 | Role     | Can see                                                   | Can do                                             |
 | -------- | --------------------------------------------------------- | -------------------------------------------------- |
-| Owner    | Everything                                                | Everything, including _Users_ and _Telegram_       |
+| Owner    | Everything                                                | Everything, including _Users_, _Settings_ and _Telegram_ |
 | Analyzer | Overview, lists, coin details, _Runs & health_, _Exports_ | Reprocess the latest batch, refresh the LBank list |
 | Reviewer | Overview, lists, coin details                             | Save reviews and LBank decisions                   |
 
@@ -147,8 +152,47 @@ docker compose exec app node dist/cli.js users:reset-owner   # the same inside t
 
 **On a server.** Put the dashboard behind HTTPS (nginx or Caddy) and set `TRUST_PROXY=loopback` (or
 the proxy's hop count) so the app sees real client addresses and marks the session cookie
-`Secure` (`COOKIE_SECURE=auto`; `true` forces it). Sessions last `SESSION_TTL_HOURS` (default 12)
+`Secure` (`COOKIE_SECURE=auto`; `true` forces it). Sessions last _Settings → Session length_ (default 12 h)
 after their last use. MCP keeps its own bearer tokens, and `/healthz` stays open for health checks.
+
+## 3b. Settings
+
+Owners manage the operational configuration under _Settings_ instead of `.env`
+([ADR-0005](adr/0005-dashboard-settings.md)): the data source and its request limits, the schedule
+and quote freshness, the Tier 1 collection bounds, the LBank list cadence and verification policy
+(decisions D1 / D2), retention, the Telegram mode and summary, the display time zone, the session
+length and MCP over HTTP. Credentials, the database connection, the listen address, the proxy /
+cookie set-up and file paths stay in the server environment and are not shown.
+
+- **Where a value comes from**: _Environment_ (set in `.env` / `.env.prod`; it takes precedence, so
+  the field is read-only), _Saved here_, or _Default_. To move a variable from the environment to
+  the dashboard, press _Import from environment_ (copies the current values; nothing changes yet),
+  remove the lines from the environment file and restart. Deleting a line without importing it
+  returns that setting to its default.
+- **When it applies**: _Live_ settings are in force as soon as they are saved, except during a
+  pipeline run: then they apply when the run ends, so one run never mixes two configurations.
+  _At restart_ settings (data source, website listing page size, listing pages per run) are read
+  when the app starts; the page says when a restart is due.
+- **Validation**: a save is checked as a whole, with the environment: an invalid value or
+  combination (a maximum LBank list age below the refresh interval, live Telegram without the bot
+  token and chat id in the environment, a cron expression with seconds) is refused, nothing is
+  stored, and each problem shows next to its field.
+- **History**: every save, reset and import is recorded with who, when, and the value before and
+  after (append-only). Thresholds that change results (quote age, LBank list age and verification)
+  are also part of each scan's configuration version.
+- **From the shell** (works even when the app cannot start):
+
+```bash
+npm run cli -- settings:list                     # value, source, live / at restart
+npm run cli -- settings:set PIPELINE_CRON "17 * * * *"
+npm run cli -- settings:reset TELEGRAM_MODE      # back to the environment value or the default
+npm run cli -- settings:import-env --dry-run     # what Import from environment would copy
+npm run cli -- settings:history --limit 20
+```
+
+A running server picks up a CLI change before its next scheduled run (or restart it). The schedule
+setting is a five-field cron expression in UTC; turning _Automatic runs_ back on records the hours
+it was off as missed and runs the current hour if the missed-run policy is `current_slot`.
 
 ## 4. LBank Spot markets list
 
@@ -222,6 +266,10 @@ the UTC day containing detection + 168 h. Rules, statuses, fields and gaps:
 | `forward:events [--view V] [--stars N] [--json]` | Forward-test events (`active`, `final`, `incomplete`, `all`) with their latest outcome |
 | `forward:update`                                | Run the daily High update now (normally automatic), then write its export          |
 | `forward:export`                                | Write the forward-test CSVs, workbook and manifest                                 |
+| `settings:list [--json]`                        | Every dashboard setting: value, source (environment / dashboard / default), apply mode |
+| `settings:set KEY VALUE` / `settings:reset KEY` | Change or remove a saved setting (validated as in the dashboard)                   |
+| `settings:import-env [--dry-run]`               | Copy the settings set in the environment into the dashboard                        |
+| `settings:history [--limit N]`                  | Recent settings changes: who, when, before and after                               |
 
 ## 7. Troubleshooting
 

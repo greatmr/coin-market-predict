@@ -25,6 +25,8 @@ import { PipelineStage } from '../modules/pipeline/entities/pipeline-stage.entit
 import { Review } from '../modules/reviews/entities/review.entity.js';
 import { ScanResult } from '../modules/scan/entities/scan-result.entity.js';
 import { ScanRun } from '../modules/scan/entities/scan-run.entity.js';
+import { AppSettingChange } from '../modules/settings/entities/app-setting-change.entity.js';
+import { AppSetting } from '../modules/settings/entities/app-setting.entity.js';
 import { Provider } from '../modules/sources/entities/provider.entity.js';
 import { SourceHealth } from '../modules/sources/entities/source-health.entity.js';
 import { TelegramDelivery } from '../modules/telegram/entities/telegram-delivery.entity.js';
@@ -47,9 +49,11 @@ export const ENTITIES = [
   PipelineRun,
   PipelineStage,
   TelegramDelivery,
-  // dashboard users
+  // dashboard users and settings
   AppUser,
   UserSession,
+  AppSetting,
+  AppSettingChange,
   // market data (ingestion)
   Asset,
   AssetIdentity,

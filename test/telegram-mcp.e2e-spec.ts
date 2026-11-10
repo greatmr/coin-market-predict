@@ -3,6 +3,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { slotOf } from '../src/common/utils/time.js';
+import { LiveConfig } from '../src/config/index.js';
 import { AppStateService } from '../src/modules/app-state/app-state.service.js';
 import { CrawlBatch } from '../src/modules/ingestion/entities/crawl-batch.entity.js';
 import { McpService } from '../src/modules/mcp/mcp.service.js';
@@ -227,6 +228,7 @@ describe('Telegram bot commands', () => {
       ctx.app.get(PipelineService),
       ctx.app.get(TelegramAccessService),
       ctx.app.get(TelegramAdminService),
+      ctx.app.get(LiveConfig),
     );
 
     expect((await bot.handle('999', '/report', { label: '@guest', isPrivate: true }))[0]).toMatch(
@@ -317,6 +319,7 @@ describe('Telegram access for other people', () => {
       ctx.app.get(PipelineService),
       ctx.app.get(TelegramAccessService),
       ctx.app.get(TelegramAdminService),
+      ctx.app.get(LiveConfig),
     );
     return { bot, tg, calls: sf.calls, access: ctx.app.get(TelegramAccessService) };
   }

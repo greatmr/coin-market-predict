@@ -9,22 +9,33 @@ import { testDbUrl } from './test-database.js';
 
 export { testDbUrl } from './test-database.js';
 
-/** Configuration for e2e tests: the test database, fixture data, Telegram dry-run, no scheduler. */
-export function testConfig(overrides: Record<string, string> = {}): AppConfig {
-  return loadConfig({
+/**
+ * The environment of e2e tests: the test database, fixture data, Telegram dry-run, no scheduler.
+ * Never `process.env` (it may hold the operator's live settings), and these keys are therefore
+ * locked against dashboard settings in every test app.
+ */
+export function testEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
+  return {
     DATABASE_URL: testDbUrl(),
     SCHEDULER_ENABLED: 'false',
     TELEGRAM_MODE: 'dry_run',
     DATA_SOURCE: 'fixture',
     TIER1_EXPORT_DIR: 'var/test-exports',
     ...overrides,
-  } as NodeJS.ProcessEnv);
+  } as NodeJS.ProcessEnv;
+}
+
+export function testConfig(overrides: Record<string, string> = {}): AppConfig {
+  return loadConfig(testEnv(overrides));
 }
 
 /** The application context without HTTP (as the CLI builds it), against the test database. */
 export async function makeApp(overrides: Record<string, string> = {}, fetchImpl?: typeof fetch) {
-  const cfg = testConfig(overrides);
-  const builder = Test.createTestingModule({ imports: [AppModule.forRoot(cfg, { http: false })] });
+  const env = testEnv(overrides);
+  const cfg = loadConfig(env);
+  const builder = Test.createTestingModule({
+    imports: [AppModule.forRoot(cfg, { http: false, inputs: { env, forced: {} } })],
+  });
   if (fetchImpl) builder.overrideProvider(TELEGRAM_FETCH).useValue(fetchImpl);
   const mod = await builder.compile();
   mod.useLogger(false);

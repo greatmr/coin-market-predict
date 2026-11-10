@@ -32,7 +32,7 @@ Layout and database conventions follow the operator's standard NestJS + TypeORM 
 | Path | Responsibility |
 |---|---|
 | `main.ts`, `cli.ts`, `mcp-stdio.ts` | Entry points: web server + scheduler, CLI, MCP over stdio. All compose `AppModule` |
-| `config/` | Zod-validated env (`env.validation.ts`), `*_FILE` secrets, `AppConfigModule` (`APP_CONFIG`) |
+| `config/` | Zod-validated configuration (`env.validation.ts`): the environment plus saved dashboard settings, environment first; the settings catalog (`settings.catalog.ts`); `*_FILE` secrets; `AppConfigModule` (`APP_CONFIG`, and `LiveConfig`, which applies saved settings to the running process and holds them during a pipeline run) |
 | `common/` | Exact decimals (80 significant digits) and UTC dates (`utils/`), CSV and dependency-free XLSX writers (`files/`), redaction, Basic auth, write guard, security headers (`security/`), `{ data, errors }` envelope, error codes, exception filter, Zod pipe, entity column helpers |
 | `database/` | TypeORM options shared by the app and the CLI, naming strategy, entity and migration registries, raw-SQL migrations |
 | `health/` | `GET /healthz` liveness |
@@ -52,6 +52,7 @@ Layout and database conventions follow the operator's standard NestJS + TypeORM 
 | `modules/dashboard/` | The REST controllers and DTOs behind `/api/*` — the only module with HTTP routes besides `health` and `mcp` |
 | `modules/mcp/` | Read-only MCP tools over HTTP (bearer token) and stdio |
 | `modules/app-state/` | Small durable key/value state (`app_state`) |
+| `modules/settings/` | Dashboard settings ([ADR-0005](adr/0005-dashboard-settings.md)): saved values with an append-only history, validated together with the environment, read before boot by every entry point, applied live through `LiveConfig`; the `settings:*` CLI |
 
 ## Pipeline stages
 | Stage | What it does | On failure |
@@ -77,7 +78,7 @@ Tables are snake_case; entities live in each module's `entities/` and are regist
 `src/database/entities.ts`. The schema is created only by the raw-SQL migrations in
 `src/database/migrations/` (M001 enum types · M002 platform · M003 market data · M004 daily
 metrics · M005 venues · M006 scan and reviews · M007 users · M008 forward test · M009 weighted
-star ranking), applied with
+star ranking · M010 dashboard settings), applied with
 `npm run db:migrate`; a test fails
 when entities and migrations disagree. Conventions and their reasons:
 [ADR-0001](adr/0001-typeorm-modular-layout.md).
@@ -100,6 +101,7 @@ when entities and migrations disagree. Conventions and their reasons:
 | `pipeline_run`, `pipeline_stage`, `job_lease` | pipeline | Runs per slot with stage status and metrics; the lease that prevents overlapping runs |
 | `telegram_delivery` | telegram | Every report part per recipient with status and attempts |
 | `app_state` | app-state | Small durable values (Telegram access list and offset, retention watermark, fixture anchor) |
+| `app_setting`, `app_setting_change` | settings | Owner-saved operational settings (one scalar per key; no row = environment or default) and their append-only change history with who made each change |
 
 Closed value sets (statuses, classes, decisions) are PostgreSQL enum types whose values come from
 the code; the strategy's sets come from `modules/strategy`. Every reference to another row is a

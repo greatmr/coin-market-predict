@@ -3,7 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { isoDate } from '../../common/utils/dates.js';
 
-import { APP_CONFIG, type AppConfig } from '../../config/index.js';
+import { APP_CONFIG, type AppConfig, LiveConfig, type SettingKey } from '../../config/index.js';
 
 import { AppStateModule } from '../app-state/app-state.module.js';
 import { AppStateService } from '../app-state/app-state.service.js';
@@ -68,29 +68,49 @@ function healthStore(
   };
 }
 
+/** Call `apply` whenever one of `keys` changes in the dashboard settings. */
+function onSettings(live: LiveConfig | undefined, keys: SettingKey[], apply: () => void) {
+  live?.onChange((changed) => {
+    if (keys.some((k) => changed.has(k))) apply();
+  });
+}
+
 /** One shared, polite HTTP queue for every CMC website route (listing, history, market pairs). */
 export function createWebClient(
   cfg: AppConfig,
   health: SourceHealthService,
   providers: ProviderService,
+  live?: LiveConfig,
 ): CmcWebClient {
-  return new CmcWebClient(
-    new PoliteHttpClient({
-      providerId: CMC_WEB_PROVIDER.id,
-      requestsPerMinute: cfg.CMC_WEB_REQUESTS_PER_MINUTE,
-      monthlyBudget: cfg.CMC_WEB_MONTHLY_REQUEST_BUDGET,
-      maxAttempts: cfg.CMC_WEB_MAX_RETRIES + 1,
-      headers: {
-        accept: 'application/json, text/html;q=0.9, */*;q=0.8',
-        origin: 'https://coinmarketcap.com',
-        referer: 'https://coinmarketcap.com/',
-        platform: 'web',
-      },
-      responseStatus: webResponseStatus,
-      store: healthStore(health, providers, CMC_WEB_PROVIDER),
-    }),
-    cfg.CMC_WEB_CACHE_SECONDS * 1000,
+  const http = new PoliteHttpClient({
+    providerId: CMC_WEB_PROVIDER.id,
+    requestsPerMinute: cfg.CMC_WEB_REQUESTS_PER_MINUTE,
+    monthlyBudget: cfg.CMC_WEB_MONTHLY_REQUEST_BUDGET,
+    maxAttempts: cfg.CMC_WEB_MAX_RETRIES + 1,
+    headers: {
+      accept: 'application/json, text/html;q=0.9, */*;q=0.8',
+      origin: 'https://coinmarketcap.com',
+      referer: 'https://coinmarketcap.com/',
+      platform: 'web',
+    },
+    responseStatus: webResponseStatus,
+    store: healthStore(health, providers, CMC_WEB_PROVIDER),
+  });
+  const web = new CmcWebClient(http, cfg.CMC_WEB_CACHE_SECONDS * 1000);
+  onSettings(
+    live,
+    ['CMC_WEB_REQUESTS_PER_MINUTE', 'CMC_WEB_MONTHLY_REQUEST_BUDGET', 'CMC_WEB_MAX_RETRIES'],
+    () =>
+      http.setLimits({
+        requestsPerMinute: cfg.CMC_WEB_REQUESTS_PER_MINUTE,
+        monthlyBudget: cfg.CMC_WEB_MONTHLY_REQUEST_BUDGET,
+        maxAttempts: cfg.CMC_WEB_MAX_RETRIES + 1,
+      }),
   );
+  onSettings(live, ['CMC_WEB_CACHE_SECONDS'], () =>
+    web.setCacheMs(cfg.CMC_WEB_CACHE_SECONDS * 1000),
+  );
+  return web;
 }
 
 export function createSource(
@@ -99,15 +119,24 @@ export function createSource(
   health: SourceHealthService,
   providers: ProviderService,
   web?: CmcWebClient,
+  live?: LiveConfig,
 ): MarketDataSource {
-  const client = (info: ProviderInfo, headers: Record<string, string>) =>
-    new PoliteHttpClient({
+  const client = (info: ProviderInfo, headers: Record<string, string>) => {
+    const http = new PoliteHttpClient({
       providerId: info.id,
       requestsPerMinute: cfg.SOURCE_REQUESTS_PER_MINUTE,
       monthlyBudget: cfg.SOURCE_MONTHLY_REQUEST_BUDGET,
       headers,
       store: healthStore(health, providers, info),
     });
+    onSettings(live, ['SOURCE_REQUESTS_PER_MINUTE', 'SOURCE_MONTHLY_REQUEST_BUDGET'], () =>
+      http.setLimits({
+        requestsPerMinute: cfg.SOURCE_REQUESTS_PER_MINUTE,
+        monthlyBudget: cfg.SOURCE_MONTHLY_REQUEST_BUDGET,
+      }),
+    );
+    return http;
+  };
   switch (cfg.DATA_SOURCE) {
     case 'coinmarketcap_web':
       if (!web) throw new Error('CMC website client is not available');
@@ -156,12 +185,19 @@ export function createTier1Source(
     SourceHealthService,
     {
       provide: CmcWebClient,
-      inject: [APP_CONFIG, SourceHealthService, ProviderService],
+      inject: [APP_CONFIG, SourceHealthService, ProviderService, LiveConfig],
       useFactory: createWebClient,
     },
     {
       provide: MARKET_DATA_SOURCE,
-      inject: [APP_CONFIG, AppStateService, SourceHealthService, ProviderService, CmcWebClient],
+      inject: [
+        APP_CONFIG,
+        AppStateService,
+        SourceHealthService,
+        ProviderService,
+        CmcWebClient,
+        LiveConfig,
+      ],
       useFactory: createSource,
     },
     {

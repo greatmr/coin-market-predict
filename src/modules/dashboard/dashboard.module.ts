@@ -7,6 +7,7 @@ import { ForwardTestModule } from '../forward-test/forward-test.module.js';
 import { PipelineModule } from '../pipeline/pipeline.module.js';
 import { ReadModelModule } from '../read-model/read-model.module.js';
 import { ReviewsModule } from '../reviews/reviews.module.js';
+import { SettingsModule } from '../settings/settings.module.js';
 import { StrategyModule } from '../strategy/index.js';
 import { TelegramModule } from '../telegram/telegram.module.js';
 import { VenuesModule } from '../venues/venues.module.js';
@@ -20,6 +21,7 @@ import { LbankController } from './lbank.controller.js';
 import { PipelineController } from './pipeline.controller.js';
 import { ReviewsController } from './reviews.controller.js';
 import { ScanController } from './scan.controller.js';
+import { SettingsController } from './settings.controller.js';
 import { TelegramAccessController } from './telegram-access.controller.js';
 import { UsersController } from './users.controller.js';
 
@@ -39,6 +41,7 @@ import { UsersController } from './users.controller.js';
     TelegramModule,
     AuthModule,
     ForwardTestModule,
+    SettingsModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: AuthGuard }, OwnerBootstrap],
   controllers: [
@@ -53,6 +56,7 @@ import { UsersController } from './users.controller.js';
     PipelineController,
     TelegramAccessController,
     ForwardController,
+    SettingsController,
   ],
 })
 export class DashboardModule {}

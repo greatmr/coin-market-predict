@@ -2,7 +2,8 @@
  * Dashboard roles and what each may see and do. Pure data: the HTTP guard, the dashboard and the
  * tests all read this one table, so a permission never means two different things.
  *
- *  - owner     everything, including user management and the Telegram audience (personal chat ids)
+ *  - owner     everything, including user management, the Telegram audience (personal chat ids)
+ *              and the dashboard settings (the operational configuration)
  *  - analyzer  every data page, run health and exports; operates the screen (reprocess a batch,
  *              refresh the LBank list) but records no human decisions
  *  - reviewer  the market pages and coin details; records reviews and LBank decisions, nothing
@@ -26,6 +27,8 @@ export const PERMISSIONS = [
   'telegram:manage',
   /** Create, change, reset and delete dashboard users. */
   'users:manage',
+  /** View and change the dashboard settings (schedule, source limits, Telegram mode, …) and their history. */
+  'settings:manage',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
