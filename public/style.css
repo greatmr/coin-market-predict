@@ -467,7 +467,13 @@ svg {
 .shell {
   margin-left: 244px;
   padding: 22px 28px 40px 0;
-  max-width: 1560px;
+  /* Fills the space beside the rail; very wide screens cap the width and centre it (below). */
+  max-width: 2200px;
+}
+@media (min-width: 2444px) {
+  .shell {
+    margin-left: calc(244px + (100vw - 244px - 2200px) / 2);
+  }
 }
 .top {
   display: flex;
