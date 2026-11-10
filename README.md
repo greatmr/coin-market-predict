@@ -17,6 +17,7 @@ Hourly cryptocurrency **screening for human review**, implementing the Two-Tier 
 
 - Strategy specification (with PDF page references, assumptions, conflicts): [docs/strategy-two-tier-vmc.md](docs/strategy-two-tier-vmc.md)
 - Operating it day to day: [docs/operator-guide.md](docs/operator-guide.md)
+- Production deployment (server, Nginx, Docker, troubleshooting): [docs/deployment.md](docs/deployment.md)
 - Architecture: [docs/architecture.md](docs/architecture.md); decisions: [TypeORM and the module layout](docs/adr/0001-typeorm-modular-layout.md), [the strategy module](docs/adr/0002-strategy-module-boundary.md)
 - Data sources and the website collector: [docs/source-feasibility.md](docs/source-feasibility.md)
 - Field mapping and data gaps: [docs/tier1-input-mapping.md](docs/tier1-input-mapping.md)
