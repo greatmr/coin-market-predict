@@ -2995,6 +2995,8 @@ function renderTrace(t) {
       b.setAttribute('aria-selected', String(on));
       b.tabIndex = on ? 0 : -1;
       if (on && focus) b.focus();
+      // Narrow screens scroll the tab strip sideways: keep the chosen tab in view.
+      if (on) bar.scrollTo({ left: b.offsetLeft - 16, behavior: 'smooth' });
     });
     panels.forEach((p) => {
       p.hidden = p.id !== `dp-${k}`;
@@ -4549,6 +4551,11 @@ function initTheme() {
 
 function wire() {
   for (const t of TABS) $(`t-${t}`).addEventListener('click', () => selectTab(t));
+  // The collapsed (tablet / phone) sidebar shows icons only: its label becomes a CSS tooltip.
+  document.querySelectorAll('.rail-items button[data-tab]').forEach((b) => {
+    const label = b.querySelector('span');
+    if (label) b.dataset.label = label.textContent.trim();
+  });
   document.querySelector('.rail-items').addEventListener('keydown', (e) => {
     const dir = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key];
     if (!dir) return;

@@ -2974,6 +2974,143 @@ body.signed-out .shell {
   }
 }
 
+/* Tablet: the sidebar is icons only, so show each item's label as a tooltip (hover, focus, tap). */
+@media (min-width: 721px) and (max-width: 1100px) {
+  .rail-items button[data-label]::after {
+    content: attr(data-label);
+    position: absolute;
+    left: calc(100% + 14px);
+    top: 50%;
+    transform: translate(-6px, -50%);
+    padding: 6px 11px;
+    border-radius: 10px;
+    border: 1px solid var(--edge-strong);
+    background: var(--glass-solid);
+    box-shadow: var(--shadow-lift);
+    color: var(--text);
+    font: 600 12.5px var(--font-round);
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition:
+      opacity 0.12s,
+      transform 0.12s;
+    z-index: 30;
+  }
+  .rail-items button[data-label]:hover::after,
+  .rail-items button[data-label]:focus-visible::after,
+  .rail-items button[data-label]:active::after {
+    opacity: 1;
+    transform: translate(0, -50%);
+  }
+}
+
+/* Phone: header, search, coin detail tabs and range pills. */
+@media (max-width: 720px) {
+  .top {
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .title-block {
+    flex: 1 1 100%;
+  }
+  .page-sub {
+    font-size: 13px;
+  }
+  /* Row 1: badges. Row 2: search (fills the row) + account. */
+  .top-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+  }
+  .badges {
+    grid-column: 1 / -1;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .badges::-webkit-scrollbar {
+    display: none;
+  }
+  .badge {
+    flex: 0 0 auto;
+  }
+  .search-btn {
+    order: 0;
+    padding: 10px 14px;
+    min-height: 44px;
+  }
+  .search-btn kbd {
+    display: none;
+  }
+  .user-menu {
+    order: 0;
+  }
+  .user-chip {
+    min-height: 44px;
+  }
+  .toolbar > * {
+    max-width: none;
+  }
+  .toolbar .search-field {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+  .toolbar .seg,
+  .toolbar .rows {
+    flex: 0 1 auto;
+  }
+  .palette {
+    padding: 8vh 10px 10px;
+  }
+
+  /* Drawer content must not be squashed: the body scrolls, its children keep their height. */
+  .drawer-body > * {
+    flex-shrink: 0;
+  }
+  .detail-tabs {
+    flex-shrink: 0;
+    top: -18px;
+    gap: 2px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .detail-tabs::-webkit-scrollbar {
+    display: none;
+  }
+  .detail-tabs button {
+    flex: 0 0 auto;
+  }
+
+  /* Range / window pills (30 days daily, 72 h, 7 days...): one swipeable row, no ragged wrap. */
+  .seg {
+    flex-wrap: nowrap;
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .seg::-webkit-scrollbar {
+    display: none;
+  }
+  .seg button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    min-height: 36px;
+  }
+  .win-seg {
+    border-radius: 18px;
+  }
+  .coin-hero {
+    gap: 10px 16px;
+  }
+  .coin-price b {
+    font-size: 26px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
