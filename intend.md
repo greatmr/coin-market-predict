@@ -9,6 +9,11 @@ Queue to Tier 2, a human TradingView chart review with an optional, manually com
 trade plan. Results go to a dashboard, exports, an MCP server and a Telegram channel. Outputs are
 review material, not predictions or trading signals.
 
+Add-on (operator handoff, 10 Nov 2026; `docs/forward-test.md`): the **Star Event Forward Test**
+records the first priced 1/2/3-star detection per coin, UTC day and star count and measures the
+highest later High until the end of the UTC day containing detection + 168 h, compared by star
+group. A descriptive measurement, not a trade, a signal or a profit claim.
+
 (Superseded on 2026-11-05: the momentum "surge screen", Claude agent reviews, paper trading,
 backtests and the six-month VMC baseline. See `docs/strategy-two-tier-vmc.md` § 10.)
 
@@ -21,7 +26,8 @@ backtests and the six-month VMC baseline. See `docs/strategy-two-tier-vmc.md` §
 3. **Tier 1 rules** (p.3–19): rank 101–1200, circulating cap ≥ $15M, listed ≥ 60 days, not a
    stablecoin or tokenized asset, a verified LBank Spot pair; daily VMC means over exactly the
    last 3 / 7 / 14 / 30 completed UTC days; YES iff current ≥ 1.5 × mean (14d context only);
-   stars = YES count; queue order per p.14. Exact decimal arithmetic; missing or ambiguous inputs
+   stars = YES count; queue ranked by stars, then weighted points (3d 60 · 7d 25 · 30d 15;
+   Weighted Star Ranking Addendum, D3, `weighted_star_v1`). Exact decimal arithmetic; missing or ambiguous inputs
    give N/A or NEEDS_REVIEW with a reason, never a guess.
 4. **Semantics**: UTC storage; USD values; circulating market cap (never FDV); rolling-24h volume
    kept separate from daily volume; provider update, crawl and scan times kept apart; nulls carry
@@ -34,6 +40,10 @@ backtests and the six-month VMC baseline. See `docs/strategy-two-tier-vmc.md` §
    compact summary with dry-run mode.
 7. **Human review** (p.15, p.24–27): venue decision, event day, LBank verification, chart review
    fields, final decision, manual trade plan validation; append-only revisions.
+8. **Forward test** (add-on): automatic events from the published Review Queue (no approval),
+   unique per (CMC id, UTC date, stars), immutable reference price, daily Highs of the same
+   coin's CMC USD series only, never a pre-signal High or Close, FINAL only after the final day's
+   High; versioned outcomes and a star-group report on FINAL events.
 
 ## Assumptions
 - Single operator, personal research use; one deployment.
@@ -58,7 +68,8 @@ backtests and the six-month VMC baseline. See `docs/strategy-two-tier-vmc.md` §
 ## Acceptance criteria
 - `npm test` and `npm run test:db` pass offline, including the PDF's acceptance cases (p.19:
   A exact 1.5 boundary, B ranks / cap / age boundaries, C mean of ratios, D missing day,
-  E zero / stale / unverified inputs, F queue order); fixture mode runs end to end (fixture crawl
+  E zero / stale / unverified inputs; F queue order, superseded by the weighted star ranking's own
+  acceptance cases); fixture mode runs end to end (fixture crawl
   → PostgreSQL → Tier 1 scan → exports → dashboard / MCP → Telegram dry run).
 - Fixture data is labelled synthetic everywhere it appears (DB flag, dashboard, exports, Telegram).
 - A batch is never COMPLETE unless every listed coin was stored and ranks 1–1200 are contiguous.
@@ -82,3 +93,6 @@ backtests and the six-month VMC baseline. See `docs/strategy-two-tier-vmc.md` §
 5. **Storage retention.** Default `RETENTION_DETAIL_DAYS=30`: afterwards, coins outside the Tier 1
    band keep one snapshot per UTC day and scan rows excluded only by rank/cap keep one batch per
    UTC day. Set `0` to keep all hourly detail.
+6. **Intraday High for the signal day.** No verified source gives a post-detection intraday High;
+   such events stay `INCOMPLETE_DAY0` (lower bound) unless CMC's `timeHigh` or a later High settles
+   them. Adding a source needs a source assessment (`docs/forward-test.md` § 14).

@@ -26,7 +26,7 @@ beforeEach(async () => {
 afterEach(async () => ctx.app.close());
 
 describe('hourly pipeline', () => {
-  it('runs end to end (collect → LBank → daily → scan → venues → export → notify) and skips a completed slot', async () => {
+  it('runs end to end (collect → LBank → daily → scan → venues → export → notify → forward) and skips a completed slot', async () => {
     const p = ctx.app.get(PipelineService);
     const r = await p.runSlot();
     expect(['succeeded', 'partial']).toContain(r.status);
@@ -39,6 +39,7 @@ describe('hourly pipeline', () => {
       'venues',
       'export',
       'notify',
+      'forward',
     ]);
     expect(Object.values(r.stages).every((s) => s === 'succeeded')).toBe(true);
     const run = await ctx.repo(PipelineRun).findOneByOrFail({ id: r.runId! });

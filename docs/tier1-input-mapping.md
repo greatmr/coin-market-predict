@@ -96,6 +96,12 @@ fetched once, refreshed every 30 days or on demand), the `2026-11-05T12:00Z` bat
 34 coins in the Review Queue (PUBLISHED).
 
 No other site is used to fill a gap, and no value is inferred from the PDF screenshots (p.8).
+
+**Forward-test add-on (2026-11-10, gap G9).** The same history response carries `timeHigh` /
+`timeLow` per day (e.g. XRP 2026-10-30 `timeHigh 06:41:00Z`), which the parser dropped. They are
+now kept on `DailyMetricRevision.timeHigh` / `timeLow`, outside the content hash, so Tier 1
+revisions and lineage are unchanged. Field mapping from the Review Queue to forward-test events:
+[forward-test.md § 3](forward-test.md#3-adapter-published-review-queue--event-p3-p5).
 Synthetic fixture data (`DATA_SOURCE=fixture`) uses CMC-shaped ids from 990001 upwards and is
 labelled synthetic everywhere; its LBank feed includes an explicit trading status so the
 `VERIFIED` path can be demonstrated offline.

@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppStateModule } from '../app-state/app-state.module.js';
 import { DailyMetricsModule } from '../daily-metrics/daily-metrics.module.js';
 import { ExportsModule } from '../exports/exports.module.js';
+import { ForwardTestModule } from '../forward-test/forward-test.module.js';
 import { CrawlBatch } from '../ingestion/entities/crawl-batch.entity.js';
 import { MarketSnapshot } from '../ingestion/entities/market-snapshot.entity.js';
 import { IngestionModule } from '../ingestion/ingestion.module.js';
@@ -21,7 +22,8 @@ import { RetentionService } from './retention.service.js';
 import { SchedulerService } from './scheduler.service.js';
 
 /**
- * The hourly run: discover → collect → lbank → daily → scan → venues → export → notify → retention,
+ * The hourly run: discover → collect → lbank → daily → scan → venues → export → notify → forward →
+ * retention,
  * under a database lease, with stage records, restart recovery and the cron scheduler.
  */
 @Module({
@@ -35,6 +37,7 @@ import { SchedulerService } from './scheduler.service.js';
     SourcesModule,
     ExportsModule,
     TelegramModule,
+    ForwardTestModule,
   ],
   providers: [LeaseService, RetentionService, PipelineService, SchedulerService],
   exports: [PipelineService, LeaseService, RetentionService],

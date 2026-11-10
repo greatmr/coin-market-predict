@@ -17,7 +17,7 @@ import { Review } from '../src/modules/reviews/entities/review.entity.js';
 import { ReviewInputError, ReviewService } from '../src/modules/reviews/review.service.js';
 import { ScanResult } from '../src/modules/scan/entities/scan-result.entity.js';
 import { ScanRun } from '../src/modules/scan/entities/scan-run.entity.js';
-import { compareQueue } from '../src/modules/strategy/index.js';
+import { compareQueue, rankingScore } from '../src/modules/strategy/index.js';
 import { parseDocumentPart } from '../src/modules/telegram/attachment.js';
 import { TelegramDelivery } from '../src/modules/telegram/entities/telegram-delivery.entity.js';
 import { ReportService } from '../src/modules/telegram/report.service.js';
@@ -70,9 +70,26 @@ const outcomes = async () =>
   (
     await ctx.repo(ScanResult).find({
       where: { batchId },
-      select: { id: true, cmcId: true, inputsHash: true, pass3d: true, stars: true },
+      select: {
+        id: true,
+        cmcId: true,
+        inputsHash: true,
+        pass3d: true,
+        stars: true,
+        weightedPassPoints: true,
+        scoreComplete: true,
+        queueOrder: true,
+      },
     })
-  ).map(({ cmcId, inputsHash, pass3d, stars }) => ({ cmcId, inputsHash, pass3d, stars }));
+  ).map(({ cmcId, inputsHash, pass3d, stars, weightedPassPoints, scoreComplete, queueOrder }) => ({
+    cmcId,
+    inputsHash,
+    pass3d,
+    stars,
+    weightedPassPoints,
+    scoreComplete,
+    queueOrder,
+  }));
 const counts = async () => ({
   snaps: await ctx.repo(MarketSnapshot).count(),
   results: await ctx.repo(ScanResult).count(),
@@ -239,21 +256,82 @@ describe('Tier 1 end to end on the synthetic fixture', () => {
     expect(dec(zb.vmc3dAvg)!.isZero()).toBe(true);
   });
 
-  it('orders the Review Queue exactly by the PDF sort keys', async () => {
+  it('orders the Review Queue by the weighted star ranking (weighted_star_v1)', async () => {
     const q = await ctx
       .repo(ScanResult)
       .find({ where: { batchId, inQueue: true }, order: { queueOrder: 'ASC' } });
     expect(q.length).toBeGreaterThan(5);
     expect(q.every((r) => r.eligibilityStatus === 'ELIGIBLE' && r.stars >= 1)).toBe(true);
+    expect((await ctx.repo(ScanRun).findOneByOrFail({ batchId })).rankingRulesetVersion).toBe(
+      'weighted_star_v1',
+    );
+    for (const r of q) {
+      // The stored score is the ranking of the stored statuses, never a pass of its own.
+      const s = rankingScore({
+        pass3d: r.pass3d,
+        pass7d: r.pass7d,
+        pass30d: r.pass30d,
+        multiple3d: dec(r.multiple3d),
+        multiple7d: dec(r.multiple7d),
+        multiple30d: dec(r.multiple30d),
+      });
+      expect([r.stars, r.weightedPassPoints, r.scoreComplete, r.rankingRulesetVersion]).toEqual([
+        s.stars,
+        s.weightedPassPoints,
+        s.scoreComplete,
+        'weighted_star_v1',
+      ]);
+      if (s.weightedStrength === null) expect(r.weightedStrength).toBeNull();
+      // Stored at 30 dp from the unrounded multiples.
+      else expect(dec(r.weightedStrength)!.minus(s.weightedStrength).abs().lt('1e-27')).toBe(true);
+      expect(r.rulesetVersion).toBe('vmc-tier1-1');
+    }
     const keys = q.map((r) => ({
       cmcId: r.cmcId,
-      pass3d: r.pass3d,
-      pass7d: r.pass7d,
-      pass30d: r.pass30d,
+      stars: r.stars,
+      weightedPassPoints: r.weightedPassPoints!,
+      scoreComplete: r.scoreComplete!,
+      weightedStrength: dec(r.weightedStrength),
       multiple3d: dec(r.multiple3d),
     }));
     expect([...keys].sort(compareQueue).map((k) => k.cmcId)).toEqual(keys.map((k) => k.cmcId));
     expect(q.map((r) => r.queueOrder)).toEqual(q.map((_, i) => i + 1));
+    for (let i = 1; i < q.length; i++) expect(q[i]!.stars).toBeLessThanOrEqual(q[i - 1]!.stars);
+
+    // Designed cases: TRIP 3★ 100 · BADD YES/YES/N/A 2★ 85 (lower bound) · YNY YES/NO/YES 2★ 75 ·
+    // ZBAS N/A/YES/YES 2★ 40 (lower bound) · GAPD YES/N/A/N/A 1★ 60 (lower bound).
+    const at = async (id: number) => {
+      const r = await row(id);
+      return {
+        pattern: `${r.pass3d}/${r.pass7d}/${r.pass30d}`,
+        stars: r.stars,
+        points: r.weightedPassPoints,
+        complete: r.scoreComplete,
+        strength: r.weightedStrength === null ? null : 'set',
+        order: r.queueOrder!,
+      };
+    };
+    const trip = await at(S.TRIP);
+    const badd = await at(S.BADD);
+    const yny = await at(S.YNY);
+    const zbas = await at(S.ZBAS);
+    const gapd = await at(S.GAPD);
+    expect(trip).toMatchObject({ pattern: 'YES/YES/YES', stars: 3, points: 100, complete: true });
+    expect(badd).toMatchObject({ pattern: 'YES/YES/N/A', stars: 2, points: 85, complete: false });
+    expect(yny).toMatchObject({ pattern: 'YES/NO/YES', stars: 2, points: 75, complete: true });
+    expect(zbas).toMatchObject({
+      pattern: 'N/A/YES/YES',
+      stars: 2,
+      points: 40,
+      complete: false,
+      strength: null,
+    });
+    expect(gapd).toMatchObject({ pattern: 'YES/N/A/N/A', stars: 1, points: 60, complete: false });
+    // A 2-star 40-point row ranks ahead of a 1-star 60-point row.
+    expect([trip.order, badd.order, yny.order, zbas.order, gapd.order]).toEqual(
+      [trip.order, badd.order, yny.order, zbas.order, gapd.order].sort((a, b) => a - b),
+    );
+    expect(zbas.order).toBeLessThan(gapd.order);
   });
 
   it('flags Upbit-dominant and single-venue activity for review without rejecting it (p.15)', async () => {

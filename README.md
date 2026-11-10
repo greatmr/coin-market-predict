@@ -7,18 +7,24 @@ Hourly cryptocurrency **screening for human review**, implementing the Two-Tier 
   or tokenized assets, and tradable on LBank Spot; compare each coin's current rolling-24h
   volume / market cap (VMC) with the mean of its own completed daily VMC over the last 3, 7 and
   30 UTC days. A coin enters the **Review Queue** when the current VMC is at least 1.5× at least
-  one of those means.
+  one of those means; the queue is ranked by stars (one per YES), then weighted points (3d 60 ·
+  7d 25 · 30d 15).
 - **Tier 2 (human):** review each queued coin's venues and 1D chart, and optionally record a
   manual LBank Spot trade plan. The system validates and stores the record; it never trades.
+- **Star Event Forward Test (automatic add-on):** the first 1/2/3-star detection per coin, UTC
+  day and star count is recorded at the scan's CMC price and followed once per day to the end of
+  the UTC day containing detection + 168 h; the highest later High is compared by star group. A
+  descriptive measurement, not a trade or a signal.
 
 > Research screening only. The Review Queue is not a buy list or a prediction; stars count met
 > windows and are not probabilities. No orders are ever placed. Hourly data cannot see intrahour
 > moves.
 
 - Strategy specification (with PDF page references, assumptions, conflicts): [docs/strategy-two-tier-vmc.md](docs/strategy-two-tier-vmc.md)
+- Star Event Forward Test (field mapping, High coverage, statuses, runbook, data gaps): [docs/forward-test.md](docs/forward-test.md)
 - Operating it day to day: [docs/operator-guide.md](docs/operator-guide.md)
 - Production deployment (server, Nginx, Docker, troubleshooting): [docs/deployment.md](docs/deployment.md)
-- Architecture: [docs/architecture.md](docs/architecture.md); decisions: [TypeORM and the module layout](docs/adr/0001-typeorm-modular-layout.md), [the strategy module](docs/adr/0002-strategy-module-boundary.md)
+- Architecture: [docs/architecture.md](docs/architecture.md); decisions: [TypeORM and the module layout](docs/adr/0001-typeorm-modular-layout.md), [the strategy module](docs/adr/0002-strategy-module-boundary.md), [dashboard users](docs/adr/0003-dashboard-users.md), [the forward-test module](docs/adr/0004-forward-test-module.md)
 - Data sources and the website collector: [docs/source-feasibility.md](docs/source-feasibility.md)
 - Field mapping and data gaps: [docs/tier1-input-mapping.md](docs/tier1-input-mapping.md)
 - Implementation plan, database preparation and recovery: [docs/implementation-plan.md](docs/implementation-plan.md)
@@ -38,7 +44,7 @@ Node.js ≥ 22.12 (Docker image uses Node 24 LTS), Docker with Compose v2, npm 1
 ## Code layout
 NestJS + TypeORM + PostgreSQL, native ESM. One module per area in `src/modules/` (sources,
 ingestion, daily-metrics, venues, scan, exports, reviews, pipeline, telegram, read-model,
-dashboard, mcp, app-state); the Two-Tier VMC rules are their own pure module,
+dashboard, mcp, app-state, auth, forward-test); the Two-Tier VMC rules are their own pure module,
 `src/modules/strategy`. Shared code is in `src/common`, configuration in `src/config`, the
 TypeORM setup and raw-SQL migrations in `src/database`. Details:
 [docs/architecture.md](docs/architecture.md#modules-src).
@@ -64,11 +70,13 @@ npm run dev                       # watch mode
 The scheduler runs `PIPELINE_CRON` (default minute 7 of every hour, UTC) and retries Telegram
 every 5 minutes. On startup it records missed hours and runs the current hour if needed.
 One run: discover → collect (crawl batch) → LBank pairs → daily rows → scan → venue rows →
-export (CSV + XLSX) → Telegram. Details: [docs/architecture.md](docs/architecture.md#pipeline-stages).
+export (CSV + XLSX) → Telegram → forward test (new star events; the daily High update once per
+closed UTC day). Details: [docs/architecture.md](docs/architecture.md#pipeline-stages).
 
 CLI (`npm run cli -- help`): `run-once`, `discover`, `tier1:scan`, `tier1:export`,
 `tier1:trace --id <cmcId>`, `tier1:batches`, `lbank:status`, `lbank:refresh`,
-`daily:import-csv`, `telegram:preview`, `telegram:test`, `telegram:deliver`, `source:reset`.
+`daily:import-csv`, `telegram:preview`, `telegram:test`, `telegram:deliver`, `source:reset`,
+`forward:status`, `forward:events`, `forward:update`, `forward:export`.
 
 ### Live data (CMC website collector, no key)
 ```dotenv
@@ -104,7 +112,8 @@ approves members) is described in [docs/architecture.md](docs/architecture.md#te
 - stdio (local hosts): `npm run mcp:stdio`. `.mcp.json` registers it for Claude Code in this
   repo through `scripts/mcp-stdio.sh`, which selects the `.nvmrc` Node version via nvm.
 - Read-only tools: `get_scan_summary`, `get_scan_results`, `get_asset_trace`, `list_batches`,
-  `get_mapping_tasks`, `get_coverage`, `get_snapshots`, `list_assets`, `get_run_status`.
+  `get_mapping_tasks`, `get_coverage`, `get_snapshots`, `list_assets`, `get_run_status`,
+  `get_forward_test_summary`, `get_forward_events`, `get_forward_event`.
   Resources: `coins://tier1/queue/latest`, `coins://runs/latest`.
 
 ## Tests

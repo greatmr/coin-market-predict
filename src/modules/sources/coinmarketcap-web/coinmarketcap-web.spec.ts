@@ -101,6 +101,10 @@ describe('CMC website daily history (completed UTC days)', () => {
       invalidReasons: [],
     });
     expect(parsed.rows[0]!.sourceCloseAt!.toISOString()).toBe('2026-10-30T23:59:59.999Z');
+    // The documented time of the day's High / Low (forward test, signal-day proof).
+    expect(parsed.rows[0]).toMatchObject({ high: '1.266065191', low: '1.2031531798' });
+    expect(parsed.rows[0]!.timeHigh!.toISOString()).toBe('2026-10-30T06:41:00.000Z');
+    expect(parsed.rows[0]!.timeLow!.toISOString()).toBe('2026-10-30T01:53:00.000Z');
     expect(() => parseWebDaily(b, 1, NOW)).toThrow(/id/);
   });
 

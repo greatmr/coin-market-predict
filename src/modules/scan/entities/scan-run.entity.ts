@@ -51,6 +51,10 @@ export class ScanRun {
   @Column({ name: 'overrides_version', type: 'text' })
   overridesVersion!: string;
 
+  /** Review Queue ranking that produced `queue_order` (NULL: scanned before weighted_star_v1). */
+  @Column({ name: 'ranking_ruleset_version', type: 'text', nullable: true })
+  rankingRulesetVersion!: string | null;
+
   @Column({ type: 'integer', default: 1 })
   attempts!: number;
 

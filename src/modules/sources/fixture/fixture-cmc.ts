@@ -475,24 +475,40 @@ export class FixtureCmcMarket {
       const volume = new D(v === 'invalid' ? '0.05' : v.vmc).times(cap).toFixed(2);
       const open = new Date(`${d}T00:00:00.000Z`);
       const close = new Date(open.getTime() + DAY_MS - 1);
-      const price = fixed(
-        1 + 10 * rand(`px:${cmcId}`) * (0.9 + 0.2 * rand(`pxd:${cmcId}:${d}`)),
-        8,
-      );
+      const level = (key: string) => 1 + 10 * rand(`px:${cmcId}`) * (0.9 + 0.2 * rand(key));
+      const closeN = level(`pxd:${cmcId}:${d}`);
+      const openN = level(`pxo:${cmcId}:${d}`);
+      // A synthetic intraday range around open/close, with the minute of the High and the Low.
+      const highN = Math.max(openN, closeN) * (1 + 0.08 * rand(`pxh:${cmcId}:${d}`));
+      const lowN = Math.min(openN, closeN) * (1 - 0.08 * rand(`pxl:${cmcId}:${d}`));
+      const minute = (key: string) =>
+        new Date(open.getTime() + Math.floor(1440 * rand(key)) * 60_000);
+      const price = fixed(closeN, 8);
+      const high = fixed(highN, 8);
+      const timeHigh = minute(`th:${cmcId}:${d}`);
       rows.push({
         cmcId,
         dateUtc: d,
         volume,
         marketCap: capDay,
-        open: price,
-        high: price,
-        low: price,
+        open: fixed(openN, 8),
+        high,
+        low: fixed(lowN, 8),
         close: price,
+        timeHigh,
+        timeLow: minute(`tl:${cmcId}:${d}`),
         invalidReasons: [],
         periodStart: open,
         periodEnd: close,
         sourceCloseAt: close,
-        sourceFields: { synthetic: true, volume, marketCap: capDay, close: price },
+        sourceFields: {
+          synthetic: true,
+          volume,
+          marketCap: capDay,
+          high,
+          timeHigh: timeHigh.toISOString(),
+          close: price,
+        },
       });
     }
     return rows;

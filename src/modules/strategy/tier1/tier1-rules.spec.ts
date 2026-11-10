@@ -11,7 +11,6 @@ import {
   classify,
   evaluateEligibility,
 } from './eligibility.js';
-import { type QueueKey, compareQueue, inReviewQueue } from './review-queue.js';
 import {
   type CurrentInput,
   type DailyInput,
@@ -361,39 +360,5 @@ describe('classification: CMC tags plus override list', () => {
     expect(
       c([], { override: { class: 'stablecoin', reason: 'pegged', version: 'v2' } }).assetClass,
     ).toBe('stablecoin');
-  });
-});
-
-describe('stars and Review Queue order (p.14)', () => {
-  const k = (
-    cmcId: number,
-    p3: QueueKey['pass3d'],
-    p7: QueueKey['pass7d'],
-    p30: QueueKey['pass30d'],
-    m3: string | null,
-  ): QueueKey => ({
-    cmcId,
-    pass3d: p3,
-    pass7d: p7,
-    pass30d: p30,
-    multiple3d: m3 === null ? null : new D(m3),
-  });
-  it('3d YES first, then 7d, then 30d; N/A after NO; ties by 3d multiple desc then CMC id', () => {
-    const rows = [
-      k(9, 'NO', 'YES', 'YES', '1.2'),
-      k(8, 'YES', 'NO', 'YES', '2.0'),
-      k(7, 'YES', 'YES', 'NO', '1.6'),
-      k(6, 'YES', 'YES', 'NO', '3.1'),
-      k(5, 'N/A', 'YES', 'YES', null),
-      k(4, 'YES', 'N/A', 'YES', '2.5'),
-      k(3, 'YES', 'YES', 'NO', '1.6'),
-      k(2, 'NO', 'NO', 'YES', '0.9'),
-    ];
-    expect(rows.sort(compareQueue).map((r) => r.cmcId)).toEqual([6, 3, 7, 8, 4, 9, 2, 5]);
-  });
-  it('queue = ELIGIBLE with at least one YES; 0-star eligible rows stay out of the queue only', () => {
-    expect(inReviewQueue({ eligibilityStatus: 'ELIGIBLE', stars: 1 })).toBe(true);
-    expect(inReviewQueue({ eligibilityStatus: 'ELIGIBLE', stars: 0 })).toBe(false);
-    expect(inReviewQueue({ eligibilityStatus: 'NEEDS_REVIEW', stars: 3 })).toBe(false);
   });
 });

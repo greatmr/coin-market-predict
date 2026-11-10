@@ -6,7 +6,13 @@ import { sha256 } from '../../common/utils/decimal.js';
 import { APP_CONFIG, type AppConfig } from '../../config/index.js';
 
 import { type Overrides, loadOverrides } from './overrides/overrides.js';
-import { RULES, RULESET_VERSION, STRATEGY_NAME } from './strategy.constants.js';
+import {
+  RANKING,
+  RANKING_RULESET_VERSION,
+  RULES,
+  RULESET_VERSION,
+  STRATEGY_NAME,
+} from './strategy.constants.js';
 import { type LbankContext, type LbankCrawlView, buildLbankContext } from './tier1/lbank.js';
 import { type AssetMarketsView, type VenueSummary, venueSummary } from './tier1/venue-summary.js';
 import {
@@ -112,6 +118,7 @@ export class StrategyService {
         name: STRATEGY_NAME,
         rulesetVersion: RULESET_VERSION,
         rules: RULES,
+        ranking: { version: RANKING_RULESET_VERSION, ...RANKING },
         crawlIntervalMinutes: this.cfg.CRAWL_EXPECTED_INTERVAL_MINUTES,
         maxQuoteAgeMinutes: this.cfg.MAX_QUOTE_AGE_MINUTES,
         dailyLookbackDays: this.cfg.TIER1_DAILY_LOOKBACK_DAYS,

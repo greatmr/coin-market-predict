@@ -2005,6 +2005,81 @@ select option {
   grid-column: 1 / -1;
 }
 
+/* Weighted points (queue ranking) */
+.pts {
+  font-weight: 600;
+}
+.pts.lower {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+/* Forward test */
+.fwd-notice {
+  margin: 0 0 4px;
+}
+#tab-forward .toolbar .row-actions {
+  margin-left: auto;
+}
+.fwd-ret {
+  font-weight: 650;
+  white-space: nowrap;
+}
+.fwd-ret.provisional {
+  color: var(--muted);
+  font-weight: 500;
+}
+.fwd-windows {
+  display: inline-flex;
+  gap: 10px;
+  white-space: nowrap;
+}
+.fwd-windows .pass {
+  display: inline;
+}
+.fwd-windows .pass b {
+  min-width: 0;
+}
+.fwd-windows .pass.na {
+  padding: 0;
+  border: 0;
+}
+.fwd-peak {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.fwd-hours {
+  display: grid;
+  grid-template-columns: repeat(24, minmax(0, 1fr));
+  gap: 3px;
+  height: 128px;
+}
+.fwd-hours span {
+  display: grid;
+  grid-template-rows: 1fr 14px;
+  gap: 4px;
+  min-width: 0;
+}
+.fwd-hours b {
+  position: relative;
+  display: block;
+}
+.fwd-hours i {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border-radius: 4px 4px 0 0;
+  background: var(--mean);
+}
+.fwd-hours small {
+  font-size: 10.5px;
+  color: var(--muted);
+  text-align: center;
+}
+
 /* Tiles (runs & health) */
 .tiles {
   display: grid;

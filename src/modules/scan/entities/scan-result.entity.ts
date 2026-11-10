@@ -216,6 +216,23 @@ export class ScanResult extends HasBigintId {
   @Column({ name: 'queue_order', type: 'integer', nullable: true })
   queueOrder!: number | null;
 
+  /**
+   * Weighted star ranking (`ranking_ruleset_version`, addendum D3): 60 / 25 / 15 points per 3d / 7d /
+   * 30d YES, a confirmed lower bound unless `score_complete`; strength from the capped multiples.
+   * NULL on rows scanned before the ranking existed (their queue order followed the earlier rule).
+   */
+  @Column({ name: 'weighted_pass_points', type: 'integer', nullable: true })
+  weightedPassPoints!: number | null;
+
+  @Column({ name: 'score_complete', type: 'boolean', nullable: true })
+  scoreComplete!: boolean | null;
+
+  @DecimalColumn(65, 30, { name: 'weighted_strength', nullable: true })
+  weightedStrength!: DValue | null;
+
+  @Column({ name: 'ranking_ruleset_version', type: 'text', nullable: true })
+  rankingRulesetVersion!: string | null;
+
   @Column({ type: 'jsonb', nullable: true })
   diagnostics!: Record<string, unknown> | null;
 

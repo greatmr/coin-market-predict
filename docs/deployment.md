@@ -73,7 +73,10 @@ alias dc='docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod'
 cd /root/jahan/market-predict && git pull
 dc up -d --build
 ```
-Data survives: it lives in the named volumes.
+Data survives: it lives in the named volumes. When the update brings a new migration (for example
+M008, the Star Event Forward Test), take the backup below first: the app applies migrations at
+container start. Check with `dc exec app node dist/cli.js db:status`; forward-test commands are in
+[forward-test.md § 12](forward-test.md#12-runbook).
 
 ## Configuration notes
 - Edit `.env.prod`, then `dc up -d` (recreates the app with the new values).

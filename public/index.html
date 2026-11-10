@@ -31,6 +31,9 @@
       <button role="tab" id="t-excluded" data-tab="excluded" aria-controls="tab-excluded">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M6.5 17.5l11-11" /></svg><span>Excluded</span><b class="count" id="count-excluded">0</b>
       </button>
+      <button role="tab" id="t-forward" data-tab="forward" aria-controls="tab-forward">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18l5-6 4 3 7-9" /><path d="M15 6h5v5" /></svg><span>Forward test</span><b class="count" id="count-forward"></b>
+      </button>
       <button role="tab" id="t-batches" data-tab="batches" aria-controls="tab-batches">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-6 4 12 2-6h6" /></svg><span>Runs &amp; health</span>
       </button>
@@ -163,6 +166,33 @@
         </div>
         <div class="panel flush"><div class="table-wrap sheet-table"></div></div>
         <div class="pager sheet-pager"></div>
+      </section>
+
+      <!-- Star Event Forward Test -->
+      <section id="tab-forward" class="tab" role="tabpanel" aria-labelledby="t-forward" hidden>
+        <div id="forward-note"></div>
+        <div id="forward-tiles" class="tiles"></div>
+        <div class="panel">
+          <div class="panel-head"><h2>Star groups</h2><span class="hint">return statistics use FINAL events only; several events of one coin or one day are correlated</span></div>
+          <div class="table-wrap" id="forward-cohorts"></div>
+        </div>
+        <div class="grid-2">
+          <div class="panel"><div class="panel-head"><h2>By pass pattern</h2><span class="hint">3d / 7d / 30d at detection; median and mean of FINAL events</span></div><div class="table-wrap" id="forward-patterns"></div></div>
+          <div class="panel"><div class="panel-head"><h2>By weighted points</h2><span class="hint">complete scores in fixed bands; incomplete scores apart</span></div><div class="table-wrap" id="forward-bands"></div></div>
+        </div>
+        <div class="grid-2">
+          <div class="panel"><div class="panel-head"><h2>Final peak return</h2><span class="hint">all stars; display bins, not thresholds</span></div><div id="forward-dist"></div></div>
+          <div class="panel"><div class="panel-head"><h2>Detection hour (UTC)</h2><span class="hint">the later the signal, the shorter the end-of-day extension</span></div><div id="forward-hours"></div></div>
+        </div>
+        <div class="toolbar">
+          <label class="search-field"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="M16 16l4 4" /></svg><input type="search" id="forward-search" placeholder="Symbol, name or CMC id" aria-label="Filter events"></label>
+          <div class="seg" id="forward-view" role="group" aria-label="Events"><button type="button" data-view="active" aria-pressed="true">Active</button><button type="button" data-view="final" aria-pressed="false">Final</button><button type="button" data-view="incomplete" aria-pressed="false">Incomplete</button><button type="button" data-view="all" aria-pressed="false">All</button></div>
+          <div class="seg" id="forward-stars" role="group" aria-label="Stars"><button type="button" data-stars="" aria-pressed="true">All</button><button type="button" data-stars="1" aria-pressed="false">1★</button><button type="button" data-stars="2" aria-pressed="false">2★</button><button type="button" data-stars="3" aria-pressed="false">3★</button></div>
+          <span class="row-actions" id="forward-actions"></span>
+        </div>
+        <div class="panel flush"><div class="table-wrap" id="forward-events"></div></div>
+        <div class="pager" id="forward-pager"></div>
+        <div class="panel"><div class="panel-head"><h2>Rejected triggers</h2><span class="hint">queue rows that opened no priced event, with every reason</span></div><div class="table-wrap" id="forward-rejections"></div></div>
       </section>
 
       <!-- Runs & health -->

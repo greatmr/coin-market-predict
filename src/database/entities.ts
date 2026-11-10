@@ -4,6 +4,13 @@ import { UserSession } from '../modules/auth/entities/user-session.entity.js';
 import { DailyFetchState } from '../modules/daily-metrics/entities/daily-fetch-state.entity.js';
 import { DailyMetricRevision } from '../modules/daily-metrics/entities/daily-metric-revision.entity.js';
 import { DailyMetric } from '../modules/daily-metrics/entities/daily-metric.entity.js';
+import { ForwardEvent } from '../modules/forward-test/entities/forward-event.entity.js';
+import { ForwardHigh } from '../modules/forward-test/entities/forward-high.entity.js';
+import { ForwardOutcome } from '../modules/forward-test/entities/forward-outcome.entity.js';
+import { ForwardTestWatchlist } from '../modules/forward-test/entities/forward-test-watchlist.entity.js';
+import { ForwardTriggerRejection } from '../modules/forward-test/entities/forward-trigger-rejection.entity.js';
+import { ForwardTriggerRun } from '../modules/forward-test/entities/forward-trigger-run.entity.js';
+import { ForwardUpdateRun } from '../modules/forward-test/entities/forward-update-run.entity.js';
 import { AssetContract } from '../modules/ingestion/entities/asset-contract.entity.js';
 import { AssetIdentity } from '../modules/ingestion/entities/asset-identity.entity.js';
 import { Asset } from '../modules/ingestion/entities/asset.entity.js';
@@ -64,4 +71,12 @@ export const ENTITIES = [
   ScanRun,
   ScanResult,
   Review,
+  // Star Event Forward Test (docs/forward-test.md)
+  ForwardTestWatchlist,
+  ForwardTriggerRun,
+  ForwardTriggerRejection,
+  ForwardEvent,
+  ForwardUpdateRun,
+  ForwardHigh,
+  ForwardOutcome,
 ];

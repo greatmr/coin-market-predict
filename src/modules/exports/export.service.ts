@@ -23,6 +23,7 @@ import { CrawlBatch } from '../ingestion/entities/crawl-batch.entity.js';
 import { Review } from '../reviews/entities/review.entity.js';
 import { ScanResult } from '../scan/entities/scan-result.entity.js';
 import { ScanRun } from '../scan/entities/scan-run.entity.js';
+import { RANKING_RULESET_VERSION } from '../strategy/index.js';
 
 /** Mandatory export columns, in PDF p.17 order. */
 export const MANDATORY_COLUMNS = [
@@ -73,6 +74,10 @@ export const EXTRA_COLUMNS = [
   'lbank_status',
   'lbank_reason',
   'queue_order',
+  'weighted_pass_points',
+  'score_complete',
+  'weighted_strength',
+  'ranking_ruleset_version',
   'venue_flags',
   'vol_3d_avg',
   'vol_7d_avg',
@@ -213,6 +218,10 @@ export class ExportService {
         r.lbankStatus,
         r.lbankReason,
         r.queueOrder,
+        r.weightedPassPoints,
+        r.scoreComplete === null ? null : r.scoreComplete ? 'TRUE' : 'FALSE',
+        s(r.weightedStrength),
+        r.rankingRulesetVersion,
         r.venueFlags.join('; '),
         d.volumeAvg?.['3'] ?? null,
         d.volumeAvg?.['7'] ?? null,
@@ -269,6 +278,15 @@ export class ExportService {
       ['scan_finished_utc', iso(run.finishedAt)],
       ['scan_attempts', run.attempts],
       ['ruleset_version', run.rulesetVersion],
+      ['ranking_ruleset_version', run.rankingRulesetVersion],
+      [
+        'queue_order_rule',
+        run.rankingRulesetVersion === null
+          ? 'pass_3d, pass_7d, pass_30d (YES < NO < N/A); multiple_3d desc; cmc_id asc (scanned before weighted_star_v1)'
+          : run.rankingRulesetVersion === RANKING_RULESET_VERSION
+            ? 'stars desc; weighted_pass_points desc (3d 60, 7d 25, 30d 15 per YES); complete score first; weighted_strength desc (multiples capped at 3.0, 0.60/0.25/0.15), NULL last; multiple_3d desc, NULL last; cmc_id asc'
+            : `ranking ${run.rankingRulesetVersion}`,
+      ],
       ['config_version', run.configVersion],
       ['overrides_version', run.overridesVersion],
       ['max_quote_age_minutes', this.cfg.MAX_QUOTE_AGE_MINUTES],
@@ -416,6 +434,8 @@ const NUMERIC_COLUMNS: ReadonlySet<string> = new Set([
   'multiple_30d',
   'stars',
   'queue_order',
+  'weighted_pass_points',
+  'weighted_strength',
   'vol_3d_avg',
   'vol_7d_avg',
   'vol_14d_avg',

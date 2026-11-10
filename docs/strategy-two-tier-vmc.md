@@ -55,7 +55,9 @@ existing crawler batch (hourly CMC listing)          ← trigger: after each suc
 human: venue decision, event day, LBank verification (Tier 1); chart review + trade plan (Tier 2)
 ```
 
-No second hourly fetch job and no 72-hour backfill (p.12). A missing batch is a visible gap and is
+No second hourly fetch job and no 72-hour backfill (p.12). The Star Event Forward Test add-on
+([forward-test.md](forward-test.md)) runs after `notify` on the published queue; it reads Tier 1
+results and changes none of the rules in this document. A missing batch is a visible gap and is
 never filled with invented snapshots (p.12, p.18).
 
 ## 4. Eligibility (p.3, p.9, p.10, p.18)
@@ -126,9 +128,9 @@ it is not volume traded in the current hour (p.12).
 ## 6. Outputs and priority (p.7, p.14, p.17)
 
 - **All Eligible**: every ELIGIBLE asset, including 0-star and failing rows (p.14).
-- **Review Queue**: ELIGIBLE assets with ≥ 1 YES, sorted by `pass_3d`, then `pass_7d`, then
-  `pass_30d` (YES < NO < N/A), then `multiple_3d` descending (valid first), then CMC id ascending
-  (p.14). Mixed results (e.g. YES/NO/YES) stay visible with exact multiples (p.7).
+- **Review Queue**: ELIGIBLE assets with ≥ 1 YES (p.14), ranked by the weighted star ranking
+  (§ 6a, operator decision D3; it replaced the p.14 sort by `pass_3d`, `pass_7d`, `pass_30d`).
+  Mixed results (e.g. YES/NO/YES) stay visible with exact multiples (p.7).
 - **Needs Review**, **Excluded** with reason codes, **Run_Metadata** (p.17).
 - Exports: UTF-8 CSV and an Excel workbook; one row per CMC id and crawl batch; ratios as plain
   decimals (no `%`), full precision in machine output, ISO 8601 UTC with `Z`, N/A as a status with
@@ -138,6 +140,48 @@ it is not volume traded in the current hour (p.12).
   multiple_3d, multiple_7d, multiple_30d, pass_3d, pass_7d, pass_30d, stars, eligibility_status,
   lbank_pairs, venue_review, event_day, flags, source_updated_at` (p.17).
 - These are presentation rules, not trading rules (p.14).
+- Ranking columns after `queue_order`: `weighted_pass_points`, `score_complete`,
+  `weighted_strength`, `ranking_ruleset_version`; `Run_Metadata` names the ranking and its rule.
+
+## 6a. Weighted star ranking (`weighted_star_v1`, operator decision D3)
+
+Source: *CMC Scanner — Weighted Star Ranking Addendum* v1.0, 10 Nov 2026. It ranks the scanner's
+own results; stars, passes, the 1.5× threshold, the 14-day context, eligibility, LBank and Tier 2
+are unchanged, so `RULESET_VERSION` stays `vmc-tier1-1` and every row also records
+`ranking_ruleset_version = weighted_star_v1`.
+
+```
+weighted_pass_points = 60 × I(pass_3d = YES) + 25 × I(pass_7d = YES) + 15 × I(pass_30d = YES)
+score_complete       = all three results are YES or NO (an N/A makes the points a lower bound)
+weighted_strength    = 0.60 × min(multiple_3d, 3.0) + 0.25 × min(multiple_7d, 3.0)
+                     + 0.15 × min(multiple_30d, 3.0)        only with three valid multiples, else NULL
+```
+An N/A earns no points, stays N/A with its reason, and its weight is never redistributed. The cap
+applies only inside `weighted_strength`; stored multiples are never capped. Everything is
+computed from the scan's unrounded values; stored values are rounded to 30 dp for storage only.
+
+Queue order: `stars` descending (every 3-star row before every 2-star row, and so on) →
+`weighted_pass_points` descending → complete scores first → `weighted_strength` descending, NULL
+last → `multiple_3d` descending, NULL last → CMC id ascending. Points never override stars: a
+2-star NO/YES/YES row (40) precedes a 1-star YES/NO/NO row (60).
+
+| 3d | 7d | 30d | Stars | Points |
+|---|---|---|---|---|
+| YES | YES | YES | 3 | 100 |
+| YES | YES | NO | 2 | 85 |
+| YES | NO | YES | 2 | 75 |
+| NO | YES | YES | 2 | 40 |
+| YES | NO | NO | 1 | 60 |
+| NO | YES | NO | 1 | 25 |
+| NO | NO | YES | 1 | 15 |
+
+The 60 / 25 / 15 weights are an initial product decision, not a probability or a forecast; the
+windows overlap, so the scores are prioritization features, not independent confirmations. They are
+evaluated prospectively with the [forward test](forward-test.md) (outcomes by star count, pass
+pattern and weighted-points band). A revision gets a new `ranking_ruleset_version`; stored scores
+and event snapshots are never rewritten, and a revision is judged on later, unseen detections.
+Scan rows stored before the ranking keep NULL ranking fields and the order they were published
+with; reprocessing a stored batch ranks it with the current version.
 
 ## 7. Human review fields (p.15, p.24–27)
 
@@ -203,10 +247,12 @@ where the PDF is silent or ambiguous; each is configurable or documented in code
 
 ### Operator decisions (p.2 precedence #1: later direct user decisions)
 
-| Id | Decision (2026-11-05) | Implementation |
+| Id | Decision (D1, D2: 2026-11-05; D3: 2026-11-10) | Implementation |
 |---|---|---|
 | D1 | The LBank pair list comes from the **Markets section of CMC's LBank exchange page** (spot). A coin with an unambiguously mapped pair in that list counts as having a tradable LBank Spot pair; no separate human check per pair | `listingIsTradable` in `tier1/lbank.ts`; the pair's evidence says "listed in CMC's LBank Spot markets (list fetched …)". A reviewer's `NOT_TRADABLE` still wins; ambiguous tickers still need a mapping decision (p.10). `LBANK_REQUIRE_MANUAL_VERIFICATION=true` restores A7 |
 | D2 | That list is crawled **once**, then again automatically after about **30 days**, or manually from the dashboard | `LBANK_PAIRS_REFRESH_DAYS=30` (reuse until this age), `LBANK_PAIRS_MAX_AGE_DAYS=35` (stale beyond: UNKNOWN, queue withheld), dashboard *Refresh LBank list now* / `npm run cli -- lbank:refresh` (fetch, then recompute and re-export the latest batch). Scans use the newest complete list (reference data, recorded per scan as `ScanRun.lbankCrawlId`) |
+
+| D3 | Weighted Star Ranking Addendum v1.0 (10 Nov 2026): keep the star definition; rank the Review Queue by stars, then 60 / 25 / 15 weighted points, completeness, weighted strength, the 3-day multiple and CMC id | § 6a; `RANKING_RULESET_VERSION`, `RANKING`, `rankingScore`, `compareQueue` in `tier1/review-queue.ts`; ranking fields on `scan_result`, `scan_run` and forward-test events (migration M009) |
 
 Consequences: a pair listed or delisted on LBank between refreshes is noticed only at the next
 refresh (use the manual refresh when it matters); the crawler reads the same data as the page's
@@ -225,6 +271,7 @@ screen (pair and CMC coin id) was in the stored 901-pair list.
 | C6 | Telegram pump watchlist, `/vmc` six-month baseline | Superseded output | Telegram reports the Tier 1 queue; `/vmc <id>` shows the Tier 1 trace |
 | C7 | MCP signal/recommendation tools and `publish_signal_report` | Superseded output; no automatic signals | Tier 1 read tools; write tool removed |
 | C8 | PDF "Keep collected data" (p.22) vs the operator's instruction to clear coin-related data | Direct conflict | Later direct user decision wins (p.2 #1): a verified backup keeps all previously collected data; the clear is scoped and documented in the implementation plan |
+| C9 | Review Queue sorted by `pass_3d`, then `pass_7d`, then `pass_30d` across all star groups (p.14; acceptance case F, p.19) | The addendum ranks by stars first, then weighted points | Later direct decision wins (p.2 #1): the weighted star ranking (D3, § 6a) replaces only that sort rule; queue membership is unchanged |
 
 ## 11. Remaining limits
 

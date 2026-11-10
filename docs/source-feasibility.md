@@ -18,8 +18,15 @@ source that supplies everything Tier 1 of the Two-Tier VMC strategy needs:
 | LBank Spot pairs mapped by CMC base-asset id (the Markets section of `coinmarketcap.com/exchanges/lbank/?type=spot`) | `v3/exchange/market-pairs/latest?slug=lbank&category=spot`, pages of 500; fetched once, then every 30 days or on demand |
 | Asset venue rows (Upbit-dominant / single-venue flags) | `v3/cryptocurrency/market-pairs/latest`, top 100 spot pairs, review candidates only |
 
-What none of these routes supply: an LBank **trading status** (open / suspended / delisted) or
-the date a pair was listed. By operator decision D1 a pair in CMC's LBank Spot markets list counts
+The daily history route also returns, per completed day, the OHLC High with its documented time
+(`timeHigh`, `timeLow`, minute resolution); since M008 they are stored for the
+[Star Event Forward Test](forward-test.md), which uses no other route (tracked coins that left the
+screen get the same daily-history request).
+
+What none of these routes supply: an LBank **trading status** (open / suspended / delisted), the
+date a pair was listed, or **intraday OHLC** (a true High after a given time of day) — so a
+forward-test event whose signal-day High came before detection can stay `INCOMPLETE_DAY0`
+(forward-test.md § 14, U1). By operator decision D1 a pair in CMC's LBank Spot markets list counts
 as tradable (a reviewer can mark it not tradable); `LBANK_REQUIRE_MANUAL_VERIFICATION=true`
 instead requires a human check of every listed pair (strategy document, A7, D1, D2).
 

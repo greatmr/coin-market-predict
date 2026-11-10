@@ -131,6 +131,12 @@ export interface DailySourceRow {
   high: string | null;
   low: string | null;
   close: string | null;
+  /**
+   * The source's documented time of the day's High / Low (CMC `timeHigh` / `timeLow`, minute
+   * resolution). Used by the forward test to prove a signal-day High came after detection.
+   */
+  timeHigh?: Date | null;
+  timeLow?: Date | null;
   /** Source-level problems (wrong currency, misaligned period, unparseable field). */
   invalidReasons: string[];
   periodStart: Date | null;

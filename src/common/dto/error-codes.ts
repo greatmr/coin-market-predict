@@ -23,6 +23,9 @@ export const ErrorCodes = {
   // ─── Exports ─────────────────────────────────────────────────────────────
   EXPORT_FILE_NOT_FOUND: 'EXPORT_FILE_NOT_FOUND',
 
+  // ─── Forward test ────────────────────────────────────────────────────────
+  FORWARD_EVENT_NOT_FOUND: 'FORWARD_EVENT_NOT_FOUND',
+
   // ─── Telegram access ─────────────────────────────────────────────────────
   TELEGRAM_UNKNOWN_RECIPIENT: 'TELEGRAM_UNKNOWN_RECIPIENT',
   TELEGRAM_OWNER_TARGET: 'TELEGRAM_OWNER_TARGET',

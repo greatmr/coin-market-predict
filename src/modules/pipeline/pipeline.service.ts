@@ -15,6 +15,10 @@ import {
   type DailyRefreshReport,
 } from '../daily-metrics/daily-metrics.service.js';
 import { type ExportResult, ExportService } from '../exports/export.service.js';
+import {
+  type ForwardStageReport,
+  ForwardTestService,
+} from '../forward-test/forward-test.service.js';
 import { CrawlBatch } from '../ingestion/entities/crawl-batch.entity.js';
 import { type CoverageReport, IngestionService } from '../ingestion/ingestion.service.js';
 import { type ScanOutcome, ScanService } from '../scan/scan.service.js';
@@ -68,6 +72,7 @@ export class PipelineService {
     private readonly leases: LeaseService,
     private readonly retention: RetentionService,
     private readonly health: SourceHealthService,
+    private readonly forward: ForwardTestService,
   ) {}
 
   get providerId() {
@@ -201,6 +206,16 @@ export class PipelineService {
     return 'skipped' in r && typeof r.skipped === 'string' && !('batchId' in r)
       ? { batchId: batchId ?? null, skipped: r.skipped }
       : (r as { batchId: string | null });
+  }
+
+  /**
+   * The forward test's daily High update now (CLI `forward:update`, dashboard), under the pipeline
+   * lease. Idempotent: it never creates an event and never duplicates a High or an outcome.
+   */
+  async runForwardUpdate(): Promise<Omit<ForwardStageReport, 'capture'> | { skipped: string }> {
+    return this.exclusive(() =>
+      this.forward.update(this.providerId, { now: this.clock.now(), trigger: 'manual' }),
+    );
   }
 
   /** Re-export a scanned batch under the pipeline lease, so it never races an hourly export. */
@@ -495,6 +510,29 @@ export class PipelineService {
         const sent = await this.telegram.deliverPending().catch((e) => ({ error: redact(e) }));
         return { ...prep, parts: parts.length, delivery: sent };
       });
+
+      // Forward test (docs/forward-test.md): attached to this publication of the Review Queue, plus
+      // the daily High update once per closed UTC day. Never fails the run.
+      const forward = await stage(
+        'forward',
+        () =>
+          this.forward.afterPublication(providerId, batchId!, {
+            now: this.clock.now(),
+            pipelineRunId: runId,
+          }),
+        { skipIfDone: false },
+      ).catch((err) => {
+        degraded.push('forward test failed');
+        this.log.warn(`forward test failed: ${redact(err)}`);
+        return null;
+      });
+      if (forward)
+        metrics.forward = {
+          created: forward.capture?.created.length ?? 0,
+          ignored: forward.capture?.ignored.length ?? 0,
+          rejected: forward.capture?.rejected.length ?? 0,
+          update: 'skipped' in forward.update ? forward.update.skipped : forward.update.status,
+        };
 
       // Storage policy runs after delivery; a retention problem never invalidates the run.
       metrics.retention = await this.retention

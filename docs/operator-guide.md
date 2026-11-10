@@ -31,7 +31,7 @@ exports and the Telegram summary. Missed hours are recorded, never invented.
 | Section (left rail) | Shows                                                                                                                                                                                                                                                                                                                                                                            |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Overview            | Run ring (progress while a run is going, otherwise a countdown to the next run) with the stage list; a funnel from every listed coin to evaluated, eligible and the review queue; review-queue cards; window results (YES / NO / N/A per window), eligibility donut, stars, exclusion reasons, data quality (quote and LBank status, LBank list age, warnings) and the rule list |
-| Review queue        | ELIGIBLE coins with at least one YES among 3d / 7d / 30d, in the PDF's order (3d, then 7d, then 30d result; then the 3-day multiple)                                                                                                                                                                                                                                             |
+| Review queue        | ELIGIBLE coins with at least one YES among 3d / 7d / 30d, ranked by stars, then weighted points (3d 60 · 7d 25 · 30d 15 per YES; `≥ n` = lower bound because a window is N/A), complete scores first, weighted strength, the 3-day multiple and CMC id ([strategy § 6a](strategy-two-tier-vmc.md#6a-weighted-star-ranking-weighted_star_v1-operator-decision-d3)). A 2-star row always precedes a 1-star row |
 | Eligible            | Every coin passing all hard filters, including 0-star rows                                                                                                                                                                                                                                                                                                                       |
 | Needs review        | Coins with missing or ambiguous inputs (no rank / cap / listing date, ambiguous class, unverified or ambiguous LBank pair, LBank feed down). Windows are still computed                                                                                                                                                                                                          |
 | Excluded            | Coins with a known failed filter, with every reason                                                                                                                                                                                                                                                                                                                              |
@@ -178,6 +178,32 @@ A failed export never replaces the previous one. Files are pruned after
 `EXPORT_RETENTION_DAYS`; the database keeps every result, so `npm run cli -- tier1:export
 --batch <id>` regenerates them.
 
+## 5a. Star Event Forward Test
+
+Every hourly run whose Review Queue is published records each eligible 1/2/3-star coin as an
+event at the scan's CMC price — the first one per coin, UTC day and star count — and adds the coin
+to the automatic forward-test watchlist. No approval step exists. Once per closed UTC day the run
+stores each event's daily Highs and recomputes the highest High after detection, until the end of
+the UTC day containing detection + 168 h. Rules, statuses, fields and gaps:
+[forward-test.md](forward-test.md).
+
+- **Forward test** tab: star groups (FINAL events only in the return statistics), the final-return
+  distribution, detection hours, Active / Final / Incomplete / All events, rejected triggers,
+  downloads (needs `exports:read`) and *Update Highs now* (needs `scan:operate`).
+- A return shown as `≥ x %` is provisional (window open, final day pending or a day missing); only
+  FINAL events have an exact peak. The return is the highest later High against the detection
+  price — not a trade, not realized profit — and no "pumped" threshold exists.
+- Warnings: `FRESHNESS` / `UPDATE_FAILED` — the daily update has not run successfully; check the
+  run's `forward` stage and the source health. `UPDATE_PARTIAL` — some Highs are not published
+  yet; retried automatically. `INCOMPLETE_DAY0` — the signal day's High came before detection and no
+  later High reached it; without an intraday source this cannot be settled, so the peak stays a
+  lower bound.
+- Outcomes are also compared by the pass pattern and the weighted points the coin had at detection
+  (both stored with the event, never recalculated): use them to judge the 60 / 25 / 15 weights on
+  later data, not as a forecast.
+- Reprocessing a batch, *Reprocess latest batch* and the LBank refresh never create events, and
+  signals from before deployment are not backfilled.
+
 ## 6. Command reference
 
 | Command                                         | Purpose                                                                            |
@@ -192,6 +218,10 @@ A failed export never replaces the previous one. Files are pruned after
 | `daily:import-csv --id CMC_ID --file F`         | Import a CMC "Download CSV" history file as completed daily rows                   |
 | `telegram:preview [--batch ID] [--fake]`        | Print the Telegram summary without sending                                         |
 | `source:reset --provider coinmarketcap_web`     | Clear a suspended source after fixing the cause                                    |
+| `forward:status [--json]`                       | Forward test: star groups, High coverage, last trigger and daily update, warnings  |
+| `forward:events [--view V] [--stars N] [--json]` | Forward-test events (`active`, `final`, `incomplete`, `all`) with their latest outcome |
+| `forward:update`                                | Run the daily High update now (normally automatic), then write its export          |
+| `forward:export`                                | Write the forward-test CSVs, workbook and manifest                                 |
 
 ## 7. Troubleshooting
 
