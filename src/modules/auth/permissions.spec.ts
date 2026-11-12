@@ -33,4 +33,8 @@ describe('dashboard roles', () => {
       expect(can(role, 'telegram:manage')).toBe(role === 'owner');
     }
   });
+
+  it('keeps the Claude coin agent owner-only', () => {
+    for (const role of USER_ROLES) expect(can(role, 'agent:use')).toBe(role === 'owner');
+  });
 });

@@ -15,6 +15,10 @@ Hourly cryptocurrency **screening for human review**, implementing the Two-Tier 
   day and star count is recorded at the scan's CMC price and followed once per day to the end of
   the UTC day containing detection + 168 h; the highest later High is compared by star group. A
   descriptive measurement, not a trade or a signal.
+- **Coin details:** a live TradingView 1D chart (sandboxed widget; a proxy for the LBank Spot
+  pair) and, for owners, a **Claude agent** that on request reads the coin's stored data and gives
+  its own view on a pump within 7 days. Runs are limited to 5 per 12 hours and every run is kept
+  as history ([ADR-0005](docs/adr/0005-coin-agent.md)).
 
 > Research screening only. The Review Queue is not a buy list or a prediction; stars count met
 > windows and are not probabilities. No orders are ever placed. Hourly data cannot see intrahour
@@ -24,7 +28,7 @@ Hourly cryptocurrency **screening for human review**, implementing the Two-Tier 
 - Star Event Forward Test (field mapping, High coverage, statuses, runbook, data gaps): [docs/forward-test.md](docs/forward-test.md)
 - Operating it day to day: [docs/operator-guide.md](docs/operator-guide.md)
 - Production deployment (server, Nginx, Docker, troubleshooting): [docs/deployment.md](docs/deployment.md)
-- Architecture: [docs/architecture.md](docs/architecture.md); decisions: [TypeORM and the module layout](docs/adr/0001-typeorm-modular-layout.md), [the strategy module](docs/adr/0002-strategy-module-boundary.md), [dashboard users](docs/adr/0003-dashboard-users.md), [the forward-test module](docs/adr/0004-forward-test-module.md)
+- Architecture: [docs/architecture.md](docs/architecture.md); decisions: [TypeORM and the module layout](docs/adr/0001-typeorm-modular-layout.md), [the strategy module](docs/adr/0002-strategy-module-boundary.md), [dashboard users](docs/adr/0003-dashboard-users.md), [the forward-test module](docs/adr/0004-forward-test-module.md), [the coin agent and live chart](docs/adr/0005-coin-agent.md)
 - Data sources and the website collector: [docs/source-feasibility.md](docs/source-feasibility.md)
 - Field mapping and data gaps: [docs/tier1-input-mapping.md](docs/tier1-input-mapping.md)
 - Implementation plan, database preparation and recovery: [docs/implementation-plan.md](docs/implementation-plan.md)
@@ -156,5 +160,7 @@ volume.
   `docker compose down -v` unless you intend to delete all history.
 
 ## Costs
-Market data $0 (fixture / website collector / free tiers). No model inference. Telegram is
-free. Hosting: your machine or a small VM.
+Market data $0 (fixture / website collector / free tiers). The screen uses no model inference;
+the optional coin agent runs on your Claude subscription (`CLAUDE_CODE_OAUTH_TOKEN`), at most 5
+runs per 12 hours, and shows the SDK's list-price estimate per run. Telegram is free. Hosting:
+your machine or a small VM.

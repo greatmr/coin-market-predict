@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 
+import { AgentModule } from '../agent/agent.module.js';
 import { AuthGuard } from '../auth/auth.guard.js';
 import { AuthModule, OwnerBootstrap } from '../auth/auth.module.js';
 import { ForwardTestModule } from '../forward-test/forward-test.module.js';
@@ -11,6 +12,7 @@ import { StrategyModule } from '../strategy/index.js';
 import { TelegramModule } from '../telegram/telegram.module.js';
 import { VenuesModule } from '../venues/venues.module.js';
 
+import { AgentController } from './agent.controller.js';
 import { AssetsController } from './assets.controller.js';
 import { AuthController } from './auth.controller.js';
 import { DashboardController } from './dashboard.controller.js';
@@ -39,6 +41,7 @@ import { UsersController } from './users.controller.js';
     TelegramModule,
     AuthModule,
     ForwardTestModule,
+    AgentModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: AuthGuard }, OwnerBootstrap],
   controllers: [
@@ -53,6 +56,7 @@ import { UsersController } from './users.controller.js';
     PipelineController,
     TelegramAccessController,
     ForwardController,
+    AgentController,
   ],
 })
 export class DashboardModule {}

@@ -1,5 +1,10 @@
 {
   "permissions": {
+    "allow": [
+      "Bash(sed -i '' 's/          } as never,/          },/' src/modules/agent/agent.service.ts)",
+      "Bash(npx tsc *)",
+      "Bash(npx vitest *)"
+    ],
     "deny": [
       "Read(./.env)",
       "Read(./.env.local)",

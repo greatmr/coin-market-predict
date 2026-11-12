@@ -49,6 +49,8 @@ import { VenueCrawl } from '../venues/entities/venue-crawl.entity.js';
 import { VenueDecision } from '../venues/entities/venue-decision.entity.js';
 import { VenueMappingTask } from '../venues/entities/venue-mapping-task.entity.js';
 
+import { chartCandidates } from './tradingview.js';
+
 export type Sheet = 'queue' | 'eligible' | 'needs_review' | 'excluded' | 'all';
 
 /** Name of the pipeline's job lease (mirrors `PIPELINE_LEASE` without importing the pipeline). */
@@ -787,6 +789,15 @@ export class ReadModelService {
           : null,
       },
       reviews,
+      // Live chart symbols for the dashboard (TradingView has no LBank Spot data: all are proxies).
+      chart: {
+        candidates: chartCandidates({
+          cmcId,
+          symbol: record.symbol,
+          lbankPairs: record.lbankPairs ?? [],
+          venuePairs: markets?.pairs ?? [],
+        }),
+      },
     });
   }
 

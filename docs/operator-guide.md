@@ -99,7 +99,9 @@ of tappable choices.
 3. **Tier 2 chart review** on TradingView's 1D chart: exchange, symbol, quote, chart URL and its
    candle-close timezone (CMC days close at 00:00 UTC), proxy reason if the chart is not LBank,
    then the judgments (range low, chart history, prior pump response, candle state, BTC/ETH
-   regime) and a final decision `REVIEW` / `NO_TRADE` / `PLAN_READY`.
+   regime) and a final decision `REVIEW` / `NO_TRADE` / `PLAN_READY`. The live chart at the top
+   of the Review tab ([§ 3b](#3b-live-chart-and-the-claude-agent)) fills the chart fields with
+   _Use in review form_.
 4. **Manual trade plan** (only for `PLAN_READY`): you choose entry, entry time (UTC), stop and
    three targets with allocations, plus notes. Validation checks completeness and
    stop < entry < TP1 < TP2 < TP3, allocations ≤ 100 %, a verified LBank pair, and a rationale
@@ -116,7 +118,7 @@ Every page and API call needs a signed-in user. There are three roles:
 
 | Role     | Can see                                                   | Can do                                             |
 | -------- | --------------------------------------------------------- | -------------------------------------------------- |
-| Owner    | Everything                                                | Everything, including _Users_ and _Telegram_       |
+| Owner    | Everything, including the coin's _Agent_ tab               | Everything, including _Users_, _Telegram_ and the Claude agent |
 | Analyzer | Overview, lists, coin details, _Runs & health_, _Exports_ | Reprocess the latest batch, refresh the LBank list |
 | Reviewer | Overview, lists, coin details                             | Save reviews and LBank decisions                   |
 
@@ -149,6 +151,51 @@ docker compose exec app node dist/cli.js users:reset-owner   # the same inside t
 the proxy's hop count) so the app sees real client addresses and marks the session cookie
 `Secure` (`COOKIE_SECURE=auto`; `true` forces it). Sessions last `SESSION_TTL_HOURS` (default 12)
 after their last use. MCP keeps its own bearer tokens, and `/healthz` stays open for health checks.
+
+## 3b. Live chart and the Claude agent
+
+**Live chart** (everyone, Review tab of a coin). It loads as soon as the coin opens: TradingView's
+daily chart (candles close at 00:00 UTC, like CMC's days) with a live price strip. TradingView
+has no LBank Spot data, so the chart is always a proxy. The buttons above it list the symbols in
+order:
+
+1. spot markets that CMC lists for this coin id on exchanges TradingView carries (shown for coins
+   with venue rows, i.e. review candidates), USD quotes and higher volume first;
+2. the LBank perpetual (`LBANK:<BASE>USDT.P`), which exists only if LBank lists one;
+3. TradingView's index (`CRYPTO:<SYMBOL>USD`), which matches by ticker only, so check that it is
+   this coin.
+
+If a symbol shows no data, pick another or use the chart's own symbol search. _Use in review
+form_ copies the exchange, symbol, quote, chart URL, `UTC` and a proxy reason into the Tier 2
+fields; check them before saving. The chart is a sandboxed TradingView frame: it cannot read the
+dashboard, and nothing from it is stored.
+
+**Claude agent** (owners only, the coin's _Agent_ tab). _Ask Claude_ → _Run analysis_ starts one
+run. Claude reads the coin's stored data through four read-only tools (the Tier 1 trace, hourly
+prices, BTC/ETH, the forward test) and answers within a few minutes with:
+
+- its outlook for the next 7 days (_pump likely_, _possible_, _unlikely_ or _not enough data_) and
+  a confidence (not a probability);
+- its reasoning, the points for and against with the values they rest on, risks, data gaps and
+  what to watch;
+- its read of the Tier 2 candle state and BTC/ETH regime.
+
+Confidence is capped by code on synthetic data, a stale or missing current observation, or an
+incomplete batch; each adjustment is shown. The view is an AI opinion for your own review, not a
+signal.
+
+- **Limit:** 5 runs in any rolling 12 hours, shared by all owners (`AGENT_MAX_RUNS`,
+  `AGENT_WINDOW_HOURS`), one at a time. The tab shows the runs left and when the next one frees
+  up. A run that fails before Claude answers (credentials, outage) does not count.
+- **History:** every run is stored (`agent_analysis`) with who asked, the batch it read, the model,
+  every tool call and its output, and the answer or the failure. Finished runs never change; pick
+  one under _All analyses of this coin_ to see it again.
+- **Setup:** on a machine signed in to your Claude subscription, run `claude setup-token` and put the
+  token in the server's configuration as `CLAUDE_CODE_OAUTH_TOKEN` (`.env`, or `.env.prod` on
+  the server), then restart. It is the only credential the agent uses; an API key is refused.
+  Check it by name only: `npm run cli -- config:check` shows `<set>` or `<not set>`. Model, effort,
+  fallback and per-run limits are the `AGENT_*` settings in `.env.example`. Tokens last about a
+  year; when Claude rejects one, the run fails with a message saying so.
 
 ## 4. LBank Spot markets list
 

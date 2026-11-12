@@ -1,3 +1,4 @@
+import { AgentAnalysis } from '../modules/agent/entities/agent-analysis.entity.js';
 import { AppState } from '../modules/app-state/entities/app-state.entity.js';
 import { AppUser } from '../modules/auth/entities/app-user.entity.js';
 import { UserSession } from '../modules/auth/entities/user-session.entity.js';
@@ -79,4 +80,6 @@ export const ENTITIES = [
   ForwardUpdateRun,
   ForwardHigh,
   ForwardOutcome,
+  // Claude coin agent (docs/adr/0005-coin-agent.md)
+  AgentAnalysis,
 ];

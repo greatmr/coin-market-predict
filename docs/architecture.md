@@ -2,8 +2,9 @@
 
 The system implements the **Two-Tier VMC strategy** ([strategy-two-tier-vmc.md](strategy-two-tier-vmc.md)):
 an hourly, deterministic Tier 1 screen over CoinMarketCap data, and a Tier 2 human chart review
-with an optional manual LBank Spot trade plan. No component places orders, ranks by predicted
-return, or calls an LLM.
+with an optional manual LBank Spot trade plan. No component places orders or ranks by predicted
+return. The only LLM call is the Claude coin agent, run when an owner asks for one coin's view
+([ADR-0005](adr/0005-coin-agent.md)); it never changes stored data or the screen's results.
 
 ## Overview
 ```
@@ -48,7 +49,8 @@ Layout and database conventions follow the operator's standard NestJS + TypeORM 
 | `modules/pipeline/` | Orchestrator, DB lease, scheduler, restart recovery, storage retention |
 | `modules/telegram/` | Hourly summary formatting and delivery (dedupe, retries), bot commands, access control |
 | `modules/auth/` | Dashboard users (owner / analyzer / reviewer), scrypt passwords, sessions, the role → permission table and the `/api` guard ([ADR-0003](adr/0003-dashboard-users.md)) |
-| `modules/read-model/` | Read-only queries shared by dashboard, MCP and Telegram (sheets, calculation traces, batches, exports) |
+| `modules/read-model/` | Read-only queries shared by dashboard, MCP and Telegram (sheets, calculation traces, batches, exports); TradingView chart symbols for the coin details (`tradingview.ts`) |
+| `modules/agent/` | Claude coin agent, owners only, on demand ([ADR-0005](adr/0005-coin-agent.md)): Claude Agent SDK runner with an allowlisted environment and the subscription token, four read-only tools bound to one coin, structured answer + confidence guardrails, the rolling run limit, `agent_analysis` history |
 | `modules/dashboard/` | The REST controllers and DTOs behind `/api/*` — the only module with HTTP routes besides `health` and `mcp` |
 | `modules/mcp/` | Read-only MCP tools over HTTP (bearer token) and stdio |
 | `modules/app-state/` | Small durable key/value state (`app_state`) |
@@ -77,7 +79,7 @@ Tables are snake_case; entities live in each module's `entities/` and are regist
 `src/database/entities.ts`. The schema is created only by the raw-SQL migrations in
 `src/database/migrations/` (M001 enum types · M002 platform · M003 market data · M004 daily
 metrics · M005 venues · M006 scan and reviews · M007 users · M008 forward test · M009 weighted
-star ranking), applied with
+star ranking · M010 coin agent history), applied with
 `npm run db:migrate`; a test fails
 when entities and migrations disagree. Conventions and their reasons:
 [ADR-0001](adr/0001-typeorm-modular-layout.md).
@@ -100,6 +102,7 @@ when entities and migrations disagree. Conventions and their reasons:
 | `pipeline_run`, `pipeline_stage`, `job_lease` | pipeline | Runs per slot with stage status and metrics; the lease that prevents overlapping runs |
 | `telegram_delivery` | telegram | Every report part per recipient with status and attempts |
 | `app_state` | app-state | Small durable values (Telegram access list and offset, retention watermark, fixture anchor) |
+| `agent_analysis` | agent | One row per Claude coin-agent run: requester, coin, Tier 1 batch read, model and prompt version, every tool call with its output, usage, the structured view or the failure; immutable once finished (trigger); counted for the run limit ([ADR-0005](adr/0005-coin-agent.md)) |
 
 Closed value sets (statuses, classes, decisions) are PostgreSQL enum types whose values come from
 the code; the strategy's sets come from `modules/strategy`. Every reference to another row is a
@@ -188,6 +191,12 @@ decision in `intend.md`: confirm the data provider's terms.
   `get_snapshots`, `list_assets`, `get_run_status`, `get_forward_test_summary`,
   `get_forward_events`, `get_forward_event`; resources `coins://tier1/queue/latest`,
   `coins://runs/latest`. There are no write tools.
+- **Claude coin agent** (owners, `agent:use`): `GET` / `POST /api/assets/:cmcId/agent`. The run uses
+  its own in-process, read-only tools bound to that coin; it is not exposed over MCP or Telegram
+  ([ADR-0005](adr/0005-coin-agent.md)).
+- **Live chart**: the coin details embed TradingView widgets as sandboxed, cross-origin iframes
+  (CSP `frame-src https://www.tradingview-widget.com`; no third-party script runs in the
+  dashboard). Their data reaches only the viewer's browser and is never stored.
 - PostgreSQL is the single source of truth for all three.
 
 ## CMC website collection
@@ -221,3 +230,7 @@ the seven-day chart history stage. Their code and documents remain in git histor
 before removal: `1d81a87`, e.g. `git show 1d81a87:docs/strategy-limitations.md`); the database
 rows they produced are in the pre-migration backup described in
 [implementation-plan.md § Database preparation](implementation-plan.md).
+
+On 2026-11-12 a narrower agent returned ([ADR-0005](adr/0005-coin-agent.md)). It runs for one
+coin only when an owner asks, with read-only tools, no scores or signals in the pipeline, and a
+limit of 5 runs per 12 hours. The multi-agent signal review above stays retired.

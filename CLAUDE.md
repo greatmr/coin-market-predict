@@ -46,7 +46,14 @@ never real orders. Spec: `docs/strategy-two-tier-vmc.md`. Purpose and open decis
   `data:read`); give any new route that is not plain market data a `@RequirePermission(...)`. The
   role table is `modules/auth/permissions.ts`. Never weaken the last-active-owner rules in
   `UsersService`. An empty database gets `owner` / `owner` (must change) on server start.
-- No LLM agents run in production (retired 2026-11-05; see `docs/architecture.md`).
+- **The only LLM is the Claude coin agent** (`src/modules/agent/`, `docs/adr/0005-coin-agent.md`):
+  it runs on an owner's request for one coin (`agent:use`), at most `AGENT_MAX_RUNS` (5) per
+  rolling `AGENT_WINDOW_HOURS` (12), with read-only tools bound to that coin, and stores its view
+  in `agent_analysis` (immutable once finished). It never feeds the pipeline, Tier 1 results,
+  exports, Telegram or MCP. Auth is the subscription OAuth token only, via `buildAgentEnv()`.
+- The live chart in the coin details is TradingView widgets in sandboxed cross-origin iframes
+  (CSP `frame-src https://www.tradingview-widget.com`); never load third-party scripts into the
+  dashboard.
 
 ## Commands
 ```bash

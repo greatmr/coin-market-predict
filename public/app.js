@@ -1,7 +1,8 @@
 // Coins Predicts dashboard (Two-Tier VMC strategy). Reads the NestJS JSON API only. All source
 // text (coin names, symbols, notes) is rendered with textContent, never innerHTML, because it comes
 // from external sources or reviewers. The CSP forbids inline style attributes, so dynamic sizes are
-// set through the CSSOM (element.style.x), and charts are hand-drawn SVG (no third-party scripts).
+// set through the CSSOM (element.style.x), and charts are hand-drawn SVG (no third-party scripts);
+// the live TradingView chart is a sandboxed cross-origin iframe, never a script in this page.
 'use strict';
 
 /* ============================== Basics ============================== */
@@ -2518,6 +2519,537 @@ function venuePanel(t) {
   );
 }
 
+/* ============================== Live chart (TradingView) ============================== */
+
+const TV_ORIGIN = 'https://www.tradingview-widget.com';
+/** Live price strips, resized by TradingView's resize messages (sizes go through the CSSOM). */
+const tvInfoFrames = new Set();
+window.addEventListener('message', (e) => {
+  if (e.origin !== TV_ORIGIN || !e.data || e.data.name !== 'tv-widget-resize-iframe') return;
+  for (const f of tvInfoFrames) {
+    if (!document.contains(f)) {
+      tvInfoFrames.delete(f);
+      continue;
+    }
+    if (f.contentWindow !== e.source) continue;
+    const h = Number(e.data.data && e.data.data.height);
+    if (Number.isFinite(h) && h > 0)
+      f.style.height = `${Math.min(Math.max(Math.round(h), 60), 420)}px`;
+  }
+});
+
+/** The scheme the page shows (the theme button, else the system's), for the widgets' colours. */
+function uiTheme() {
+  const t = document.documentElement.dataset.theme;
+  if (t === 'light' || t === 'dark') return t;
+  return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+}
+
+/**
+ * A TradingView widget as a sandboxed, cross-origin iframe: the URL TradingView's embed script
+ * builds (`/embed-widget/<id>/?locale=en#<settings JSON>`), without running that script in this
+ * signed-in page, so it cannot read the page, the session or the API.
+ */
+function tvFrame(widget, settings, title, query = '') {
+  const id = uid('tv');
+  // The embed script also passes the page as `page-uri` to the widget's data connection; only the
+  // host is sent here (no path, coin or query), and the iframe gets no referrer.
+  const hash = encodeURIComponent(
+    JSON.stringify({ ...settings, frameElementId: id, 'page-uri': location.host }),
+  );
+  return el('iframe', {
+    id,
+    class: `tv-frame tv-${widget}`,
+    title,
+    src: `${TV_ORIGIN}/embed-widget/${widget}/?locale=en${query}#${hash}`,
+    sandbox: 'allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox',
+    referrerpolicy: 'no-referrer',
+  });
+}
+const tvChartUrl = (symbol) =>
+  `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(symbol)}`;
+
+const PROXY_REASON = {
+  cmc_venue: (c) =>
+    `TradingView has no LBank Spot data; ${c.label} is a spot market CMC lists for this coin.`,
+  lbank_perpetual: () => 'TradingView has no LBank Spot data; LBank perpetual of the same coin.',
+  ticker_index: (c) =>
+    `TradingView has no LBank Spot data; ${c.symbol} index, checked to be this coin.`,
+};
+
+/** Fill the review form's chart fields from the chart shown (the reviewer still checks them). */
+function useChartInReview(c) {
+  if (!$('rv-chartExchange')) {
+    toast('The review form is on the Review tab.', 'error');
+    return;
+  }
+  const set = (id, v) => {
+    const x = $(id);
+    if (x) x.value = v;
+  };
+  set('rv-chartExchange', c.exchange);
+  set('rv-chartSymbol', c.symbol.split(':')[1] || c.symbol);
+  set('rv-chartQuote', c.quote);
+  set('rv-chartUrl', tvChartUrl(c.symbol));
+  set('rv-chartTimezone', 'UTC');
+  set('rv-chartProxyReason', (PROXY_REASON[c.source] || PROXY_REASON.ticker_index)(c));
+  toast('Chart fields filled in the review form below. Check them before saving.');
+}
+
+/**
+ * Live TradingView chart (1D, UTC candles like CMC's days) and price strip for the coin, loaded as
+ * soon as the coin opens. TradingView has no LBank Spot data, so every symbol is a proxy: first the
+ * spot markets CMC lists for this coin id, then the LBank perpetual and the ticker index.
+ */
+function chartPanel(t) {
+  const r = t.record;
+  const candidates = (t.chart && t.chart.candidates) || [];
+  const head = el(
+    'div',
+    { class: 'panel-head' },
+    el('h3', null, 'Live chart'),
+    el('span', { class: 'hint' }, 'TradingView, daily candles closing 00:00 UTC'),
+  );
+  if (!candidates.length)
+    return el(
+      'section',
+      { class: 'panel' },
+      head,
+      el('div', { class: 'empty' }, 'No TradingView symbol is known for this coin.'),
+    );
+  S.chartSymbols = S.chartSymbols || {};
+  let current = candidates.find((c) => c.symbol === S.chartSymbols[r.cmcId]) || candidates[0];
+  const seg = el('div', { class: 'seg tv-seg', role: 'group', 'aria-label': 'Chart symbol' });
+  const note = el('p', { class: 'muted small tv-note' });
+  const frames = el('div', { class: 'tv-frames' });
+  const open = el(
+    'a',
+    { class: 'chip link-chip', target: '_blank', rel: 'noopener noreferrer' },
+    'Open on TradingView',
+  );
+  const draw = () => {
+    put(
+      seg,
+      candidates.map((c) =>
+        el(
+          'button',
+          {
+            type: 'button',
+            'aria-pressed': String(c === current),
+            title: c.note,
+            onclick: () => {
+              current = c;
+              S.chartSymbols[r.cmcId] = c.symbol;
+              draw();
+            },
+          },
+          c.symbol,
+        ),
+      ),
+    );
+    put(note, current.note);
+    open.href = tvChartUrl(current.symbol);
+    const info = tvFrame(
+      'symbol-info',
+      { symbol: current.symbol, width: '100%', colorTheme: uiTheme(), isTransparent: true },
+      `Live ${current.symbol} price from TradingView`,
+      `&symbol=${encodeURIComponent(current.symbol)}`,
+    );
+    tvInfoFrames.add(info);
+    const chart = tvFrame(
+      'advanced-chart',
+      {
+        autosize: true,
+        symbol: current.symbol,
+        interval: 'D',
+        timezone: 'Etc/UTC',
+        theme: uiTheme(),
+        style: '1',
+        allow_symbol_change: true,
+        withdateranges: true,
+        details: false,
+        calendar: false,
+        save_image: false,
+        support_host: 'https://www.tradingview.com',
+      },
+      `TradingView chart of ${current.symbol}`,
+    );
+    put(frames, info, chart);
+  };
+  draw();
+  return el(
+    'section',
+    { class: 'panel tv-panel' },
+    head,
+    seg,
+    note,
+    frames,
+    el(
+      'div',
+      { class: 'tv-foot' },
+      open,
+      can('review:write')
+        ? el(
+            'button',
+            { type: 'button', class: 'btn small', onclick: () => useChartInReview(current) },
+            'Use in review form',
+          )
+        : null,
+      el(
+        'span',
+        { class: 'muted small' },
+        "Live data from TradingView, separate from the CMC data the screen uses. If a symbol shows no data, pick another or use the chart's own symbol search.",
+      ),
+    ),
+  );
+}
+
+/* ============================== Claude agent (owner only) ============================== */
+
+const OUTLOOK = {
+  PUMP_LIKELY: ['Pump likely', 'likely'],
+  PUMP_POSSIBLE: ['Pump possible', 'possible'],
+  PUMP_UNLIKELY: ['Pump unlikely', 'unlikely'],
+  INSUFFICIENT_DATA: ['Not enough data', 'nodata'],
+};
+const outlookBadge = (o) =>
+  el('span', { class: `outlook ${(OUTLOOK[o] || [0, 'nodata'])[1]}` }, (OUTLOOK[o] || [o])[0]);
+const lower = (s) =>
+  String(s || '')
+    .replace(/_/g, ' ')
+    .toLowerCase();
+
+/** The Agent tab: Claude's own view of the coin, run on request (owners; limited per 12 h). */
+function agentPanel(t) {
+  const box = el(
+    'section',
+    { class: 'panel agent-panel' },
+    el('div', { class: 'skeleton short' }, el('i')),
+  );
+  void loadAgent(t.record.cmcId, box);
+  return box;
+}
+
+/**
+ * Load the agent state for one coin; polls while a run is in progress and the coin stays open. The
+ * analysis picked from the history (`box.agentSelected`) stays shown until a new run finishes.
+ */
+async function loadAgent(cmcId, box) {
+  clearTimeout(box.agentPoll);
+  let st;
+  try {
+    st = await api(`assets/${cmcId}/agent`);
+  } catch (e) {
+    if (S.drawer.cmcId === cmcId && document.contains(box))
+      put(box, el('div', { class: 'error' }, `Could not load the agent: ${e.message}`));
+    return;
+  }
+  if (S.drawer.cmcId !== cmcId || !document.contains(box)) return;
+  const runningHere = !!(st.running && st.running.cmcId === cmcId);
+  if (box.agentRunning && !runningHere) {
+    const done = st.analyses[0];
+    if (done && done.status === 'SUCCEEDED') toast(`Claude's view on ${done.symbol} is ready.`);
+    else if (done && done.status === 'FAILED')
+      toast(`Claude's analysis of ${done.symbol} failed: ${done.errorMessage}`, 'error');
+    box.agentSelected = undefined;
+  }
+  box.agentRunning = runningHere;
+  renderAgent(cmcId, box, st);
+  if (st.running)
+    box.agentPoll = setTimeout(() => void loadAgent(cmcId, box), runningHere ? 3000 : 10000);
+}
+
+function renderAgent(cmcId, box, st) {
+  const q = st.quota;
+  const shown =
+    st.analyses.find((a) => a.id === box.agentSelected) ||
+    st.analyses.find((a) => a.status === 'RUNNING') ||
+    st.analyses[0] ||
+    null;
+  put(
+    box,
+    el(
+      'div',
+      { class: 'panel-head' },
+      el('h3', null, "Claude's view"),
+      el(
+        'span',
+        { class: 'hint' },
+        `${st.model}, ${q.remaining} of ${q.max} runs left in ${q.windowHours} h`,
+      ),
+    ),
+    el(
+      'p',
+      { class: 'muted small' },
+      `Claude reads this coin's stored data (the Tier 1 trace, hourly prices, BTC and ETH, the forward test) and gives its own view on a pump within ${st.horizonHours / 24} days. It is an AI opinion for your own chart review, not a trading signal, and it can be wrong.`,
+    ),
+    agentAction(cmcId, box, st),
+    shown
+      ? analysisView(shown, st)
+      : el('div', { class: 'empty' }, 'No analysis of this coin yet.'),
+    st.analyses.length > 1 ? agentHistory(cmcId, box, st, shown) : null,
+  );
+}
+
+function agentAction(cmcId, box, st) {
+  const q = st.quota;
+  const wrap = el('div', { class: 'agent-action' });
+  if (!st.available) {
+    put(wrap, el('p', { class: 'error small' }, st.reason || 'The agent is not available.'));
+    return wrap;
+  }
+  if (st.running) {
+    put(
+      wrap,
+      st.running.cmcId === cmcId
+        ? el(
+            'p',
+            { class: 'agent-busy' },
+            el('span', { class: 'spinner', 'aria-hidden': 'true' }),
+            `Claude is analysing ${st.running.symbol} (started ${fmtAgo(st.running.requestedAt)} by ${st.running.requestedBy}). This usually takes one to three minutes.`,
+          )
+        : el(
+            'p',
+            { class: 'muted small' },
+            `Claude is analysing ${st.running.symbol} for ${st.running.requestedBy}; one run at a time. You can start this one when it finishes.`,
+          ),
+    );
+    return wrap;
+  }
+  if (q.remaining <= 0) {
+    put(
+      wrap,
+      el('button', { type: 'button', class: 'btn primary', disabled: true }, 'Ask Claude'),
+      el(
+        'span',
+        { class: 'muted small' },
+        `Limit reached: ${q.used} of ${q.max} runs in the last ${q.windowHours} h. The next run is possible at ${fmtTime(q.nextFreeAt)}.`,
+      ),
+    );
+    return wrap;
+  }
+  const run = async (e) => {
+    e.currentTarget.disabled = true;
+    try {
+      await apiPost(`assets/${cmcId}/agent`, {});
+      toast("Claude is reading the coin's data. The view appears here when it is ready.");
+    } catch (err) {
+      toast(`Analysis not started: ${err.message}`, 'error');
+    }
+    box.agentSelected = undefined;
+    void loadAgent(cmcId, box);
+  };
+  const askConfirm = () =>
+    put(
+      wrap,
+      el(
+        'span',
+        { class: 'small' },
+        `Use 1 of the ${q.remaining} runs left? The limit is ${q.max} per ${q.windowHours} h.`,
+      ),
+      el('button', { type: 'button', class: 'btn primary', onclick: run }, 'Run analysis'),
+      el('button', { type: 'button', class: 'btn', onclick: ask }, 'Cancel'),
+    );
+  const ask = () =>
+    put(
+      wrap,
+      el('button', { type: 'button', class: 'btn primary', onclick: askConfirm }, 'Ask Claude'),
+      el(
+        'span',
+        { class: 'muted small' },
+        `${q.remaining} of ${q.max} runs left in ${q.windowHours} h, shared by all owners.`,
+      ),
+    );
+  ask();
+  return wrap;
+}
+
+function agentList(title, items, kind) {
+  return el(
+    'div',
+    { class: `agent-list${kind ? ` ${kind}` : ''}` },
+    el('h4', null, title),
+    items && items.length
+      ? el(
+          'ul',
+          null,
+          items.map((x) =>
+            typeof x === 'string'
+              ? el('li', null, x)
+              : el(
+                  'li',
+                  null,
+                  el('span', null, x.point),
+                  el('small', { class: 'mono' }, x.evidence),
+                ),
+          ),
+        )
+      : el('p', { class: 'muted small' }, 'None.'),
+  );
+}
+
+function analysisView(a, st) {
+  const when = `${fmtTime(a.requestedAt)} by ${a.requestedBy}`;
+  if (a.status === 'RUNNING')
+    return el(
+      'div',
+      { class: 'agent-card running' },
+      el('span', { class: 'spinner', 'aria-hidden': 'true' }),
+      el('span', null, `Running since ${fmtClock(a.requestedAt)} (${when}).`),
+    );
+  if (a.status === 'FAILED')
+    return el(
+      'div',
+      { class: 'agent-card failed' },
+      el(
+        'div',
+        { class: 'agent-verdict' },
+        chip('Failed', { dot: 'critical' }),
+        el('span', { class: 'muted small' }, when),
+      ),
+      el('p', null, a.errorMessage || 'The run failed.'),
+      el(
+        'p',
+        { class: 'muted small' },
+        a.countsTowardLimit
+          ? 'This run counts toward the limit (Claude had already answered).'
+          : 'This run did not count toward the limit.',
+      ),
+      runDetails(a),
+    );
+  const o = a.output;
+  return el(
+    'article',
+    { class: 'agent-card' },
+    el(
+      'div',
+      { class: 'agent-verdict' },
+      outlookBadge(a.outlook),
+      chip(`${lower(a.confidence)} confidence`, {
+        tone: a.confidence === 'HIGH' ? 'violet' : null,
+      }),
+      el('span', { class: 'muted small' }, `next ${st.horizonHours / 24} days, ${when}`),
+    ),
+    el('p', { class: 'agent-headline' }, o.headline),
+    a.isLive ? null : el('p', { class: 'error small' }, 'Synthetic fixture data, not market data.'),
+    el(
+      'div',
+      { class: 'agent-mindset' },
+      o.mindset
+        .split(/\n\s*\n/)
+        .filter((p) => p.trim())
+        .map((p) => el('p', null, p)),
+    ),
+    el(
+      'div',
+      { class: 'grid-2 tight' },
+      agentList('For a pump', o.bullishFactors, 'pro'),
+      agentList('Against', o.bearishFactors, 'con'),
+    ),
+    el(
+      'div',
+      { class: 'agent-list' },
+      el('h4', null, 'Strategy fit'),
+      el('p', null, o.strategyFit),
+    ),
+    el(
+      'div',
+      { class: 'grid-2 tight' },
+      agentList('Risks', o.risks),
+      agentList('Data gaps', o.dataGaps),
+    ),
+    agentList('Watch next', o.watchNext),
+    el(
+      'div',
+      { class: 'chips' },
+      el('span', { class: 'muted small' }, "Claude's read for Tier 2:"),
+      chip(`candle ${lower(o.candleState)}`, { tone: 'violet' }),
+      chip(`BTC/ETH ${lower(o.marketRegime)}`, { tone: 'violet' }),
+    ),
+    a.guardrailNotes.length
+      ? el(
+          'ul',
+          { class: 'notes warnings small' },
+          a.guardrailNotes.map((n) => el('li', null, n)),
+        )
+      : null,
+    runDetails(a),
+  );
+}
+
+function runDetails(a) {
+  const u = a.usage || {};
+  const calls = (a.toolCalls || []).map((c) => (c.denied ? `${c.name} (refused)` : c.name));
+  return el(
+    'details',
+    { class: 'fold agent-meta' },
+    el('summary', null, 'Run details'),
+    kv([
+      ['Requested', `${fmtTime(a.requestedAt)} by ${a.requestedBy}`],
+      [
+        'Finished',
+        a.finishedAt ? `${fmtTime(a.finishedAt)}, after ${fmtMs(u.durationMs) || '—'}` : '—',
+      ],
+      [
+        'Model',
+        `${u.models && u.models.length ? u.models.join(', ') : a.model}${u.refusalFallback ? ' (fallback used)' : ''}`,
+      ],
+      ['Effort and turns', `${a.effort}, ${u.numTurns ?? '—'} turns`],
+      [
+        'Tokens',
+        `${fmtInt(u.inputTokens)} in, ${fmtInt(u.outputTokens)} out, ${fmtInt(u.cacheReadTokens)} from cache`,
+      ],
+      [
+        'Estimated cost',
+        isNum(num(u.costUsd))
+          ? `$${num(u.costUsd).toFixed(2)} at list prices (a subscription is not billed per run)`
+          : '—',
+      ],
+      ['Data', `batch ${shortId(a.batchId)}, ruleset ${a.rulesetVersion}`],
+      ['Instructions', a.promptVersion],
+      ['Tools used', calls.join(', ') || 'none'],
+    ]),
+  );
+}
+
+function agentHistory(cmcId, box, st, shown) {
+  return el(
+    'div',
+    { class: 'agent-history' },
+    el('h4', null, 'All analyses of this coin'),
+    el(
+      'div',
+      { class: 'table-wrap' },
+      table(
+        [
+          { label: 'When', render: (a) => fmtTime(a.requestedAt) },
+          {
+            label: 'View',
+            render: (a) =>
+              a.status === 'SUCCEEDED'
+                ? outlookBadge(a.outlook)
+                : chip(lower(a.status), { dot: a.status === 'FAILED' ? 'critical' : 'warning' }),
+          },
+          { label: 'Confidence', render: (a) => (a.confidence ? lower(a.confidence) : '—') },
+          { label: 'By', render: (a) => a.requestedBy },
+          {
+            label: '',
+            render: (a) =>
+              shown && a.id === shown.id ? el('span', { class: 'muted small' }, 'shown') : '',
+          },
+        ],
+        st.analyses,
+        {
+          onRow: (a) => {
+            box.agentSelected = a.id;
+            renderAgent(cmcId, box, st);
+          },
+        },
+      ),
+    ),
+  );
+}
+
 function renderTrace(t) {
   const r = t.record,
     b = t.batch,
@@ -2995,15 +3527,18 @@ function renderTrace(t) {
       'Review',
       null,
       [
+        chartPanel(t),
         vmcPanel(t),
         el('div', { class: 'grid-2 tight' }, pricePanel(t), venuePanel(t)),
         lbank,
         reviewForm(t),
       ],
     ],
+    // Owners only (the server checks agent:use on every call as well).
+    can('agent:use') ? ['agent', 'Agent', null, [agentPanel(t)]] : null,
     ['history', 'History', historyCount, [reviews, decisions, metadata]],
     ['calc', 'Calculation details', null, [calc, calcWindows, calcDaily]],
-  ];
+  ].filter(Boolean);
   if (!tabs.some(([k]) => k === S.detailTab)) S.detailTab = 'review';
   const bar = el('div', {
     class: 'detail-tabs',
@@ -4387,7 +4922,7 @@ async function loadAccess() {
 /* ============================== Sign-in, account and users ============================== */
 
 const ROLE_TEXT = {
-  owner: ['Owner', 'Everything, including users and the Telegram audience.'],
+  owner: ['Owner', 'Everything, including users, the Telegram audience and the Claude agent.'],
   analyzer: [
     'Analyzer',
     'Every data page, run health and exports; can reprocess a batch and refresh the LBank list.',
@@ -4402,6 +4937,7 @@ const PERMISSION_TEXT = {
   'scan:operate': 'Reprocess a batch, refresh the LBank list and retry a failed crawl',
   'telegram:manage': 'Manage Telegram members and re-send reports',
   'users:manage': 'Add, change and remove users',
+  'agent:use': 'Ask the Claude agent for its view on a coin (limited runs)',
 };
 
 function showAuth(mode, notice) {

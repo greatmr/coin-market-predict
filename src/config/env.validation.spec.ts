@@ -81,6 +81,35 @@ describe('configuration', () => {
     expect(loadConfig({ ...base, CMC_API_KEY: '  ' }).CMC_API_KEY).toBeUndefined();
   });
 
+  it('limits the Claude coin agent by default: 5 runs per 12 hours, Opus 5.5, no token', () => {
+    const c = loadConfig(base);
+    expect([
+      c.AGENT_ENABLED,
+      c.AGENT_MODEL,
+      c.AGENT_MAX_RUNS,
+      c.AGENT_WINDOW_HOURS,
+      c.CLAUDE_CODE_OAUTH_TOKEN,
+    ]).toEqual([true, 'claude-opus-5-5', 5, 12, undefined]);
+    expect(() => loadConfig({ ...base, AGENT_MAX_RUNS: '0' })).toThrow(/AGENT_MAX_RUNS/);
+  });
+
+  it('accepts only a subscription OAuth token for the agent, never an API key, and masks it', () => {
+    // Fake values, assembled so the repository secret scanner does not flag them.
+    const token = ['sk-ant-oat01', 'subscription-token-value'].join('-');
+    const apiKey = ['sk-ant-api03', 'a-paid-api-key-value'].join('-');
+    const c = loadConfig({ ...base, CLAUDE_CODE_OAUTH_TOKEN: token });
+    expect(c.CLAUDE_CODE_OAUTH_TOKEN).toBe(token);
+    expect(describeConfig(c).CLAUDE_CODE_OAUTH_TOKEN).toBe('<set>');
+    expect(JSON.stringify(describeConfig(c))).not.toContain(token);
+    try {
+      loadConfig({ ...base, CLAUDE_CODE_OAUTH_TOKEN: apiKey });
+      expect.unreachable();
+    } catch (e) {
+      expect(String(e)).toMatch(/CLAUDE_CODE_OAUTH_TOKEN: must be a Claude subscription/);
+      expect(String(e)).not.toMatch(/a-paid-api-key-value/);
+    }
+  });
+
   it('treats empty optional numbers as not set, but still rejects invalid ones', () => {
     const c = loadConfig({ ...base, POSTGRES_PORT: '', MAX_QUOTE_AGE_MINUTES: ' ' });
     expect(c.POSTGRES_PORT).toBeUndefined();

@@ -85,6 +85,12 @@ container start. Check with `dc exec app node dist/cli.js db:status`; forward-te
   paste tokens into chat or commit them.
 - `DATA_SOURCE=coinmarketcap_web` is the only live source with daily rows and LBank pairs
   (see `docs/source-feasibility.md`). `fixture` is synthetic data.
+- **Claude coin agent** (owners only, [ADR-0005](adr/0005-coin-agent.md)): add
+  `CLAUDE_CODE_OAUTH_TOKEN=<token from claude setup-token>` to `.env.prod` on the server, then
+  `dc up -d`. Without it the Agent tab says the agent is not configured; an API key is refused at
+  start. The update that adds it brings migration M010 (take the backup first) and makes the image
+  about 330 MB larger (the Agent SDK's native CLI). The agent keeps its process state under
+  `/app/var/agent` in the `app_var` volume.
 - Check config by key name and length only: `awk -F= '/^[A-Z_]+=/{print $1, length($2)}' .env.prod`.
 
 ## Operations
