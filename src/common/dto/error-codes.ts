@@ -29,6 +29,11 @@ export const ErrorCodes = {
   // ─── Telegram access ─────────────────────────────────────────────────────
   TELEGRAM_UNKNOWN_RECIPIENT: 'TELEGRAM_UNKNOWN_RECIPIENT',
   TELEGRAM_OWNER_TARGET: 'TELEGRAM_OWNER_TARGET',
+
+  // ─── Claude coin agent ───────────────────────────────────────────────────
+  AGENT_UNAVAILABLE: 'AGENT_UNAVAILABLE',
+  AGENT_BUSY: 'AGENT_BUSY',
+  AGENT_LIMIT_REACHED: 'AGENT_LIMIT_REACHED',
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

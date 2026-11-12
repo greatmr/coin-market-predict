@@ -17,6 +17,11 @@ group. A descriptive measurement, not a trade, a signal or a profit claim.
 (Superseded on 2026-11-05: the momentum "surge screen", Claude agent reviews, paper trading,
 backtests and the six-month VMC baseline. See `docs/strategy-two-tier-vmc.md` § 10.)
 
+Added 2026-11-12 (`docs/adr/0005-coin-agent.md`): a live TradingView chart in the coin details,
+and an owner-only Claude agent that, on request, reads one coin's stored data and gives its own
+view on a pump within 7 days. That view is kept as history and treated as review material, like
+everything else here.
+
 ## Requirements
 1. **Sources**: no paid market-data subscriptions. Use the existing, explicitly selected CMC
    website collector (no new API client, PDF p.2); no CAPTCHA bypass or evasive proxies. Free
@@ -40,6 +45,10 @@ backtests and the six-month VMC baseline. See `docs/strategy-two-tier-vmc.md` §
    compact summary with dry-run mode.
 7. **Human review** (p.15, p.24–27): venue decision, event day, LBank verification, chart review
    fields, final decision, manual trade plan validation; append-only revisions.
+8. **Coin details extras** (2026-11-12): a live TradingView 1D chart (a proxy for the LBank Spot
+   pair, which TradingView does not carry) that fills the Tier 2 chart fields on request; and the
+   Claude coin agent for owners only, at most 5 runs per rolling 12 hours, authenticated with the
+   operator's subscription OAuth token, with every run and its inputs stored.
 8. **Forward test** (add-on): automatic events from the published Review Queue (no approval),
    unique per (CMC id, UTC date, stars), immutable reference price, daily Highs of the same
    coin's CMC USD series only, never a pre-signal High or Close, FINAL only after the final day's
@@ -61,7 +70,9 @@ backtests and the six-month VMC baseline. See `docs/strategy-two-tier-vmc.md` §
 
 ## Non-goals
 - Real order placement, brokerage integration, position sizing or portfolio management.
-- Automatic buy/sell signals, predicted returns, profit claims or calibrated probabilities.
+- Automatic buy/sell signals, predicted returns, profit claims or calibrated probabilities. The
+  coin agent's outlook is an on-request qualitative opinion with a confidence level, not a
+  probability, price target or signal.
 - Intrahour monitoring, order-book trading, or minute-level signals.
 - Multi-tenant SaaS.
 

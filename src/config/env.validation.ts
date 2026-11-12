@@ -10,6 +10,7 @@ export const SECRET_KEYS = [
   'MCP_WRITE_TOKEN',
   'INITIAL_OWNER_PASSWORD',
   'POSTGRES_PASSWORD',
+  'CLAUDE_CODE_OAUTH_TOKEN',
 ] as const;
 
 /** Connection variables when DATABASE_URL is not used (the standard layout's POSTGRES_* set). */
@@ -144,6 +145,28 @@ const schema = z
     TRUST_PROXY: z.string().trim().optional(),
     /** Password for the bootstrap owner created on an empty database (default "owner", must be changed at first sign-in). */
     INITIAL_OWNER_PASSWORD: optionalSecret,
+
+    // --- Claude coin agent: owner-only, on demand (docs/adr/0005-coin-agent.md) -------------
+    /**
+     * Claude subscription OAuth token from `claude setup-token`: the agent's only credential. API
+     * keys are refused; the agent's process never sees ANTHROPIC_API_KEY (`buildAgentEnv`).
+     */
+    CLAUDE_CODE_OAUTH_TOKEN: optionalSecret,
+    /** false switches the agent off: every run is refused, even with a token. */
+    AGENT_ENABLED: bool.default(true),
+    AGENT_MODEL: z.string().trim().min(1).default('claude-opus-5-5'),
+    /** Tried when the model is overloaded or declines; empty = no fallback. */
+    AGENT_FALLBACK_MODEL: z.string().trim().default('claude-opus-4-8'),
+    AGENT_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('high'),
+    /** At most this many runs, all owners together, in any rolling AGENT_WINDOW_HOURS. */
+    AGENT_MAX_RUNS: z.coerce.number().int().min(1).max(100).default(5),
+    AGENT_WINDOW_HOURS: z.coerce.number().int().min(1).max(168).default(12),
+    AGENT_MAX_TURNS: z.coerce.number().int().min(2).max(40).default(12),
+    AGENT_TIMEOUT_SECONDS: z.coerce.number().int().min(30).max(1800).default(300),
+    /** Cost cap of one run at list prices (the SDK's estimate; a subscription is not billed per run). */
+    AGENT_MAX_BUDGET_USD: z.coerce.number().min(0.1).max(50).default(2),
+    /** HOME, configuration and temporary files of the agent's Claude Code process. */
+    AGENT_STATE_DIR: z.string().trim().min(1).default('var/agent'),
   })
   .superRefine((c, ctx) => {
     if (!c.DATABASE_URL) {
@@ -204,6 +227,20 @@ const schema = z
         code: 'custom',
         path: ['MCP_WRITE_TOKEN'],
         message: 'must be at least 24 characters',
+      });
+    }
+    if (c.CLAUDE_CODE_OAUTH_TOKEN && /^sk-ant-(api|admin)/i.test(c.CLAUDE_CODE_OAUTH_TOKEN)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['CLAUDE_CODE_OAUTH_TOKEN'],
+        message:
+          'must be a Claude subscription OAuth token from `claude setup-token`, not an API key',
+      });
+    } else if (c.CLAUDE_CODE_OAUTH_TOKEN && c.CLAUDE_CODE_OAUTH_TOKEN.length < 20) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['CLAUDE_CODE_OAUTH_TOKEN'],
+        message: 'is too short to be a token from `claude setup-token`',
       });
     }
   })
