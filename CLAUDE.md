@@ -46,6 +46,15 @@ never real orders. Spec: `docs/strategy-two-tier-vmc.md`. Purpose and open decis
   `data:read`); give any new route that is not plain market data a `@RequirePermission(...)`. The
   role table is `modules/auth/permissions.ts`. Never weaken the last-active-owner rules in
   `UsersService`. An empty database gets `owner` / `owner` (must change) on server start.
+- **Dashboard** (`front/`, `docs/adr/0006-react-dashboard.md`): React 19 + strict TypeScript + Vite +
+  React Router, its own package and container (`front/Dockerfile`: nginx serves the build and
+  proxies `/api`, `/mcp`, `/healthz` to the `api` container). The NestJS app is API-only; another
+  dashboard host needs `CORS_ORIGINS`. Pages are paths, list state is query params
+  (`useQueryState`, `lib/routes.ts`), a coin is `/coins/:cmcId`. API calls only through
+  `lib/api.ts` (cookie session, `apiUrl()` for links). Keep it CSP-clean (`front/nginx/`): no
+  inline scripts or styles (React `style` props are fine), no `dangerouslySetInnerHTML`, charts as
+  hand-drawn SVG, TradingView only as the sandboxed iframe. Shared pieces in
+  `front/src/{lib,components,state,types}`, one folder per page in `front/src/features/`.
 - **The only LLM is the Claude coin agent** (`src/modules/agent/`, `docs/adr/0005-coin-agent.md`):
   it runs on an owner's request for one coin (`agent:use`), at most `AGENT_MAX_RUNS` (5) per
   rolling `AGENT_WINDOW_HOURS` (12), with read-only tools bound to that coin, and stores its view
@@ -60,10 +69,14 @@ never real orders. Spec: `docs/strategy-two-tier-vmc.md`. Purpose and open decis
 npm ci && cp .env.example .env         # first time
 docker compose up -d postgres           # DB on 127.0.0.1:5433
 npm run db:migrate                      # build + apply committed migrations (db:status lists them)
+npm run db:pull-prod                    # replace the local DB with production's (backs up local first), then migrate
 npm run cli -- run-once                 # one pipeline run (fixture source by default)
 npm run cli -- tier1:trace --id 990001  # calculation trace for one coin
 npm run cli -- forward:status           # forward test: star groups, coverage, warnings
-npm start                               # dashboard http://127.0.0.1:3000 + scheduler (sign in: owner / owner first)
+npm start                               # API http://127.0.0.1:3000 + scheduler (no pages)
+npm run front:install && npm run front:dev  # dashboard http://127.0.0.1:5173, proxies /api to :3000 (sign in: owner / owner first)
+npm run front:typecheck && npm run front:build  # strict TS check; production bundle (front/dist)
+docker compose --profile app up -d --build  # api :3000 + web :8080 in containers
 npm run cli -- users:reset-owner        # recover the owner sign-in (owner / owner, must change)
 npm test                                # unit specs, src/**/*.spec.ts (no DB, no network)
 npm run test:e2e                        # DB tests, test/**/*.e2e-spec.ts (coins_test; alias test:db)

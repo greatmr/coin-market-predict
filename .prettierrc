@@ -5,7 +5,9 @@
   "printWidth": 100,
   "tabWidth": 2,
   "arrowParens": "always",
-  "plugins": ["@trivago/prettier-plugin-sort-imports"],
+  "plugins": [
+    "@trivago/prettier-plugin-sort-imports"
+  ],
   "importOrder": [
     "^reflect-metadata$",
     "<THIRD_PARTY_MODULES>",
@@ -18,5 +20,28 @@
   ],
   "importOrderSeparation": true,
   "importOrderSortSpecifiers": true,
-  "importOrderParserPlugins": ["typescript", "decorators-legacy"]
+  "importOrderParserPlugins": [
+    "typescript",
+    "decorators-legacy"
+  ],
+  "overrides": [
+    {
+      "files": [
+        "front/**/*.ts",
+        "front/**/*.tsx"
+      ],
+      "options": {
+        "importOrder": [
+          "<THIRD_PARTY_MODULES>",
+          "^(\\.\\./)+(lib|state|components|types)/",
+          "^\\.\\./",
+          "^\\./"
+        ],
+        "importOrderParserPlugins": [
+          "typescript",
+          "jsx"
+        ]
+      }
+    }
+  ]
 }

@@ -2,7 +2,9 @@ import {
   type CanActivate,
   type ExecutionContext,
   ForbiddenException,
+  Inject,
   Injectable,
+  Optional,
   SetMetadata,
   UnauthorizedException,
   createParamDecorator,
@@ -12,6 +14,8 @@ import type { Request } from 'express';
 
 import { ErrorCodes } from '../../common/dto/error-codes.js';
 import { assertTrustedWrite } from '../../common/security/write-guard.js';
+
+import { APP_CONFIG, type AppConfig } from '../../config/index.js';
 
 import { AuthService } from './auth.service.js';
 import type { AppUser } from './entities/app-user.entity.js';
@@ -70,6 +74,8 @@ export class AuthGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly auth: AuthService,
+    /** CORS_ORIGINS: dashboard origins on another host whose writes are trusted. */
+    @Optional() @Inject(APP_CONFIG) private readonly cfg?: Pick<AppConfig, 'CORS_ORIGINS'>,
   ) {}
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
@@ -77,7 +83,7 @@ export class AuthGuard implements CanActivate {
     const req = ctx.switchToHttp().getRequest<AuthedRequest>();
     const path = req.originalUrl.split('?')[0] ?? '';
     if (!path.startsWith('/api/')) return true;
-    if (UNSAFE.has(req.method)) assertTrustedWrite(req);
+    if (UNSAFE.has(req.method)) assertTrustedWrite(req, this.cfg?.CORS_ORIGINS ?? []);
 
     const targets = [ctx.getHandler(), ctx.getClass()];
     const token = readCookie(req.headers.cookie, SESSION_COOKIE);

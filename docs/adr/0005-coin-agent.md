@@ -89,4 +89,5 @@ signals (intend.md).
 - The Docker image grows by the Agent SDK's native CLI binary (about 330 MB). The Dockerfile drops
   the unused musl build.
 - TradingView data reaches only the viewer's browser. Nothing from it is stored or used by Tier 1.
-  If TradingView changes its embed URL format, only `tvFrame` in `public/app.js` needs updating.
+  If TradingView changes its embed URL format, only `tvFrame` in `front/src/features/coin/panels/ChartPanel.tsx` needs
+  updating.

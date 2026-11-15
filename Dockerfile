@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1
-# Coins Predicts application image. Secrets are NEVER copied into the image: they are read at
-# runtime from environment variables or mounted files (*_FILE), see docker-compose.yml.
+# Coins Predicts API image (NestJS: REST /api, MCP /mcp, the scheduler, the Telegram bot, the CLI).
+# The dashboard has its own image (front/Dockerfile) and talks to this one over REST.
+# Secrets are NEVER copied into the image: they are read at runtime from environment variables or
+# mounted files (*_FILE), see docker-compose.yml.
 
 FROM node:24-bookworm-slim AS build
 WORKDIR /app
@@ -15,8 +17,7 @@ RUN npx tsc -p tsconfig.build.json && npm prune --omit=dev \
     && rm -rf node_modules/@anthropic-ai/claude-agent-sdk-linux-*-musl
 
 FROM node:24-bookworm-slim AS runtime
-ENV NODE_ENV=production \
-    COINS_PUBLIC_DIR=/app/public
+ENV NODE_ENV=production
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tini \
     && rm -rf /var/lib/apt/lists/*
@@ -25,7 +26,6 @@ COPY --from=build --chown=node:node /app/dist ./dist
 COPY --chown=node:node package.json ./
 # Versioned Tier 1 classification / LBank mapping overrides (TIER1_OVERRIDES_FILE).
 COPY --chown=node:node config ./config
-COPY --chown=node:node public ./public
 COPY --chown=node:node docker/entrypoint.sh ./docker/entrypoint.sh
 # var/exports holds the per-batch CSV/XLSX exports (TIER1_EXPORT_DIR); mount a volume to keep them.
 # var/agent is the Claude coin agent's HOME and configuration (AGENT_STATE_DIR), private to node.

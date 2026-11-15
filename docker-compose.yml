@@ -1,6 +1,8 @@
 # Coins Predicts local stack.
 #   Database only (host-based NestJS):   docker compose up -d postgres
 #   Full stack in containers:            docker compose --profile app up -d --build
+#     web  http://127.0.0.1:${WEB_PORT:-8080}  dashboard (nginx), proxies /api, /mcp, /healthz to api
+#     api  http://127.0.0.1:${API_PORT:-3000}  NestJS REST API, scheduler, Telegram bot
 # History lives in the named volume `coins_pgdata`. Never remove it as a troubleshooting step;
 # see README "Backup and restore".
 name: coins-predicts
@@ -25,7 +27,7 @@ services:
       retries: 20
       start_period: 10s
 
-  app:
+  api:
     profiles: ["app"]
     build:
       context: .
@@ -43,15 +45,31 @@ services:
       PORT: 3000
       # Applies pending TypeORM migrations before the app starts (docker/entrypoint.sh).
       RUN_MIGRATIONS: "true"
+      # Requests arrive through the web container (private Docker network) or from this machine.
+      TRUST_PROXY: "loopback, uniquelocal"
       # Secrets are mounted at runtime, never baked into the image.
       TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
     secrets:
       - telegram_bot_token
     ports:
-      - "127.0.0.1:${APP_PORT:-3000}:3000"
+      - "127.0.0.1:${API_PORT:-3000}:3000"
     volumes:
       # Per-batch CSV/XLSX exports (var/exports). The database keeps every result regardless.
       - coins_app_var:/app/var
+
+  web:
+    profiles: ["app"]
+    build:
+      context: ./front
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      API_UPSTREAM: http://api:3000
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8080}:8080"
 
 secrets:
   # Create this file locally (git- and docker-ignored). An empty file is allowed: the app then

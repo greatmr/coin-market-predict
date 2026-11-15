@@ -1,5 +1,7 @@
 node_modules
 dist
+# The dashboard is built from front/ with its own Dockerfile and context.
+front
 coverage
 var
 backups

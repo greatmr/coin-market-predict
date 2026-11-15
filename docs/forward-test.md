@@ -272,8 +272,8 @@ alias dc='docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod'
 dc exec -T postgres pg_dump -U coins coins | gzip > ~/coins-$(date +%F)-pre-m008.sql.gz
 git pull
 dc up -d --build                          # applies M008, then starts the app
-dc exec app node dist/cli.js db:status    # all migrations applied, M008 included
-dc exec app node dist/cli.js forward:status
+dc exec api node dist/cli.js db:status    # all migrations applied, M008 included
+dc exec api node dist/cli.js forward:status
 ```
 Events appear from the next hourly run whose Review Queue is `PUBLISHED`; the first outcomes
 appear the day after; the first FINAL events about eight days after deployment. Signals from

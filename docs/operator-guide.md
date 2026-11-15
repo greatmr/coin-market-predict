@@ -12,7 +12,8 @@ How to run the system, read its output, and record reviews. The rules themselves
 docker compose up -d postgres && npm run db:migrate   # builds, then applies committed migrations
 npm run cli -- config:check            # secrets shown only as <set>/<not set>
 npm run cli -- run-once                # one hourly batch now
-npm start                              # dashboard http://127.0.0.1:3000 + hourly scheduler
+npm start                              # API http://127.0.0.1:3000 + hourly scheduler
+npm run front:install && npm run front:dev     # dashboard http://127.0.0.1:5173 (talks to the API on :3000)
 ```
 
 - **Synthetic** (`DATA_SOURCE=fixture`, default): a made-up market of 1,301 coins (CMC-shaped ids
@@ -144,7 +145,7 @@ npm run cli -- users:list                          # who exists, roles, locked o
 npm run cli -- users:reset-owner                   # "owner" / "owner" again: active, unlocked, must change
 npm run cli -- users:password --username ana       # new temporary password, unlocks the account
 npm run cli -- users:add --username ana --role reviewer
-docker compose exec app node dist/cli.js users:reset-owner   # the same inside the Docker app
+docker compose exec api node dist/cli.js users:reset-owner   # the same inside the Docker api
 ```
 
 **On a server.** Put the dashboard behind HTTPS (nginx or Caddy) and set `TRUST_PROXY=loopback` (or
@@ -299,6 +300,26 @@ npm run db:status     # applied and pending migrations; exits 1 while any is pen
 npm run db:migrate    # applies pending migrations (Docker: RUN_MIGRATIONS=true at container start)
 ```
 
+### Copy production to the local database
+
+`npm run db:pull-prod` replaces the local database with the latest production data, then applies
+the local migrations production does not have yet (`scripts/db/pull-prod.sh`):
+
+1. Streams a read-only `pg_dump` of the production database over `ssh jahantalab` (`PROD_SSH`,
+   `PROD_DIR` override the host and path) into `backups/coins-prod-<time>.dump`. Nothing is
+   written on the server.
+2. Backs up the local database to `backups/coins-local-before-pull-<time>.dump`.
+3. Drops and recreates the local database (the one in `DATABASE_URL`, which must be the Docker
+   Postgres on `127.0.0.1:${POSTGRES_PORT:-5433}`), restores the dump and runs `db:migrate`.
+4. Clears sign-in sessions and the pipeline lease (they belong to the server) and puts back the
+   local Telegram members and bot offset (`--server-telegram` keeps production's).
+
+It asks you to type the database name first (`--yes` skips that) and refuses while the app or a
+CLI command runs locally. `--download-only` only saves the dump; `--from <file>` restores a saved
+one. Afterwards the local copy holds production's users: sign in with your production account.
+Local runs then add their own batches on top; with live Telegram in `.env` they also send reports,
+so use `TELEGRAM_MODE=dry_run` locally if the server already reports to the same people.
+
 The schema changes only through new files in `src/database/migrations/`
 ([ADR-0001](adr/0001-typeorm-modular-layout.md)); an applied migration is never edited.
 `npm run db:revert` undoes the last migration _and drops what it created_: development databases
@@ -312,7 +333,7 @@ as `"MarketSnapshot"`). Their market data is not migrated (the pipeline refills 
 registry, the monthly request budget, the approved Telegram members and the bot's update offset
 are carried over, so members keep their reports and the bot does not re-run old commands:
 
-1. Stop the app (`npm start`, or `docker compose --profile app stop app`). With the Docker app
+1. Stop the app (`npm start`, or `docker compose --profile app stop api`). With the Docker app
    profile, finish these steps before starting the new image: its entrypoint migrates and starts
    the bot straight away.
 2. Back up (above).

@@ -52,6 +52,22 @@ describe('configuration', () => {
     expect(loadConfig({ ...base, HOST: '0.0.0.0' }).HOST).toBe('0.0.0.0');
   });
 
+  it('parses CORS_ORIGINS as exact origins (empty: same origin only) and refuses anything else', () => {
+    expect(loadConfig(base).CORS_ORIGINS).toEqual([]);
+    expect(loadConfig({ ...base, CORS_ORIGINS: ' ' }).CORS_ORIGINS).toEqual([]);
+    expect(
+      loadConfig({ ...base, CORS_ORIGINS: 'https://predict.example.com/, http://127.0.0.1:5173' })
+        .CORS_ORIGINS,
+    ).toEqual(['https://predict.example.com', 'http://127.0.0.1:5173']);
+    for (const bad of [
+      'predict.example.com',
+      'https://predict.example.com/app',
+      '*',
+      'ftp://x.example',
+    ])
+      expect(() => loadConfig({ ...base, CORS_ORIGINS: bad })).toThrow(/CORS_ORIGINS/);
+  });
+
   it('validates the session and bootstrap-owner settings and masks the owner password', () => {
     const c = loadConfig(base);
     expect([c.SESSION_TTL_HOURS, c.COOKIE_SECURE, c.INITIAL_OWNER_PASSWORD]).toEqual([

@@ -3,7 +3,7 @@ paths:
   - "src/modules/agent/**"
   - "src/modules/dashboard/agent.controller.ts"
   - "src/modules/read-model/tradingview.ts"
-  - "public/**"
+  - "front/src/features/coin/**"
 ---
 # Claude coin agent and live chart (docs/adr/0005-coin-agent.md)
 
@@ -23,7 +23,8 @@ Agent
   advisory lock in `AgentService.start`. History rows are immutable once finished (M010 trigger).
 
 Live chart
-- TradingView widgets only as sandboxed cross-origin iframes (`tvFrame` in `public/app.js`); no
-  third-party `<script>`, CSP `frame-src` lists only the widget origin.
+- TradingView widgets only as sandboxed cross-origin iframes (`tvFrame` in
+  `front/src/features/coin/panels/ChartPanel.tsx`); no third-party `<script>`, CSP `frame-src`
+  lists only the widget origin.
 - Symbols are proxies (TradingView has no LBank Spot): CMC venue markets for the CMC id first,
   labelled fallbacks after. Never match an asset by ticker alone without saying so.

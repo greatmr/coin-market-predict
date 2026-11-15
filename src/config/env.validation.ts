@@ -143,6 +143,21 @@ const schema = z
     COOKIE_SECURE: z.enum(['auto', 'true', 'false']).default('auto'),
     /** Express "trust proxy" behind a reverse proxy (e.g. loopback, 1): correct client IP and HTTPS detection. */
     TRUST_PROXY: z.string().trim().optional(),
+    /**
+     * Browser origins allowed to call /api from another host, comma-separated exact origins (e.g.
+     * https://predict.example.com when the API runs on api.predict.example.com). Empty: same origin
+     * only (the web container proxies /api, the default). Credentials (the session cookie) are allowed
+     * for these origins, and their writes pass the write guard.
+     */
+    CORS_ORIGINS: z
+      .string()
+      .optional()
+      .transform((v) =>
+        (v ?? '')
+          .split(',')
+          .map((o) => o.trim().replace(/\/+$/, ''))
+          .filter(Boolean),
+      ),
     /** Password for the bootstrap owner created on an empty database (default "owner", must be changed at first sign-in). */
     INITIAL_OWNER_PASSWORD: optionalSecret,
 
@@ -221,6 +236,21 @@ const schema = z
         path: ['MCP_READ_TOKEN'],
         message: 'must be at least 24 characters',
       });
+    }
+    for (const origin of c.CORS_ORIGINS) {
+      let ok: boolean;
+      try {
+        const u = new URL(origin);
+        ok = (u.protocol === 'https:' || u.protocol === 'http:') && u.origin === origin;
+      } catch {
+        ok = false;
+      }
+      if (!ok)
+        ctx.addIssue({
+          code: 'custom',
+          path: ['CORS_ORIGINS'],
+          message: `"${origin}" is not an origin (scheme://host[:port], no path)`,
+        });
     }
     if (c.MCP_WRITE_TOKEN && c.MCP_WRITE_TOKEN.length < 24) {
       ctx.addIssue({
