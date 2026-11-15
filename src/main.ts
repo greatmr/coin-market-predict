@@ -4,7 +4,6 @@ import { RequestMethod } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { createServer } from 'node:net';
-import { resolve } from 'node:path';
 
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter.js';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor.js';
@@ -62,13 +61,21 @@ async function main() {
   app.setGlobalPrefix('api', { exclude: GLOBAL_PREFIX_EXCLUDES });
   app.useGlobalFilters(new AllExceptionsFilter());
   app.useGlobalInterceptors(new ResponseInterceptor());
-  // The dashboard (static, same origin) — `public/`.
-  app.useStaticAssets(resolve(process.env.COINS_PUBLIC_DIR ?? 'public'), { index: 'index.html' });
+  // API only: the dashboard (front/) is served by its own web container, which also proxies /api
+  // on the same origin. A dashboard on another host is allowed by CORS_ORIGINS (with the cookie).
+  if (cfg.CORS_ORIGINS.length)
+    app.enableCors({
+      origin: cfg.CORS_ORIGINS,
+      credentials: true,
+      methods: ['GET', 'POST', 'PATCH', 'DELETE'],
+      allowedHeaders: ['content-type', 'accept'],
+      maxAge: 600,
+    });
   app.enableShutdownHooks();
   await app.listen(cfg.PORT, cfg.HOST);
   const d = describeConfig(cfg);
   logger.log(
-    `Coins Predicts on http://${cfg.HOST}:${cfg.PORT} — data=${d.DATA_SOURCE}${cfg.DATA_SOURCE === 'fixture' ? ' (SYNTHETIC)' : ''}, strategy=Two-Tier VMC (Tier 1 scan + human review), telegram=${d.TELEGRAM_MODE}, scheduler=${cfg.SCHEDULER_ENABLED ? 'on' : 'off'}`,
+    `Coins Predicts API on http://${cfg.HOST}:${cfg.PORT} — data=${d.DATA_SOURCE}${cfg.DATA_SOURCE === 'fixture' ? ' (SYNTHETIC)' : ''}, strategy=Two-Tier VMC (Tier 1 scan + human review), telegram=${d.TELEGRAM_MODE}, scheduler=${cfg.SCHEDULER_ENABLED ? 'on' : 'off'}`,
     'Bootstrap',
   );
 }

@@ -18,7 +18,7 @@ return. The only LLM call is the Claude coin agent, run when an owner asks for o
                  │  ReviewService: append-only Tier 1 / Tier 2 review records, LBank decisions    │
                  │  ForwardTest: star events from the published queue, daily High update          │
                  │                                                                                │
-                 │ REST /api/* ─▶ dashboard (public/)   MCP /mcp + stdio (read-only)   Telegram   │
+                 │ REST /api/* ─▶ web (front/, nginx)   MCP /mcp + stdio (read-only)   Telegram   │
                  └──────────────────────────────────────┬─────────────────────────────────────────┘
                                                         ▼
                                               PostgreSQL (source of truth)
@@ -178,7 +178,9 @@ cannot request access. State lives in `app_state` key `telegram.access`
 decision in `intend.md`: confirm the data provider's terms.
 
 ## MCP vs dashboard boundary
-- **Dashboard → REST** (`/api/*`) reading `ReadModelService`. Responses are
+- **Dashboard → REST** (`/api/*`) reading `ReadModelService`. The dashboard is a React + TypeScript app in
+  `front/`, deployed as its own container (`web`, nginx) that proxies `/api` to the API on the same
+  origin, or calls an API host allowed by `CORS_ORIGINS` ([ADR-0006](adr/0006-react-dashboard.md)). Responses are
   `{ data, errors }`; an error carries a stable `code` (`common/dto/error-codes.ts`) and every
   body, query and path parameter is validated with Zod (400 `VALIDATION_FAILED`). Every `/api`
   route needs a signed-in user (401 `AUTH_REQUIRED`) whose role has the route's permission (403

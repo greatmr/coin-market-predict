@@ -59,8 +59,10 @@
   --r-lg: 22px;
   --r-md: 14px;
   --r-sm: 10px;
-  --font: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
-  --font-round: ui-rounded, 'SF Pro Rounded', 'Nunito', system-ui, -apple-system, sans-serif;
+  /* Inter (self-hosted, variable weight + optical size; @fontsource-variable/inter): one family on
+     every platform, tabular figures for aligned numbers, display cut for large text. */
+  --font: 'Inter Variable', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --font-display: var(--font);
   --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
 
@@ -74,6 +76,8 @@
   --glass: color-mix(in srgb, var(--secondary-100) 6%, transparent);
   --glass-strong: color-mix(in srgb, var(--secondary-100) 10%, transparent);
   --glass-solid: color-mix(in srgb, var(--secondary-800) 90%, transparent);
+  /* Scrolling tables: translucent without a backdrop blur (see .panel.flush). */
+  --table-surface: color-mix(in srgb, var(--secondary-800) 70%, transparent);
   --edge: color-mix(in srgb, var(--secondary-100) 12%, transparent);
   --edge-strong: color-mix(in srgb, var(--secondary-100) 22%, transparent);
   --sheen: color-mix(in srgb, var(--secondary-100) 8%, transparent);
@@ -111,6 +115,7 @@
     --glass: color-mix(in srgb, var(--secondary-100) 60%, transparent);
     --glass-strong: color-mix(in srgb, var(--secondary-100) 85%, transparent);
     --glass-solid: color-mix(in srgb, var(--secondary-100) 95%, transparent);
+    --table-surface: color-mix(in srgb, var(--secondary-100) 82%, transparent);
     --edge: color-mix(in srgb, var(--secondary-800) 10%, transparent);
     --edge-strong: color-mix(in srgb, var(--secondary-800) 18%, transparent);
     --sheen: color-mix(in srgb, var(--secondary-100) 80%, transparent);
@@ -146,6 +151,7 @@
   --glass: color-mix(in srgb, var(--secondary-100) 60%, transparent);
   --glass-strong: color-mix(in srgb, var(--secondary-100) 85%, transparent);
   --glass-solid: color-mix(in srgb, var(--secondary-100) 95%, transparent);
+  --table-surface: color-mix(in srgb, var(--secondary-100) 82%, transparent);
   --edge: color-mix(in srgb, var(--secondary-800) 10%, transparent);
   --edge-strong: color-mix(in srgb, var(--secondary-800) 18%, transparent);
   --sheen: color-mix(in srgb, var(--secondary-100) 80%, transparent);
@@ -186,7 +192,10 @@ body {
   color: var(--text);
   background: linear-gradient(160deg, var(--bg-1), var(--bg-2)) fixed;
   font-variant-numeric: tabular-nums;
+  font-optical-sizing: auto;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 body.drawer-open {
   overflow: hidden;
@@ -194,7 +203,7 @@ body.drawer-open {
 h1,
 h2,
 h3 {
-  font-family: var(--font-round);
+  font-family: var(--font-display);
   margin: 0;
   letter-spacing: -0.01em;
 }
@@ -236,6 +245,25 @@ svg {
 .mono {
   font-family: var(--font-mono);
   font-size: 12px;
+}
+/* Tabular figures (body) line numbers up in columns; prose and labels read better proportional. */
+p,
+h1,
+h2,
+h3,
+.hint,
+.badge,
+.page-sub {
+  font-variant-numeric: proportional-nums;
+}
+/* Tickers and ids: tailed l, serifed I and a slashed zero keep symbols like IL, 1INCH or 0X0 apart. */
+.coin-text b,
+.qcard .coin-text b,
+.mono {
+  font-feature-settings:
+    'cv05' 1,
+    'cv08' 1,
+    'zero' 1;
 }
 .error {
   color: var(--bad);
@@ -314,7 +342,16 @@ svg {
 }
 .panel.flush {
   padding: 0;
-  overflow: hidden;
+  /* A scroll box inside a backdrop-blurred, clipped, rounded panel is costly to repaint while it
+     scrolls (blank rows in Safari, dropped frames elsewhere): this panel gets a plain translucent
+     surface, and the scroll box rounds its own corners. */
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: var(--table-surface);
+}
+.panel.flush > .table-wrap,
+.panel.flush > .sheet-scatter {
+  border-radius: inherit;
 }
 .panel-head {
   display: flex;
@@ -377,7 +414,7 @@ svg {
 }
 .mark::after {
   content: 'Coins Predicts';
-  font: 650 15px var(--font-round);
+  font: 650 15px var(--font-display);
 }
 .mark:hover {
   text-decoration: none;
@@ -388,7 +425,7 @@ svg {
   gap: 2px;
   flex: 1;
 }
-.rail-items button {
+.rail-items .rail-link {
   display: flex;
   align-items: center;
   gap: 11px;
@@ -405,7 +442,7 @@ svg {
     background 0.15s,
     color 0.15s;
 }
-.rail-items button svg {
+.rail-items .rail-link svg {
   width: 19px;
   height: 19px;
   flex: none;
@@ -415,24 +452,27 @@ svg {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-.rail-items button:hover {
+.rail-items .rail-link {
+  text-decoration: none;
+}
+.rail-items .rail-link:hover {
   background: var(--glass-strong);
   color: var(--text);
 }
-.rail-items button[aria-selected='true'] {
+.rail-items .rail-link[aria-current='page'] {
   background: var(--accent-soft);
   color: var(--text);
   box-shadow: inset 0 0 0 1px var(--edge);
 }
-.rail-items button[aria-selected='true'] svg {
+.rail-items .rail-link[aria-current='page'] svg {
   stroke: var(--accent);
 }
 .rail-items .count {
   margin-left: auto;
-  font: 600 11.5px var(--font-round);
+  font: 600 11.5px var(--font-display);
   color: var(--muted);
 }
-.rail-items button[aria-selected='true'] .count {
+.rail-items .rail-link[aria-current='page'] .count {
   color: var(--accent);
 }
 #t-queue .count {
@@ -694,7 +734,7 @@ footer {
   padding: 0 18px;
 }
 .ring-center b {
-  font: 700 28px var(--font-round);
+  font: 700 28px var(--font-display);
   letter-spacing: -0.02em;
 }
 .ring-center span {
@@ -842,7 +882,7 @@ progress.bar::-moz-progress-bar {
   stroke-dasharray: 2 4;
 }
 .funnel-value {
-  font: 700 24px var(--font-round);
+  font: 700 24px var(--font-display);
   fill: var(--text);
   letter-spacing: -0.02em;
 }
@@ -904,7 +944,7 @@ progress.bar::-moz-progress-bar {
   flex: 1;
 }
 .qcard-vmc b {
-  font: 700 24px var(--font-round);
+  font: 700 24px var(--font-display);
   color: var(--yes);
   letter-spacing: -0.02em;
 }
@@ -1130,7 +1170,7 @@ progress.bar::-moz-progress-bar {
   filter: drop-shadow(0 0 10px var(--glow-yes));
 }
 .now-label {
-  font: 650 12px var(--font-round);
+  font: 650 12px var(--font-display);
   fill: var(--text-2);
 }
 .now-label.hot {
@@ -1150,7 +1190,7 @@ progress.bar::-moz-progress-bar {
   stroke-width: 1;
 }
 .line-label {
-  font: 600 11.5px var(--font-round);
+  font: 600 11.5px var(--font-display);
 }
 .line-label.base {
   fill: var(--mean);
@@ -1233,7 +1273,7 @@ progress.bar::-moz-progress-bar {
   opacity: 0.25;
 }
 .donut-value {
-  font: 700 22px var(--font-round);
+  font: 700 22px var(--font-display);
   fill: var(--text);
 }
 .donut-label {
@@ -1383,7 +1423,7 @@ progress.bar::-moz-progress-bar {
 }
 .stack-label {
   grid-row: span 2;
-  font: 650 13px var(--font-round);
+  font: 650 13px var(--font-display);
   color: var(--text-2);
 }
 .stack-bar {
@@ -1685,9 +1725,10 @@ tr.clickable:focus-visible {
 }
 .panel.flush .table-wrap table th {
   position: sticky;
+  /* Near-opaque instead of blurring the rows that scroll under it on every frame. */
   background: var(--glass-solid);
-  -webkit-backdrop-filter: var(--blur);
-  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 .vmc-now {
   color: var(--text);
@@ -1985,7 +2026,7 @@ select option {
 }
 .review-form legend {
   padding: 0 6px;
-  font: 650 13px var(--font-round);
+  font: 650 13px var(--font-display);
   color: var(--text-2);
 }
 .review-form .wide {
@@ -2020,6 +2061,37 @@ select option {
 }
 #tab-forward .toolbar .row-actions {
   margin-left: auto;
+}
+/* The pass-pattern and points tables share a row: compact cells so seven columns fit half the page
+   without a sideways scroll, and band labels on one line. */
+#tab-forward .grid-2 .table-wrap th,
+#tab-forward .grid-2 .table-wrap td {
+  padding-left: 9px;
+  padding-right: 9px;
+}
+#tab-forward .grid-2 .table-wrap th:first-child,
+#tab-forward .grid-2 .table-wrap td:first-child {
+  padding-left: 14px;
+}
+/* Wide enough for "YES/YES/N/A" and "75–100 points" on one line; only the long
+   "incomplete score (lower bound)" band wraps. */
+#tab-forward .grid-2 .table-wrap td:first-child {
+  min-width: 8.2em;
+}
+/* Events: slightly tighter cells so the columns fit a desktop page on one line each. */
+#tab-forward .panel.flush th,
+#tab-forward .panel.flush td {
+  padding-left: 12px;
+  padding-right: 12px;
+}
+/* Every forward table keeps a row on one line (each scrolls sideways inside its box on narrow
+   screens), except the long points band and the free-text reasons of rejected triggers. */
+#tab-forward .table-wrap td {
+  white-space: nowrap;
+}
+#tab-forward .grid-2 .table-wrap td:first-child,
+#tab-forward > .panel:last-child .table-wrap td:last-child {
+  white-space: normal;
 }
 .fwd-ret {
   font-weight: 650;
@@ -2100,7 +2172,7 @@ select option {
   min-width: 0;
 }
 .tile b {
-  font: 650 18px var(--font-round);
+  font: 650 18px var(--font-display);
 }
 .tile-label {
   font-size: 12px;
@@ -2241,7 +2313,7 @@ select option {
 }
 .coin-price b {
   display: block;
-  font: 700 32px var(--font-round);
+  font: 700 32px var(--font-display);
   letter-spacing: -0.02em;
 }
 .coin-price span,
@@ -2255,7 +2327,7 @@ select option {
   gap: 2px;
 }
 .coin-vmc b {
-  font: 700 32px var(--font-round);
+  font: 700 32px var(--font-display);
   color: var(--yes);
   letter-spacing: -0.02em;
 }
@@ -2272,7 +2344,7 @@ select option {
   line-height: 1.3;
 }
 .win-days {
-  font: 650 12.5px var(--font-round);
+  font: 650 12.5px var(--font-display);
 }
 .win-val {
   font-size: 11.5px;
@@ -2393,7 +2465,7 @@ select option {
   border-radius: 999px;
   background: transparent;
   color: var(--text-2);
-  font: 600 13px var(--font-round);
+  font: 600 13px var(--font-display);
   cursor: pointer;
   transition:
     background 0.15s,
@@ -2409,7 +2481,7 @@ select option {
   box-shadow: inset 0 0 0 1px var(--edge);
 }
 .detail-tabs .count {
-  font: 600 11px var(--font-round);
+  font: 600 11px var(--font-display);
   padding: 1px 7px;
   border-radius: 99px;
   background: var(--glass-strong);
@@ -2455,7 +2527,7 @@ body.signed-out .shell {
   align-items: center;
   gap: 10px;
   margin-bottom: 22px;
-  font: 650 15px var(--font-round);
+  font: 650 15px var(--font-display);
 }
 .auth-mark svg {
   width: 30px;
@@ -2548,7 +2620,7 @@ body.signed-out .shell {
   display: grid;
   place-items: center;
   border-radius: 50%;
-  font: 700 12px var(--font-round);
+  font: 700 12px var(--font-display);
   background: var(--accent-soft);
   color: var(--accent);
 }
@@ -2789,7 +2861,7 @@ body.signed-out .shell {
   font-size: 12.5px;
 }
 .tip-head {
-  font: 650 12.5px var(--font-round);
+  font: 650 12.5px var(--font-display);
   margin-bottom: 6px;
 }
 .tip-row {
@@ -2896,14 +2968,14 @@ body.signed-out .shell {
     align-items: center;
   }
   .mark::after,
-  .rail-items button span,
+  .rail-items .rail-link span,
   .rail-items .count {
     display: none;
   }
   .mark {
     padding: 4px 0 12px;
   }
-  .rail-items button {
+  .rail-items .rail-link {
     justify-content: center;
     padding: 11px;
     position: relative;
@@ -2961,7 +3033,7 @@ body.signed-out .shell {
     gap: 0;
     overflow-x: auto;
   }
-  .rail-items button {
+  .rail-items .rail-link {
     width: auto;
     flex: 1 0 auto;
     padding: 10px 8px;
@@ -3051,7 +3123,7 @@ body.signed-out .shell {
 
 /* Tablet: the sidebar is icons only, so show each item's label as a tooltip (hover, focus, tap). */
 @media (min-width: 721px) and (max-width: 1100px) {
-  .rail-items button[data-label]::after {
+  .rail-items .rail-link[data-label]::after {
     content: attr(data-label);
     position: absolute;
     left: calc(100% + 14px);
@@ -3063,7 +3135,7 @@ body.signed-out .shell {
     background: var(--glass-solid);
     box-shadow: var(--shadow-lift);
     color: var(--text);
-    font: 600 12.5px var(--font-round);
+    font: 600 12.5px var(--font-display);
     white-space: nowrap;
     pointer-events: none;
     opacity: 0;
@@ -3072,9 +3144,9 @@ body.signed-out .shell {
       transform 0.12s;
     z-index: 30;
   }
-  .rail-items button[data-label]:hover::after,
-  .rail-items button[data-label]:focus-visible::after,
-  .rail-items button[data-label]:active::after {
+  .rail-items .rail-link[data-label]:hover::after,
+  .rail-items .rail-link[data-label]:focus-visible::after,
+  .rail-items .rail-link[data-label]:active::after {
     opacity: 1;
     transform: translate(0, -50%);
   }
@@ -3296,7 +3368,7 @@ body.signed-out .shell {
   padding: 4px 14px;
   border-radius: 999px;
   border: 1px solid var(--edge);
-  font: 600 14px var(--font-round);
+  font: 600 14px var(--font-display);
   color: var(--muted);
   white-space: nowrap;
 }
@@ -3375,4 +3447,13 @@ body.signed-out .shell {
     animation: none !important;
     transition: none !important;
   }
+}
+
+/* React port: forms disable their controls through a layout-neutral fieldset while saving. */
+fieldset.plain {
+  display: contents;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
 }

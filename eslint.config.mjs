@@ -9,7 +9,7 @@ import tseslint from 'typescript-eslint';
  * and randomness for secrets never comes from Math.random.
  */
 export default tseslint.config(
-  { ignores: ['dist/**', 'node_modules/**', 'var/**', 'public/**', 'graphify-out/**', 'eslint.config.mjs'] },
+  { ignores: ['dist/**', 'node_modules/**', 'var/**', 'front/**', 'graphify-out/**', 'eslint.config.mjs'] },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {

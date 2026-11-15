@@ -28,4 +28,18 @@ describe('dashboard write guard', () => {
   it('refuses non-JSON bodies (form posts are CORS-simple)', () => {
     expect(() => assertTrustedWrite(req({}, false))).toThrow(/JSON/);
   });
+
+  it('accepts a dashboard origin from CORS_ORIGINS, and only that exact origin', () => {
+    const trusted = ['https://predict.example.com'];
+    const from = (origin: string, site = 'same-site') =>
+      assertTrustedWrite(req({ origin, 'sec-fetch-site': site }), trusted);
+    expect(() => from('https://predict.example.com')).not.toThrow();
+    expect(() => from('https://predict.example.com', 'cross-site')).not.toThrow();
+    expect(() => from('http://predict.example.com')).toThrow(/Cross-origin/);
+    expect(() => from('https://evil.example.com')).toThrow(/Cross-origin/);
+    expect(() => from('https://evil.example', 'cross-site')).toThrow(/Cross-site/);
+    expect(() =>
+      assertTrustedWrite(req({ origin: 'https://predict.example.com' }, false), trusted),
+    ).toThrow(/JSON/);
+  });
 });

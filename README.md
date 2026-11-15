@@ -50,8 +50,10 @@ NestJS + TypeORM + PostgreSQL, native ESM. One module per area in `src/modules/`
 ingestion, daily-metrics, venues, scan, exports, reviews, pipeline, telegram, read-model,
 dashboard, mcp, app-state, auth, forward-test); the Two-Tier VMC rules are their own pure module,
 `src/modules/strategy`. Shared code is in `src/common`, configuration in `src/config`, the
-TypeORM setup and raw-SQL migrations in `src/database`. Details:
-[docs/architecture.md](docs/architecture.md#modules-src).
+TypeORM setup and raw-SQL migrations in `src/database`. The dashboard is a React + Vite app in
+`front/` (TypeScript, React Router), deployed as its own container and talking to the API over REST
+([ADR-0006](docs/adr/0006-react-dashboard.md)).
+Details: [docs/architecture.md](docs/architecture.md#modules-src).
 
 ## Setup
 ```bash
@@ -60,6 +62,8 @@ cp .env.example .env              # then edit; never commit .env
 docker compose up -d postgres     # PostgreSQL 17 on 127.0.0.1:5433, volume coins_pgdata
 npm run db:migrate                # builds, then applies the committed TypeORM migrations
 npm run cli -- config:check       # validates config; secrets shown as <set>/<not set>
+npm run front:install             # dashboard dependencies (front/)
+npm run front:typecheck           # strict TypeScript check of the dashboard
 ```
 A database created before 2026-11-06 still has the old Prisma tables: follow the one-time
 cut-over in [operator-guide § 9](docs/operator-guide.md#9-backup-restore-and-migrations) instead
@@ -68,8 +72,9 @@ of only running `db:migrate`.
 ## Run
 ```bash
 npm run cli -- run-once           # one batch for the current UTC hour
-npm start                         # dashboard http://127.0.0.1:3000 + hourly scheduler
-npm run dev                       # watch mode
+npm start                         # API http://127.0.0.1:3000 (/api, /mcp) + hourly scheduler
+npm run dev                       # watch mode (API + scheduler)
+npm run front:dev                 # dashboard http://127.0.0.1:5173 (hot reload; proxies /api to :3000)
 ```
 The scheduler runs `PIPELINE_CRON` (default minute 7 of every hour, UTC) and retries Telegram
 every 5 minutes. On startup it records missed hours and runs the current hour if needed.
@@ -135,10 +140,15 @@ RUN_LIVE_SOURCE=1 npm run test:live   # one page from CMC/CoinGecko APIs if keys
 ## Docker
 ```bash
 # Database only (host-based NestJS): see Setup.
-# Full stack in containers (the app binds 0.0.0.0; every page needs a sign-in):
+# Full stack in containers (every page needs a sign-in):
 mkdir -p secrets && touch secrets/telegram_bot_token
 docker compose --profile app up -d --build
+# dashboard http://127.0.0.1:8080 (web: nginx + the React build, proxies /api, /mcp to api)
+# API       http://127.0.0.1:3000 (api: NestJS)
 ```
+Two images: `api` (repo root `Dockerfile`) and `web` (`front/Dockerfile`). `web` serves the pages
+and forwards `/api`, `/mcp` and `/healthz` to `api`, so both share one origin; the API can also run
+on its own host (`CORS_ORIGINS`, see [docs/deployment.md](docs/deployment.md)).
 Secrets reach the container at runtime via `env_file` or mounted secret files; `.dockerignore`
 keeps `.env` and `secrets/` out of the build context. Exports persist in the `coins_app_var`
 volume.

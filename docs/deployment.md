@@ -10,7 +10,8 @@ Deploys are manual: update the code on the server, rebuild, restart. There is no
 | Project path on server | `/root/jahan/market-predict` (git clone) |
 | Compose file | `deploy/docker-compose.prod.yml` (project `coins-predicts-prod`) |
 | Config file (not in git) | `/root/jahan/market-predict/.env.prod` |
-| App port | `127.0.0.1:38417` → container `3000` (`APP_PORT` to change) |
+| Containers | `web` (dashboard, nginx) on `127.0.0.1:38417` → `8080` (`APP_PORT` to change); `api` (NestJS) on the private network only; `postgres` |
+| Request path | host Nginx → `web` → (`/api`, `/mcp`, `/healthz`) `api`; pages from `web` ([ADR-0006](adr/0006-react-dashboard.md)) |
 | Nginx | host Nginx; vhost `/etc/nginx/sites-available/predict.jahantalab.com`, TLS by certbot |
 | Volumes | `coins-predicts-prod_pgdata` (database), `coins-predicts-prod_app_var` (exports) |
 
@@ -48,7 +49,9 @@ alias dc='docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod'
    dc ps
    curl -fsS http://127.0.0.1:38417/healthz
    ```
-   Migrations run on container start (`RUN_MIGRATIONS=true`).
+   Migrations run on container start (`RUN_MIGRATIONS=true`). This builds two images: the API
+   (repo root) and the dashboard (`front/`, served by nginx); nothing else is needed on the host.
+   `/healthz` on port 38417 goes through the dashboard container to the API, so it checks both.
 4. **Nginx**:
    ```bash
    cp deploy/nginx/predict.jahantalab.com.conf /etc/nginx/sites-available/predict.jahantalab.com
@@ -64,19 +67,36 @@ alias dc='docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod'
    the proxy back on with SSL mode "Full (strict)".
 6. **Smoke test**: open the site and sign in as `admin`; optionally run one pipeline now:
    ```bash
-   dc exec app node dist/cli.js run-once
+   dc exec api node dist/cli.js run-once
    ```
    The scheduler also runs at minute 7 of every hour (UTC).
 
 ## Update
 ```bash
 cd /root/jahan/market-predict && git pull
-dc up -d --build
+dc up -d --build --remove-orphans
 ```
+`--remove-orphans` matters once, on the first update to the two-container layout (2026-11-15): it
+removes the old single `app` container, which otherwise keeps port 38417 and stops `web` from
+starting. The exports volume (`app_var`) is reused by `api`.
 Data survives: it lives in the named volumes. When the update brings a new migration (for example
 M008, the Star Event Forward Test), take the backup below first: the app applies migrations at
-container start. Check with `dc exec app node dist/cli.js db:status`; forward-test commands are in
+container start. Check with `dc exec api node dist/cli.js db:status`; forward-test commands are in
 [forward-test.md § 12](forward-test.md#12-runbook).
+
+## API on its own subdomain (optional)
+By default the dashboard and the API share `https://predict.jahantalab.com` (`web` proxies `/api`).
+To serve the API at `https://api.predict.jahantalab.com` instead (same site, so the session cookie
+still works):
+1. Add to `.env.prod`: `DASHBOARD_ORIGIN=https://predict.jahantalab.com` and
+   `API_ORIGIN=https://api.predict.jahantalab.com`.
+2. Start with the override:
+   `docker compose -f deploy/docker-compose.prod.yml -f deploy/docker-compose.api-subdomain.yml --env-file .env.prod up -d --build`
+   (it publishes the API on `127.0.0.1:38418`, sets `CORS_ORIGINS` on `api`, and `API_BASE_URL`
+   and `CSP_CONNECT_SRC` on `web`).
+3. DNS `api.predict` → the server, then install `deploy/nginx/api.predict.jahantalab.com.conf` and
+   run `certbot --nginx -d api.predict.jahantalab.com`.
+MCP clients then use `https://api.predict.jahantalab.com/mcp`. Without these steps nothing changes.
 
 ## Configuration notes
 - Edit `.env.prod`, then `dc up -d` (recreates the app with the new values).
@@ -96,11 +116,14 @@ container start. Check with `dc exec app node dist/cli.js db:status`; forward-te
 ## Operations
 ```bash
 dc ps                              # status / health
-dc logs -f --tail 100 app          # app logs
-dc restart app
+dc logs -f --tail 100 api          # API logs (web: dc logs web)
+dc restart api web
 dc down                            # stop (keeps data)
 ```
 **Never run `dc down -v`**: it deletes the database volume.
+
+Copy the production data to a local machine: `npm run db:pull-prod` there (needs `ssh jahantalab`;
+`docs/operator-guide.md` § 9).
 
 Database backup (restore steps: `docs/operator-guide.md`):
 ```bash
@@ -111,10 +134,12 @@ dc exec -T postgres pg_dump -U coins coins | gzip > ~/coins-$(date +%F).sql.gz
 
 | Symptom | Cause / fix |
 |---|---|
-| `exec` says "container is restarting" | Crash loop: read `dc logs --tail 40 app`. |
+| `exec` says "container is restarting" | Crash loop: read `dc logs --tail 40 api`. |
 | Log: `Invalid configuration: TELEGRAM_MODE=live requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID` | Add both to `.env.prod`, or set `TELEGRAM_MODE=dry_run`; then `dc up -d`. |
 | `.env.prod` / `POSTGRES_PASSWORD` error from compose | File missing or the variable is empty. |
 | `port is already allocated` on 38417 | Another service took it: set `APP_PORT=<free port>` in `.env.prod` and the same port in the Nginx `proxy_pass`. |
 | Site returns nothing / connection closed | Vhost not enabled, or the host is not matched (the default server returns 444): check `sites-enabled` and the DNS record. |
-| 502 from Nginx | App not healthy: `dc ps`, `curl http://127.0.0.1:38417/healthz`. |
+| 502 from Nginx | `web` not running: `dc ps`, `curl http://127.0.0.1:38417/web-healthz`. |
+| Dashboard loads, every request fails / "API unreachable" | `api` not healthy: `dc logs --tail 40 api`; `curl http://127.0.0.1:38417/healthz` (through `web`). |
+| `port is already allocated` on 38417 right after updating | The old single `app` container still holds it: `dc up -d --remove-orphans`. |
 | Password change for Postgres has no effect | The password is only applied when the volume is first created. Change it inside Postgres with `ALTER USER`, then update `.env.prod`. |
