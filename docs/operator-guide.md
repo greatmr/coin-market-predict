@@ -44,8 +44,15 @@ exports and the Telegram summary. Missed hours are recorded, never invented.
 
 The queue, eligible and needs-review lists switch between **Table** and **Scatter** (current VMC
 against the coin's own 30-day mean on log scales, with the 1.5× line; click a dot to open the
-coin). **Find a coin** (⌘K / Ctrl K, or `/`) searches every known coin by symbol, name or CMC id.
-The theme button at the bottom of the rail cycles auto / light / dark.
+coin). **Find a coin** — the search at the top centre of every page (⌘K / Ctrl K, or `/`) —
+searches every known coin by symbol, name or CMC id.
+
+The sidebar groups the sections into *Screen*, *Data & operations* and *Settings* (Telegram,
+users, your account and *Sign out*); its foot shows the data source and ruleset, the theme button
+(auto / light / dark) and the collapse button (desktop: icons only, remembered; tablet: opens the
+full sidebar over the page). On phones the bottom bar keeps Overview, Review queue, Forward test
+and Data; **More** opens the other sections, settings, the theme and *Sign out*. A *Back to top*
+button appears on every device once a page is scrolled down.
 
 Window cells show the multiple and a bar against the 1.5× tick (YES in amber), or `N/A`. Hover an N/A for its reason:
 `DAILY_ROW_MISSING` / `DAILY_ROW_INVALID` (a day in that window is missing or invalid — other

@@ -432,6 +432,92 @@ h3,
   flex-direction: column;
   gap: 2px;
   flex: 1;
+  /* Short screens: the items scroll inside the sidebar instead of running under its foot. */
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.rail-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rail-group + .rail-group {
+  margin-top: 8px;
+}
+/* Settings (Telegram, users, the signed-in account, sign out) sit at the foot of the sidebar. */
+.rail-group-settings {
+  margin-top: auto !important;
+  padding-top: 8px;
+}
+.rail-heading {
+  padding: 6px 11px 4px;
+  font: 600 10.5px var(--font);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.rail-link .avatar {
+  width: 22px;
+  height: 22px;
+  font-size: 11px;
+}
+.rail-user {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+  min-width: 0;
+}
+.rail-user b {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rail-user small {
+  font-size: 11px;
+  color: var(--muted);
+}
+.rail-more {
+  display: none !important;
+}
+.rail-status {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 11px;
+  font-size: 12px;
+  color: var(--text-2);
+  min-width: 0;
+}
+.rail-status .pulse-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--yes);
+  animation: livePulse 2.4s infinite;
+}
+.rail-status.fixture {
+  color: var(--bad);
+}
+.rail-status.fixture .pulse-dot {
+  background: var(--bad);
+  animation: none;
+}
+.rail-status-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+.rail-status-text b {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rail-status-text small {
+  color: var(--muted);
 }
 .rail-items .rail-link {
   display: flex;
@@ -510,10 +596,38 @@ h3,
   fill: currentColor;
   stroke: none;
 }
+.rail {
+  transition:
+    width 0.22s ease,
+    padding 0.22s ease;
+}
+.rail-bottom {
+  display: flex;
+  gap: 8px;
+  margin-left: 6px;
+}
+.rail-bottom .rail-theme {
+  margin-left: 0;
+  align-self: auto;
+}
+.rail-toggle svg {
+  transition: transform 0.22s ease;
+}
+.rail-toggle.closed svg {
+  transform: scaleX(-1);
+}
+.rail-theme:hover {
+  color: var(--text);
+  border-color: var(--edge-strong);
+}
+.rail-scrim {
+  display: none;
+}
 
 /* ------------------------------ Shell ------------------------------ */
 .shell {
   margin-left: 244px;
+  transition: margin-left 0.22s ease;
   padding: 22px 28px 40px 0;
   /* Fills the space beside the rail; very wide screens cap the width and centre it (below). */
   max-width: 2200px;
@@ -522,16 +636,27 @@ h3,
   .shell {
     margin-left: calc(244px + (100vw - 244px - 2200px) / 2);
   }
+  .shell.rail-collapsed {
+    margin-left: calc(96px + (100vw - 96px - 2200px) / 2);
+  }
 }
 .top {
   display: flex;
-  align-items: flex-start;
-  gap: 20px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 16px;
   margin-bottom: 18px;
 }
+/* The global search, centred at the top of every page. */
+.top-search {
+  display: flex;
+  justify-content: center;
+}
+.top-search .search-btn {
+  width: min(560px, 100%);
+  min-height: 42px;
+  padding: 8px 10px 8px 16px;
+}
 .title-block {
-  flex: 1 1 380px;
   min-width: 0;
 }
 .top h1 {
@@ -599,7 +724,7 @@ h3,
 .search-btn {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   padding: 7px 8px 7px 12px;
   min-width: 220px;
   border-radius: 999px;
@@ -624,6 +749,147 @@ h3,
 .search-btn span {
   flex: 1;
   text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Back to top: every device; above the bottom bar on phones. */
+.back-to-top {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 25;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid var(--edge-strong);
+  background: var(--glass-solid);
+  color: var(--text);
+  box-shadow: var(--shadow-lift);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(12px);
+  pointer-events: none;
+  transition:
+    opacity 0.2s,
+    transform 0.2s;
+}
+.back-to-top.show {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+.back-to-top:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.back-to-top svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+main:focus {
+  outline: none;
+}
+
+/* Phone "More" sheet: the sections outside the bottom bar, settings, theme and sign out. */
+.more-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+}
+.more-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--scrim);
+  animation: fadeIn 0.2s;
+}
+.more-box {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 82dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 10px 14px calc(16px + env(safe-area-inset-bottom, 0px));
+  border-radius: 22px 22px 0 0;
+  border: 1px solid var(--edge-strong);
+  background: var(--glass-solid);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  box-shadow: var(--shadow-lift);
+  animation: sheetIn 0.26s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes sheetIn {
+  from {
+    transform: translateY(100%);
+  }
+}
+.more-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 4px 6px;
+  font: 650 16px var(--font-display);
+}
+.more-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0;
+  border-top: 1px solid var(--edge);
+}
+.more-box .rail-link {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 46px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-2);
+  font: 500 15px var(--font);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.more-box .rail-link:hover,
+.more-box .rail-link[aria-current='page'] {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.more-box .rail-link svg {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.more-box .rail-link svg .fill {
+  fill: currentColor;
+  stroke: none;
+}
+.more-box .count {
+  margin-left: auto;
+  font: 600 12px var(--font-display);
+  color: var(--muted);
+}
+.more-box .rail-status {
+  border-top: 1px solid var(--edge);
+  padding-top: 12px;
 }
 kbd {
   font: 600 11px var(--font);
@@ -2626,6 +2892,74 @@ button.chip:hover {
   }
 }
 
+/* Loading placeholders (components/ui.tsx: SkeletonTable, SkeletonBlock, SkeletonTiles). */
+.sk {
+  display: block;
+  border-radius: var(--r-sm);
+  background: linear-gradient(90deg, var(--track) 0%, var(--glass-strong) 50%, var(--track) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.3s linear infinite;
+}
+.sk-label {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.sk-table {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+}
+.sk-head {
+  height: 18px;
+  width: 60%;
+  opacity: 0.7;
+}
+/* About one table row (10 px padding × 2 + a line of text + the border). */
+.sk-row {
+  height: 32px;
+}
+.sk-block {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  border-radius: var(--r-md);
+}
+.sk-tile {
+  gap: 8px;
+}
+.sk-line {
+  height: 12px;
+  width: 80%;
+}
+.sk-line.short {
+  width: 45%;
+}
+.sk-line.big {
+  height: 20px;
+  width: 60%;
+}
+/* The TradingView frame is transparent while it loads: a placeholder of the same size sits under
+   it until the frame reports it has loaded. */
+.tv-chart-box {
+  position: relative;
+}
+.coin-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.tv-chart-box .tv-loading {
+  position: absolute;
+  inset: 0;
+  height: auto;
+  pointer-events: none;
+  transition: opacity 0.3s;
+}
+.tv-chart-box.loaded .tv-loading {
+  opacity: 0;
+}
+
 /* Coin detail tabs: Review, History, Calculation details */
 .detail-tabs {
   position: sticky;
@@ -2852,8 +3186,8 @@ body.signed-out .shell {
   background: var(--glass-strong);
   text-decoration: none;
 }
-.rail-items .rail-account {
-  margin-top: auto;
+.rail-signout {
+  font: inherit;
 }
 
 .chip.you {
@@ -3188,6 +3522,11 @@ body.signed-out .shell {
     margin-left: 0;
     align-self: center;
   }
+  .rail-bottom {
+    flex-direction: column;
+    margin-left: 0;
+    align-self: center;
+  }
   .shell {
     margin-left: 96px;
     padding-right: 20px;
@@ -3242,7 +3581,8 @@ body.signed-out .shell {
     flex: 1 0 auto;
     padding: 10px 8px;
   }
-  .rail-theme {
+  .rail-theme,
+  .rail-bottom {
     display: none;
   }
   .shell {
@@ -3353,6 +3693,207 @@ body.signed-out .shell {
   .rail-items .rail-link[data-label]:active::after {
     opacity: 1;
     transform: translate(0, -50%);
+  }
+}
+
+/* Desktop, sidebar collapsed: the same label tooltips. */
+@media (min-width: 1101px) {
+  .rail.collapsed .rail-items .rail-link[data-label]::after {
+    content: attr(data-label);
+    position: absolute;
+    left: calc(100% + 14px);
+    top: 50%;
+    transform: translate(-6px, -50%);
+    padding: 6px 11px;
+    border-radius: 10px;
+    border: 1px solid var(--edge-strong);
+    background: var(--glass-solid);
+    box-shadow: var(--shadow-lift);
+    color: var(--text);
+    font: 600 12.5px var(--font-display);
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition:
+      opacity 0.12s,
+      transform 0.12s;
+    z-index: 30;
+  }
+  .rail.collapsed .rail-items .rail-link[data-label]:hover::after,
+  .rail.collapsed .rail-items .rail-link[data-label]:focus-visible::after,
+  .rail.collapsed .rail-items .rail-link[data-label]:active::after {
+    opacity: 1;
+    transform: translate(0, -50%);
+  }
+}
+
+/* Desktop: the sidebar collapsed to icons (the toggle at its foot; remembered per browser). */
+@media (min-width: 1101px) {
+  .rail.collapsed {
+    width: 64px;
+    padding: 14px 8px;
+    align-items: center;
+  }
+  .rail.collapsed .mark::after,
+  .rail.collapsed .rail-items .rail-link span,
+  .rail.collapsed .rail-items .count {
+    display: none;
+  }
+  .rail.collapsed .mark {
+    padding: 4px 0 12px;
+  }
+  .rail.collapsed .rail-items .rail-link {
+    justify-content: center;
+    padding: 11px;
+    position: relative;
+  }
+  .rail.collapsed .rail-bottom {
+    flex-direction: column;
+    margin-left: 0;
+    align-self: center;
+  }
+  .shell.rail-collapsed {
+    margin-left: 96px;
+  }
+}
+
+/* Tablet: the toggle opens the full sidebar over the page, with a scrim behind it. */
+@media (min-width: 721px) and (max-width: 1100px) {
+  .rail.open {
+    width: 212px;
+    padding: 14px 10px;
+    align-items: stretch;
+    z-index: 40;
+    box-shadow: var(--shadow-lift);
+    background: var(--glass-solid);
+  }
+  .rail.open .mark::after,
+  .rail.open .rail-items .rail-link span,
+  .rail.open .rail-items .count {
+    display: inline;
+  }
+  .rail.open .rail-items .count {
+    margin-left: auto;
+  }
+  .rail.open .mark {
+    padding: 4px 10px 12px;
+  }
+  .rail.open .rail-items .rail-link {
+    justify-content: flex-start;
+    padding: 9px 11px;
+  }
+  .rail.open .rail-items .rail-link[data-label]::after {
+    display: none;
+  }
+  .rail.open .rail-bottom {
+    flex-direction: row;
+    margin-left: 6px;
+    align-self: flex-start;
+  }
+  .rail-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 35;
+    background: var(--scrim);
+    animation: fadeIn 0.2s;
+  }
+}
+
+/* Icon-only sidebar (tablet, or desktop collapsed): group headings become thin dividers, the
+   account shows its avatar, the source shows its dot. */
+@media (min-width: 721px) and (max-width: 1100px) {
+  .rail:not(.open) .rail-heading {
+    font-size: 0;
+    padding: 0;
+    margin: 6px 12px;
+    height: 1px;
+    background: var(--edge);
+  }
+  .rail:not(.open) .rail-items .rail-link .avatar {
+    display: grid;
+  }
+  .rail:not(.open) .rail-status {
+    justify-content: center;
+    padding: 6px 0;
+  }
+  .rail:not(.open) .rail-status-text {
+    display: none;
+  }
+  .rail.open .rail-items .rail-link .rail-user {
+    display: flex;
+  }
+  .rail.open .rail-items .rail-link .avatar {
+    display: grid;
+  }
+}
+@media (min-width: 1101px) {
+  .rail.collapsed .rail-heading {
+    font-size: 0;
+    padding: 0;
+    margin: 6px 12px;
+    height: 1px;
+    background: var(--edge);
+  }
+  .rail.collapsed .rail-items .rail-link .avatar {
+    display: grid;
+  }
+  .rail.collapsed .rail-status {
+    justify-content: center;
+    padding: 6px 0;
+  }
+  .rail.collapsed .rail-status-text {
+    display: none;
+  }
+}
+
+/* Phone bottom bar: only the main sections (Overview, Review queue, Forward test, Data) and
+   "More"; the rest, settings and sign out live in the More sheet. */
+@media (max-width: 720px) {
+  .rail-items {
+    overflow: visible;
+  }
+  .rail-group {
+    display: contents;
+  }
+  .rail-heading,
+  .rail .rail-status,
+  .rail-signout,
+  .rail-items .rail-link:not(.primary):not(.rail-more) {
+    display: none !important;
+  }
+  .rail-more {
+    display: flex !important;
+  }
+  .rail-items .rail-link {
+    flex: 1 1 0;
+    flex-direction: column;
+    gap: 3px;
+    padding: 6px 4px;
+    min-width: 0;
+  }
+  .rail-items .rail-link span {
+    display: block;
+    font-size: 10.5px;
+    line-height: 1.1;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rail-items .rail-link .count {
+    display: none;
+  }
+  .back-to-top {
+    right: 16px;
+    bottom: calc(84px + env(safe-area-inset-bottom, 0px));
+  }
+  .top-search .search-btn {
+    width: 100%;
+    min-height: 44px;
+  }
+  .top-search kbd {
+    display: none;
   }
 }
 

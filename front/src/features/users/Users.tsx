@@ -1,7 +1,7 @@
 // Users (owner): who can sign in, their role and status, and the role matrix.
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
 
-import { type Column, LoadError, StatusLabel, Table } from '../../components/ui';
+import { type Column, LoadError, SkeletonTable, StatusLabel, Table } from '../../components/ui';
 import { api, apiDelete, apiPatch, apiPost, errorMessage } from '../../lib/api';
 import { ROLE_TEXT } from '../../lib/constants';
 import { dialog, toast } from '../../lib/feedback';
@@ -188,7 +188,9 @@ export default function Users() {
             <LoadError error={error} />
           ) : users ? (
             <Table cols={cols} rows={users} empty="No users." rowKey={(u) => u.id} />
-          ) : null}
+          ) : (
+            <SkeletonTable rows={3} />
+          )}
         </div>
       </div>
       <div className="grid-2">

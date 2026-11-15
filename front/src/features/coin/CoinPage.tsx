@@ -13,7 +13,7 @@ import {
 import { useNavigate, useParams, useSearchParams } from 'react-router';
 
 import { ErrorBoundary } from '../../components/ErrorBoundary';
-import { Logo } from '../../components/ui';
+import { Logo, SkeletonBlock } from '../../components/ui';
 import { ApiError, api, apiPost, errorMessage } from '../../lib/api';
 import { hideTip, toast } from '../../lib/feedback';
 import { fmtInt } from '../../lib/format';
@@ -118,14 +118,7 @@ export default function CoinPage() {
         <p>{NOT_FOUND}</p>
       </div>
     );
-  else if (ready.status === 'loading')
-    body = (
-      <div className="skeleton">
-        <i />
-        <i />
-        <i />
-      </div>
-    );
+  else if (ready.status === 'loading') body = <CoinSkeleton />;
   else if (ready.status === 'error')
     body = (
       <div className="panel">
@@ -142,6 +135,32 @@ export default function CoinPage() {
     <div className="coin-page">
       <CoinTopBar cmcId={valid ? cmcId : null} />
       {body}
+    </div>
+  );
+}
+
+/**
+ * The coin page while its trace loads, in the shape of the Review tab (hero, tabs, the live chart
+ * at its fixed height, the VMC chart, price and venues), so nothing moves when it arrives.
+ */
+function CoinSkeleton() {
+  return (
+    <div className="coin-skeleton" aria-busy="true">
+      <SkeletonBlock height={132} label="Loading the coin…" />
+      <SkeletonBlock height={42} label="" />
+      <section className="panel tv-panel">
+        <div className="panel-head">
+          <h3>Live chart</h3>
+          <span className="hint">TradingView, daily candles closing 00:00 UTC</span>
+        </div>
+        <SkeletonBlock height={30} label="" />
+        <SkeletonBlock className="tv-advanced-chart" height={null} label="Loading…" />
+      </section>
+      <SkeletonBlock height={320} label="" />
+      <div className="grid-2 tight">
+        <SkeletonBlock height={300} label="" />
+        <SkeletonBlock height={300} label="" />
+      </div>
     </div>
   );
 }

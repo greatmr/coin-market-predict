@@ -31,11 +31,24 @@ export interface Section {
   permission?: Permission;
   /** Rail badge: the overview counts, or a count a page reports. */
   counted?: boolean;
+  /** Sidebar group: the screen and its lists, data and operations, or settings. */
+  group: SectionGroup;
+  /** Kept in the phone's bottom bar; every other section is under "More". */
+  primary?: boolean;
 }
+
+export type SectionGroup = 'screen' | 'data' | 'settings';
+export const SECTION_GROUPS: readonly (readonly [SectionGroup, string])[] = [
+  ['screen', 'Screen'],
+  ['data', 'Data & operations'],
+  ['settings', 'Settings'],
+];
 
 export const SECTIONS: readonly Section[] = [
   {
     key: 'overview',
+    group: 'screen',
+    primary: true,
     path: '/',
     label: 'Overview',
     title: 'Overview',
@@ -43,6 +56,8 @@ export const SECTIONS: readonly Section[] = [
   },
   {
     key: 'queue',
+    group: 'screen',
+    primary: true,
     path: '/queue',
     label: 'Review queue',
     title: 'Review queue',
@@ -51,6 +66,7 @@ export const SECTIONS: readonly Section[] = [
   },
   {
     key: 'eligible',
+    group: 'screen',
     path: '/eligible',
     label: 'Eligible',
     title: 'Eligible',
@@ -59,6 +75,7 @@ export const SECTIONS: readonly Section[] = [
   },
   {
     key: 'needs_review',
+    group: 'screen',
     path: '/needs-review',
     label: 'Needs review',
     title: 'Needs review',
@@ -67,6 +84,7 @@ export const SECTIONS: readonly Section[] = [
   },
   {
     key: 'excluded',
+    group: 'screen',
     path: '/excluded',
     label: 'Excluded',
     title: 'Excluded',
@@ -75,6 +93,8 @@ export const SECTIONS: readonly Section[] = [
   },
   {
     key: 'forward',
+    group: 'screen',
+    primary: true,
     path: '/forward',
     label: 'Forward test',
     title: 'Forward test',
@@ -83,6 +103,8 @@ export const SECTIONS: readonly Section[] = [
   },
   {
     key: 'data',
+    group: 'data',
+    primary: true,
     path: '/data',
     label: 'Data',
     title: 'Data',
@@ -90,6 +112,7 @@ export const SECTIONS: readonly Section[] = [
   },
   {
     key: 'batches',
+    group: 'data',
     path: '/runs',
     label: 'Runs & health',
     title: 'Runs & health',
@@ -98,6 +121,7 @@ export const SECTIONS: readonly Section[] = [
   },
   {
     key: 'exports',
+    group: 'data',
     path: '/exports',
     label: 'Exports',
     title: 'Exports',
@@ -106,6 +130,7 @@ export const SECTIONS: readonly Section[] = [
   },
   {
     key: 'access',
+    group: 'settings',
     path: '/telegram',
     label: 'Telegram',
     title: 'Telegram',
@@ -115,6 +140,7 @@ export const SECTIONS: readonly Section[] = [
   },
   {
     key: 'users',
+    group: 'settings',
     path: '/users',
     label: 'Users',
     title: 'Users',
@@ -123,6 +149,7 @@ export const SECTIONS: readonly Section[] = [
   },
   {
     key: 'account',
+    group: 'settings',
     path: '/account',
     label: 'My account',
     title: 'My account',

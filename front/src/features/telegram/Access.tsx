@@ -2,7 +2,7 @@
 // reports that did not arrive in the last 6 hours.
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 
-import { type Column, LoadError, StatusLabel, Table } from '../../components/ui';
+import { type Column, LoadError, SkeletonTable, StatusLabel, Table } from '../../components/ui';
 import { api, apiPost, errorMessage } from '../../lib/api';
 import type { StatusMap } from '../../lib/constants';
 import { toast } from '../../lib/feedback';
@@ -309,7 +309,9 @@ export default function Access() {
                 empty="No pending requests."
                 rowKey={(r) => r.chatId}
               />
-            ) : null}
+            ) : (
+              <SkeletonTable rows={3} />
+            )}
           </div>
         </div>
         <div className="panel">
@@ -328,7 +330,9 @@ export default function Access() {
                 empty="No members."
                 rowKey={(r, i) => `${r.chatId}-${i}`}
               />
-            ) : null}
+            ) : (
+              <SkeletonTable rows={3} />
+            )}
           </div>
         </div>
       </div>
@@ -366,7 +370,9 @@ export default function Access() {
                 empty="Nobody rejected."
                 rowKey={(r) => r.chatId}
               />
-            ) : null}
+            ) : (
+              <SkeletonTable rows={2} />
+            )}
           </div>
         </div>
       </div>

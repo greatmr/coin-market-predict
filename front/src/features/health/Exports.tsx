@@ -2,7 +2,7 @@
 // Download links go through apiUrl() (the API may live on another host).
 import { useCallback, useEffect, useState } from 'react';
 
-import { type Column, LoadError, StatusLabel, Table } from '../../components/ui';
+import { type Column, LoadError, SkeletonTable, StatusLabel, Table } from '../../components/ui';
 import { api } from '../../lib/api';
 import { apiUrl } from '../../lib/config';
 import { QUEUE, statusText } from '../../lib/constants';
@@ -84,7 +84,9 @@ export default function Exports() {
           <LoadError error={error} />
         ) : rows ? (
           <Table cols={COLS} rows={rows} empty="No exports yet." rowKey={(x) => x.batchId} />
-        ) : null}
+        ) : (
+          <SkeletonTable rows={10} />
+        )}
       </div>
     </div>
   );

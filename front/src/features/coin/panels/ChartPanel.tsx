@@ -8,6 +8,7 @@
 // rebuilt when the symbol or the colour scheme changes.
 import { useEffect, useMemo, useState } from 'react';
 
+import { SkeletonBlock } from '../../../components/ui';
 import { useApp } from '../../../state/app';
 
 import type { ChartCandidate } from '../types';
@@ -136,6 +137,9 @@ export default function ChartPanel({
   const symbol = current?.symbol ?? null;
   // Rebuilt only for another symbol or colour scheme, never because the trace was reloaded.
   const frame = useMemo(() => (symbol ? tvFrame(symbol, scheme) : null), [symbol, scheme]);
+  // Which frame has finished loading; a new symbol or scheme shows the placeholder again.
+  const [loadedFrame, setLoadedFrame] = useState<string | null>(null);
+  const frameKey = frame ? `${frame.id}-${scheme}` : null;
 
   const head = (
     <div className="panel-head">
@@ -171,8 +175,13 @@ export default function ChartPanel({
         ))}
       </div>
       <p className="muted small tv-note">{current.note}</p>
-      <div className="tv-chart-box">
-        <iframe key={`${frame.id}-${scheme}`} {...frame} />
+      <div className={`tv-chart-box${loadedFrame === frameKey ? ' loaded' : ''}`}>
+        <iframe key={frameKey} {...frame} onLoad={() => setLoadedFrame(frameKey)} />
+        <SkeletonBlock
+          className="tv-loading"
+          height="auto"
+          label="Loading the TradingView chart…"
+        />
       </div>
       <div className="tv-foot">
         <a

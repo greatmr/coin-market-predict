@@ -286,3 +286,58 @@ export const LoadError = ({ error }: { error: unknown }) =>
       Could not load: {error instanceof Error ? error.message : String(error)}
     </div>
   ) : null;
+
+/* ---------- Loading placeholders ----------
+   Shown while a request is in flight, sized like the content that replaces them so the page does
+   not jump when the data arrives. Screen readers hear "Loading …" once (role="status"). */
+
+/** Rows of a table that is still loading: a header bar, then `rows` row bars. */
+export const SkeletonTable = ({
+  rows = 6,
+  label = 'Loading…',
+}: {
+  rows?: number;
+  label?: string;
+}) => (
+  <div className="sk-table" role="status" aria-live="polite">
+    <span className="sk-label">{label}</span>
+    <i className="sk sk-head" />
+    {Array.from({ length: rows }, (_, i) => (
+      <i key={i} className="sk sk-row" />
+    ))}
+  </div>
+);
+
+/** A block (chart, card body) that is still loading, at the height the content will take. */
+export const SkeletonBlock = ({
+  height = 200,
+  label = 'Loading…',
+  className,
+}: {
+  /** null: the height comes from `className` (e.g. the chart's own CSS height). */
+  height?: number | string | null;
+  label?: string;
+  className?: string;
+}) => (
+  <div
+    className={`sk sk-block${className ? ` ${className}` : ''}`}
+    style={height === null ? undefined : { height }}
+    role="status"
+    aria-live="polite"
+  >
+    <span className="sk-label">{label}</span>
+  </div>
+);
+
+/** Summary tiles that are still loading. */
+export const SkeletonTiles = ({ n = 4 }: { n?: number }) => (
+  <>
+    {Array.from({ length: n }, (_, i) => (
+      <div key={i} className="tile sk-tile" aria-hidden="true">
+        <i className="sk sk-line short" />
+        <i className="sk sk-line big" />
+        <i className="sk sk-line" />
+      </div>
+    ))}
+  </>
+);

@@ -3,6 +3,7 @@
 import { Link, useNavigate } from 'react-router';
 
 import { ChartBox, Donut, HBars } from '../../components/charts';
+import { SkeletonBlock } from '../../components/ui';
 import { QUEUE, statusText } from '../../lib/constants';
 import { fmtInt, fmtTime, fmtUsd } from '../../lib/format';
 import { pathOf } from '../../lib/routes';
@@ -48,7 +49,9 @@ export default function Overview() {
             <span className="hint">{sc ? `as of ${fmtTime(sc.asOf)}` : ''}</span>
           </div>
           <div>
-            {!ov ? null : !stages ? (
+            {!ov ? (
+              <SkeletonBlock height={210} />
+            ) : !stages ? (
               <div className="empty">No scan yet. The first run fills this in.</div>
             ) : (
               <ChartBox>{(W) => <Funnel W={W} stages={stages} />}</ChartBox>
@@ -64,7 +67,9 @@ export default function Overview() {
             Open the full queue
           </Link>
         </div>
-        <div className="queue-strip">{ov ? <QueueStrip sc={sc} /> : null}</div>
+        <div className="queue-strip">
+          {ov ? <QueueStrip sc={sc} /> : <SkeletonBlock height={150} />}
+        </div>
       </div>
 
       <ForwardPanel />
@@ -76,7 +81,9 @@ export default function Overview() {
             <span className="hint">evaluated coins</span>
           </div>
           <div>
-            {!ov ? null : sc ? (
+            {!ov ? (
+              <SkeletonBlock height={170} />
+            ) : sc ? (
               <>
                 <StackRows
                   rows={(['3d', '7d', '30d'] as const).map((w) => {
@@ -117,7 +124,9 @@ export default function Overview() {
             <span className="hint">every coin in the batch</span>
           </div>
           <div>
-            {!ov ? null : sc ? (
+            {!ov ? (
+              <SkeletonBlock height={170} />
+            ) : sc ? (
               <Donut
                 totalLabel="coins"
                 segs={[
@@ -152,7 +161,9 @@ export default function Overview() {
             <span className="hint">windows met, evaluated coins</span>
           </div>
           <div>
-            {!ov ? null : sc ? (
+            {!ov ? (
+              <SkeletonBlock height={170} />
+            ) : sc ? (
               <HBars
                 items={['3', '2', '1', '0'].map((k) => ({
                   label: k === '0' ? 'No star' : `${k} ${k === '1' ? 'star' : 'stars'}`,
