@@ -110,7 +110,7 @@ export function DialogHost() {
       >
         <h2 id="dialog-title">{d.title}</h2>
         <fieldset className="plain" disabled={busy}>
-          <div>{d.body}</div>
+          <div className="dialog-body">{d.body}</div>
           <div className="form-error" role="alert">
             {error}
           </div>

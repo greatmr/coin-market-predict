@@ -357,6 +357,7 @@ function SignedIn({ me, cfg }: { me: User; cfg: AppConfig }) {
               <section
                 id={`tab-${section?.key ?? (loc.pathname.startsWith('/coins/') ? 'coin' : 'page')}`}
                 className="tab"
+                key={loc.pathname}
               >
                 <Outlet />
               </section>

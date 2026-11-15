@@ -674,6 +674,64 @@ main {
   flex-direction: column;
   gap: 16px;
 }
+
+/* ------------------------------ Motion ------------------------------
+   Page change: the page's blocks rise in one after another. Loaded content (tables, charts, tile
+   values, empty states) fades in when it arrives, and new list rows when a filter or page changes.
+   All of it is off under prefers-reduced-motion (rule at the end of this file). */
+.tab > * {
+  animation: blockIn 0.42s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+}
+.tab > :nth-child(2) {
+  animation-delay: 0.04s;
+}
+.tab > :nth-child(3) {
+  animation-delay: 0.08s;
+}
+.tab > :nth-child(4) {
+  animation-delay: 0.12s;
+}
+.tab > :nth-child(5) {
+  animation-delay: 0.16s;
+}
+.tab > :nth-child(n + 6) {
+  animation-delay: 0.2s;
+}
+.panel .table-wrap > table,
+.panel > div > .empty,
+.panel .chart,
+.tile b,
+.tile .muted,
+.fwd-update .item-progress {
+  animation: contentIn 0.35s ease-out backwards;
+}
+.table-wrap tbody tr {
+  animation: rowIn 0.28s ease-out backwards;
+}
+.panel,
+.tile {
+  transition:
+    border-color 0.2s,
+    box-shadow 0.25s,
+    transform 0.25s;
+}
+@keyframes blockIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+@keyframes contentIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@keyframes rowIn {
+  from {
+    opacity: 0;
+  }
+}
 .grid-2,
 .grid-3 {
   display: grid;
@@ -2276,8 +2334,6 @@ button.chip:hover {
 }
 .dialog-box.wide {
   width: min(960px, 100%);
-  max-height: calc(100vh - 32px);
-  overflow: auto;
 }
 
 /* Tiles (runs & health) */
@@ -2871,6 +2927,26 @@ body.signed-out .shell {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  /* Never taller than the screen: the content scrolls, the title and buttons stay in view. */
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  animation: dialogIn 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.dialog-box > h2,
+.dialog-box .row-actions {
+  flex: none;
+}
+@keyframes dialogIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
 }
 .dialog-box .field input {
   width: 100%;
