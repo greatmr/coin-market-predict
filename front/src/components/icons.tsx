@@ -104,6 +104,7 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M6.5 11.5L12 6l5.5 5.5" />
     </>
   ),
+  chevron: <path d="M14.5 6.5L9 12l5.5 5.5" />,
   sidebar: (
     <>
       <rect x="3.5" y="4.5" width="17" height="15" rx="3" />

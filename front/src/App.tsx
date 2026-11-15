@@ -36,10 +36,9 @@ function Root() {
 const page = (node: ReactNode) => (
   <Suspense
     fallback={
-      <div className="skeleton">
-        <i />
-        <i />
-        <i />
+      // A page's code is still downloading: a thin progress line, not placeholder blocks.
+      <div className="route-loading" role="status">
+        <span className="sr-only">Loading the page…</span>
       </div>
     }
   >

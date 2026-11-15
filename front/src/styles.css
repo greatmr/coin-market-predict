@@ -445,11 +445,6 @@ h3,
 .rail-group + .rail-group {
   margin-top: 8px;
 }
-/* Settings (Telegram, users, the signed-in account, sign out) sit at the foot of the sidebar. */
-.rail-group-settings {
-  margin-top: auto !important;
-  padding-top: 8px;
-}
 .rail-heading {
   padding: 6px 11px 4px;
   font: 600 10.5px var(--font);
@@ -3665,68 +3660,6 @@ body.signed-out .shell {
   }
 }
 
-/* Tablet: the sidebar is icons only, so show each item's label as a tooltip (hover, focus, tap). */
-@media (min-width: 721px) and (max-width: 1100px) {
-  .rail-items .rail-link[data-label]::after {
-    content: attr(data-label);
-    position: absolute;
-    left: calc(100% + 14px);
-    top: 50%;
-    transform: translate(-6px, -50%);
-    padding: 6px 11px;
-    border-radius: 10px;
-    border: 1px solid var(--edge-strong);
-    background: var(--glass-solid);
-    box-shadow: var(--shadow-lift);
-    color: var(--text);
-    font: 600 12.5px var(--font-display);
-    white-space: nowrap;
-    pointer-events: none;
-    opacity: 0;
-    transition:
-      opacity 0.12s,
-      transform 0.12s;
-    z-index: 30;
-  }
-  .rail-items .rail-link[data-label]:hover::after,
-  .rail-items .rail-link[data-label]:focus-visible::after,
-  .rail-items .rail-link[data-label]:active::after {
-    opacity: 1;
-    transform: translate(0, -50%);
-  }
-}
-
-/* Desktop, sidebar collapsed: the same label tooltips. */
-@media (min-width: 1101px) {
-  .rail.collapsed .rail-items .rail-link[data-label]::after {
-    content: attr(data-label);
-    position: absolute;
-    left: calc(100% + 14px);
-    top: 50%;
-    transform: translate(-6px, -50%);
-    padding: 6px 11px;
-    border-radius: 10px;
-    border: 1px solid var(--edge-strong);
-    background: var(--glass-solid);
-    box-shadow: var(--shadow-lift);
-    color: var(--text);
-    font: 600 12.5px var(--font-display);
-    white-space: nowrap;
-    pointer-events: none;
-    opacity: 0;
-    transition:
-      opacity 0.12s,
-      transform 0.12s;
-    z-index: 30;
-  }
-  .rail.collapsed .rail-items .rail-link[data-label]:hover::after,
-  .rail.collapsed .rail-items .rail-link[data-label]:focus-visible::after,
-  .rail.collapsed .rail-items .rail-link[data-label]:active::after {
-    opacity: 1;
-    transform: translate(0, -50%);
-  }
-}
-
 /* Desktop: the sidebar collapsed to icons (the toggle at its foot; remembered per browser). */
 @media (min-width: 1101px) {
   .rail.collapsed {
@@ -3781,9 +3714,6 @@ body.signed-out .shell {
   .rail.open .rail-items .rail-link {
     justify-content: flex-start;
     padding: 9px 11px;
-  }
-  .rail.open .rail-items .rail-link[data-label]::after {
-    display: none;
   }
   .rail.open .rail-bottom {
     flex-direction: row;
@@ -3893,6 +3823,491 @@ body.signed-out .shell {
     min-height: 44px;
   }
   .top-search kbd {
+    display: none;
+  }
+}
+
+/* ---------- Sidebar: top (logo + collapse), foot (account, theme, sign out) ---------- */
+a,
+button {
+  -webkit-tap-highlight-color: transparent;
+}
+.rail-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.rail-top .mark {
+  padding-bottom: 4px;
+}
+/* Collapse / expand: a small round button on the sidebar's right edge, level with the logo. */
+.rail-toggle {
+  position: absolute;
+  top: 26px;
+  right: -13px;
+  z-index: 2;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--edge-strong);
+  background: var(--glass-solid);
+  color: var(--text-2);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+}
+.rail-toggle:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.rail-toggle svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* Sign out: the only item in the sidebar's foot (theme and the sidebar default are on Preferences). */
+.rail-foot .rail-signout {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 9px 11px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-2);
+  font: 500 13.5px var(--font);
+  text-align: left;
+  cursor: pointer;
+}
+.rail-foot .rail-signout:hover {
+  background: var(--glass-strong);
+  color: var(--text);
+}
+.rail-foot .rail-signout svg {
+  width: 19px;
+  height: 19px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.rail-link .avatar svg,
+.more-box .rail-link .avatar svg {
+  width: 13px;
+  height: 13px;
+}
+.rail-link .presence {
+  width: 8px;
+  height: 8px;
+}
+/* Preferences: one row per setting. */
+.pref-rows {
+  display: flex;
+  flex-direction: column;
+}
+.pref-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 24px;
+  flex-wrap: wrap;
+  padding: 12px 0;
+  border-top: 1px solid var(--edge);
+}
+.pref-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+.pref-row p {
+  margin-top: 2px;
+}
+
+/* Global loading (session and configuration): the project illustration, not grey blocks. */
+.splash {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+  color: var(--text);
+}
+.splash-art {
+  width: min(220px, 60vw);
+  height: auto;
+  overflow: visible;
+}
+.splash-grid {
+  fill: none;
+  stroke: var(--edge);
+  stroke-width: 1;
+}
+.splash-candle path {
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.splash-candle rect {
+  fill: currentColor;
+}
+.splash-candle.up {
+  color: var(--yes);
+}
+.splash-candle.down {
+  color: var(--bad);
+  opacity: 0.85;
+}
+.splash-candle {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: candleRise 1.8s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
+}
+.splash-candle:nth-of-type(2) {
+  animation-delay: 0.12s;
+}
+.splash-candle:nth-of-type(3) {
+  animation-delay: 0.24s;
+}
+.splash-candle:nth-of-type(4) {
+  animation-delay: 0.36s;
+}
+.splash-candle:nth-of-type(5) {
+  animation-delay: 0.48s;
+}
+.splash-candle:nth-of-type(6) {
+  animation-delay: 0.6s;
+}
+.splash-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 200;
+  stroke-dashoffset: 200;
+  animation: lineDraw 1.8s ease-in-out infinite;
+}
+.splash-dot {
+  fill: var(--accent);
+  animation: dotPulse 1.8s ease-in-out infinite;
+}
+.splash-title {
+  font: 650 17px var(--font-display);
+  margin-top: 6px;
+}
+.splash-text {
+  font-size: 13px;
+  color: var(--muted);
+}
+@keyframes candleRise {
+  0% {
+    transform: scaleY(0.2);
+    opacity: 0;
+  }
+  35%,
+  80% {
+    transform: none;
+    opacity: 1;
+  }
+  100% {
+    transform: none;
+    opacity: 0;
+  }
+}
+@keyframes lineDraw {
+  0% {
+    stroke-dashoffset: 200;
+  }
+  60%,
+  85% {
+    stroke-dashoffset: 0;
+  }
+  100% {
+    stroke-dashoffset: 0;
+    opacity: 0;
+  }
+}
+@keyframes dotPulse {
+  0%,
+  55% {
+    opacity: 0;
+    r: 2;
+  }
+  70% {
+    opacity: 1;
+    r: 5;
+  }
+  85% {
+    r: 4;
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+/* A page's code is downloading (route change): a thin moving line under the header. */
+.route-loading {
+  height: 3px;
+  border-radius: 99px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  background-size: 40% 100%;
+  background-repeat: no-repeat;
+  animation: routeLine 1s linear infinite;
+}
+@keyframes routeLine {
+  from {
+    background-position: -40% 0;
+  }
+  to {
+    background-position: 140% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .splash-line {
+    stroke-dashoffset: 0;
+  }
+}
+.rail-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--edge);
+}
+.rail-foot .rail-bottom {
+  margin-left: 0;
+  gap: 6px;
+  flex: none;
+}
+.rail-user-link {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 6px;
+  border-radius: 12px;
+  color: var(--text-2);
+  text-decoration: none;
+}
+.rail-user-link:hover,
+.rail-user-link[aria-current='page'] {
+  background: var(--glass-strong);
+  color: var(--text);
+  text-decoration: none;
+}
+/* A person icon for every role (colour by role) with an online / offline dot. */
+.avatar {
+  position: relative;
+}
+.avatar svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.presence {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 2px solid var(--bg-1);
+  background: var(--muted);
+}
+.presence.on {
+  background: var(--yes);
+}
+.more-box:focus {
+  outline: none;
+}
+.more-head .rail-user-link {
+  flex: 1;
+}
+.more-actions {
+  display: flex;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--edge);
+}
+.more-actions .btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+}
+.more-actions .btn svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.more-actions .btn svg .fill {
+  fill: currentColor;
+  stroke: none;
+}
+
+/* Icon-only sidebar (tablet, desktop collapsed): top and foot stack in one centred column; the
+   items do not scroll so tooltips are not clipped (the compact foot leaves room for them). */
+@media (min-width: 721px) and (max-width: 1100px) {
+  .rail:not(.open) .rail-top,
+  .rail:not(.open) .rail-foot,
+  .rail:not(.open) .rail-foot .rail-bottom {
+    flex-direction: column;
+    align-items: center;
+  }
+  .rail:not(.open) .rail-user-link {
+    flex: none;
+    padding: 5px;
+  }
+  .rail:not(.open) .rail-items {
+    overflow: visible;
+  }
+  .rail:not(.open) .rail-foot .rail-signout {
+    justify-content: center;
+    padding: 11px;
+  }
+  .rail:not(.open) .rail-foot .rail-signout span {
+    display: none;
+  }
+  .rail-items .rail-link .rail-user,
+  .rail:not(.open) .rail-user {
+    display: none;
+  }
+}
+@media (min-width: 1101px) {
+  .rail.collapsed .rail-top,
+  .rail.collapsed .rail-foot,
+  .rail.collapsed .rail-foot .rail-bottom {
+    flex-direction: column;
+    align-items: center;
+  }
+  .rail.collapsed .rail-user-link {
+    flex: none;
+    padding: 5px;
+  }
+  .rail.collapsed .rail-items {
+    overflow: visible;
+  }
+  .rail.collapsed .rail-foot .rail-signout {
+    justify-content: center;
+    padding: 11px;
+  }
+  .rail.collapsed .rail-foot .rail-signout span {
+    display: none;
+  }
+  .rail.collapsed .rail-user {
+    display: none;
+  }
+}
+
+/* Tooltips (desktop, tablet; hover, keyboard focus, touch): to the right of an icon-only item;
+   above / below a button when the sidebar shows its labels. */
+@media (min-width: 721px) {
+  .rail .has-tip {
+    position: relative;
+  }
+  .rail .has-tip[data-label]::after {
+    content: attr(data-label);
+    position: absolute;
+    left: calc(100% + 14px);
+    top: 50%;
+    transform: translate(-6px, -50%);
+    padding: 6px 11px;
+    border-radius: 10px;
+    border: 1px solid var(--edge-strong);
+    background: var(--glass-solid);
+    box-shadow: var(--shadow-lift);
+    color: var(--text);
+    font: 600 12.5px var(--font-display);
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition:
+      opacity 0.12s,
+      transform 0.12s;
+    z-index: 30;
+  }
+  .rail .has-tip[data-label]:hover::after,
+  .rail .has-tip[data-label]:focus-visible::after,
+  .rail .has-tip[data-label]:active::after {
+    opacity: 1;
+    transform: translate(0, -50%);
+  }
+}
+@media (min-width: 1101px) {
+  .rail:not(.collapsed) .rail-link.has-tip::after,
+  .rail:not(.collapsed) .rail-user-link.has-tip::after {
+    display: none;
+  }
+  .rail:not(.collapsed) .rail-foot .has-tip::after {
+    left: 50%;
+    top: auto;
+    bottom: calc(100% + 10px);
+    transform: translate(-50%, 4px);
+  }
+  .rail:not(.collapsed) .rail-foot .has-tip:hover::after,
+  .rail:not(.collapsed) .rail-foot .has-tip:focus-visible::after,
+  .rail:not(.collapsed) .rail-foot .has-tip:active::after {
+    transform: translate(-50%, 0);
+  }
+}
+@media (min-width: 721px) and (max-width: 1100px) {
+  .rail.open .rail-link.has-tip::after,
+  .rail.open .rail-user-link.has-tip::after {
+    display: none;
+  }
+  .rail.open .rail-foot .has-tip::after {
+    left: 50%;
+    top: auto;
+    bottom: calc(100% + 10px);
+    transform: translate(-50%, 4px);
+  }
+  .rail.open .rail-foot .has-tip:hover::after,
+  .rail.open .rail-foot .has-tip:focus-visible::after,
+  .rail.open .rail-foot .has-tip:active::after {
+    transform: translate(-50%, 0);
+  }
+}
+
+/* Phone: the bottom bar stays pinned to the bottom edge. A fixed bar with backdrop-filter and its
+   own compositing layer is painted at a stale position on mobile browsers when the toolbar
+   collapses at the end of the page, so it is solid here and has no forced layer. */
+@media (max-width: 720px) {
+  .rail {
+    transform: none !important;
+    will-change: auto !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+    background: var(--glass-solid);
+  }
+  .rail-top,
+  .rail-foot,
+  .rail-toggle {
+    display: none !important;
+  }
+  .rail .has-tip::after {
     display: none;
   }
 }

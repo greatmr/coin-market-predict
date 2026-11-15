@@ -6,12 +6,14 @@ import { NavLink, Navigate, Outlet, useLocation, useMatches, useNavigate } from 
 
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { DialogHost, Tip } from './components/Feedback';
+import Splash from './components/Splash';
 import { Icon } from './components/icons';
 import Palette from './features/palette/Palette';
 import { api, apiPost, errorMessage } from './lib/api';
 import { ROLE_TEXT } from './lib/constants';
 import { hideTip, toast } from './lib/feedback';
 import { fmtClock, fmtInt, setDisplayTimezone, tz } from './lib/format';
+import { setRailCollapsed, useRailCollapsed } from './lib/prefs';
 import { SECTIONS, SECTION_GROUPS, type Section, type SectionKey, coinPath } from './lib/routes';
 import { AppProvider, type AppState, useApp, useDerived, useOverviewPoll } from './state/app';
 import { useSession } from './state/session';
@@ -33,19 +35,13 @@ function useMedia(query: string): boolean {
 }
 
 /**
- * Collapsible sidebar. Desktop: full by default, collapses to icons, and the choice is remembered.
+ * Collapsible sidebar. Desktop: full by default, collapses to icons, and the choice is remembered (also set on Preferences).
  * Tablet: icons by default; the toggle opens the full sidebar over the page until a link is
  * chosen, Escape is pressed or the page behind is clicked. Phones keep the bottom bar.
  */
 function useRail(pathname: string) {
   const tablet = useMedia(TABLET);
-  const [collapsed, setCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem('rail') === 'collapsed';
-    } catch {
-      return false;
-    }
-  });
+  const collapsed = useRailCollapsed();
   const [open, setOpen] = useState(false);
   useEffect(() => setOpen(false), [pathname, tablet]);
   useEffect(() => {
@@ -56,15 +52,7 @@ function useRail(pathname: string) {
   }, [open]);
   const toggle = () => {
     if (tablet) setOpen((o) => !o);
-    else
-      setCollapsed((c) => {
-        try {
-          localStorage.setItem('rail', c ? 'expanded' : 'collapsed');
-        } catch {
-          // per-browser convenience only
-        }
-        return !c;
-      });
+    else setRailCollapsed(!collapsed);
   };
   return {
     collapsed,
@@ -73,31 +61,6 @@ function useRail(pathname: string) {
     toggle,
     expanded: tablet ? open : !collapsed,
   };
-}
-
-function useTheme() {
-  const [mode, setMode] = useState<string>(() => {
-    try {
-      return localStorage.getItem('theme') || 'auto';
-    } catch {
-      return 'auto';
-    }
-  });
-  useEffect(() => {
-    if (mode === 'auto') delete document.documentElement.dataset.theme;
-    else document.documentElement.dataset.theme = mode;
-  }, [mode]);
-  const cycle = () => {
-    const next = mode === 'auto' ? 'light' : mode === 'light' ? 'dark' : 'auto';
-    try {
-      localStorage.setItem('theme', next);
-    } catch {
-      /* storage unavailable */
-    }
-    setMode(next);
-    toast(`Theme: ${next}`);
-  };
-  return [mode, cycle] as const;
 }
 
 /** Signed-in gate: sends the browser to sign-in or the password change, then loads /api/config. */
@@ -127,16 +90,7 @@ export function Shell() {
         then reload.
       </div>
     );
-  if (session.status === 'loading' || !session.me || !cfg)
-    return (
-      <div className="boot" aria-busy="true">
-        <div className="skeleton">
-          <i />
-          <i />
-          <i />
-        </div>
-      </div>
-    );
+  if (session.status === 'loading' || !session.me || !cfg) return <Splash />;
   return <SignedIn me={session.me} cfg={cfg} />;
 }
 
@@ -152,10 +106,27 @@ function SignedIn({ me, cfg }: { me: User; cfg: AppConfig }) {
   const [pageNotes, setPageNotes] = useState<Record<string, string>>({});
   const [pageHead, setPageHead] = useState<{ title: string; sub: string } | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [themeMode, cycleTheme] = useTheme();
   const rail = useRail(loc.pathname);
   const [moreOpen, setMoreOpen] = useState(false);
   useEffect(() => setMoreOpen(false), [loc.pathname]);
+  // A new page starts at its top (query changes such as filters or pages keep the position).
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+  }, [loc.pathname]);
+  // Online: the browser has a network and the last API poll answered.
+  const [netOnline, setNetOnline] = useState(() => navigator.onLine);
+  const [apiOk, setApiOk] = useState(true);
+  useEffect(() => {
+    const on = () => setNetOnline(true);
+    const off = () => setNetOnline(false);
+    window.addEventListener('online', on);
+    window.addEventListener('offline', off);
+    return () => {
+      window.removeEventListener('online', on);
+      window.removeEventListener('offline', off);
+    };
+  }, []);
+  const online = netOnline && apiOk;
   const paletteReturn = useRef<Element | null>(null);
 
   const allowed = useCallback((s: Section) => !s.permission || can(s.permission), [can]);
@@ -168,7 +139,13 @@ function SignedIn({ me, cfg }: { me: User; cfg: AppConfig }) {
   /* ---------- First load and timers ---------- */
 
   useEffect(() => {
-    refresh(true).catch((e) => toast(`Could not load the overview: ${errorMessage(e)}`, 'error'));
+    refresh(true).then(
+      () => setApiOk(true),
+      (e) => {
+        setApiOk(false);
+        toast(`Could not load the overview: ${errorMessage(e)}`, 'error');
+      },
+    );
     if (me.permissions.includes('telegram:manage'))
       api<{ pending: unknown[]; missingCount?: number }>('telegram/access')
         .then((a) =>
@@ -179,7 +156,13 @@ function SignedIn({ me, cfg }: { me: User; cfg: AppConfig }) {
 
   useEffect(() => {
     const id = setInterval(() => {
-      refresh().catch((e) => toast(`Could not reach the API: ${errorMessage(e)}`, 'error'));
+      refresh().then(
+        () => setApiOk(true),
+        (e) => {
+          setApiOk(false);
+          toast(`Could not reach the API: ${errorMessage(e)}`, 'error');
+        },
+      );
     }, 30_000);
     return () => clearInterval(id);
   }, [refresh]);
@@ -338,9 +321,21 @@ function SignedIn({ me, cfg }: { me: User; cfg: AppConfig }) {
         className={`rail${rail.collapsed ? ' collapsed' : ''}${rail.open ? ' open' : ''}`}
         aria-label="Dashboard sections"
       >
-        <NavLink className="mark" to="/" aria-label="Coins Predicts overview">
-          <Icon name="mark" viewBox="0 0 32 32" />
-        </NavLink>
+        <div className="rail-top">
+          <NavLink className="mark" to="/" aria-label="Coins Predicts overview">
+            <Icon name="mark" viewBox="0 0 32 32" />
+          </NavLink>
+        </div>
+        {/* On the sidebar's right edge, level with the logo. */}
+        <button
+          className={`rail-toggle${rail.expanded ? '' : ' closed'}`}
+          type="button"
+          aria-expanded={rail.expanded}
+          aria-label={rail.expanded ? 'Collapse the sidebar' : 'Expand the sidebar'}
+          onClick={rail.toggle}
+        >
+          <Icon name="chevron" />
+        </button>
         <div className="rail-items" onKeyDown={onRailKey}>
           {SECTION_GROUPS.map(([group, heading]) => {
             const items = visible.filter((s) => s.group === group);
@@ -349,19 +344,8 @@ function SignedIn({ me, cfg }: { me: User; cfg: AppConfig }) {
               <div key={group} className={`rail-group rail-group-${group}`}>
                 <span className="rail-heading">{heading}</span>
                 {items.map((s) => (
-                  <RailLink key={s.key} s={s} me={me} count={counts[s.key]} />
+                  <RailLink key={s.key} s={s} count={counts[s.key]} me={me} online={online} />
                 ))}
-                {group === 'settings' ? (
-                  <button
-                    type="button"
-                    className="rail-link rail-signout"
-                    data-label="Sign out"
-                    onClick={() => void ctx.signOut()}
-                  >
-                    <Icon name="signout" />
-                    <span>Sign out</span>
-                  </button>
-                ) : null}
               </div>
             );
           })}
@@ -376,26 +360,15 @@ function SignedIn({ me, cfg }: { me: User; cfg: AppConfig }) {
             <span>More</span>
           </button>
         </div>
-        <SourceStatus cfg={cfg} />
-        <div className="rail-bottom">
+        <div className="rail-foot">
           <button
-            className="rail-theme"
             type="button"
-            aria-label={`Color theme: ${themeMode}`}
-            title={`Theme: ${themeMode}`}
-            onClick={cycleTheme}
+            className="rail-link rail-signout has-tip"
+            data-label="Sign out"
+            onClick={() => void ctx.signOut()}
           >
-            <Icon name="theme" />
-          </button>
-          <button
-            className={`rail-theme rail-toggle${rail.expanded ? '' : ' closed'}`}
-            type="button"
-            aria-expanded={rail.expanded}
-            aria-label={rail.expanded ? 'Collapse the sidebar' : 'Expand the sidebar'}
-            title={rail.expanded ? 'Collapse the sidebar' : 'Expand the sidebar'}
-            onClick={rail.toggle}
-          >
-            <Icon name="sidebar" />
+            <Icon name="signout" />
+            <span>Sign out</span>
           </button>
         </div>
       </nav>
@@ -455,10 +428,8 @@ function SignedIn({ me, cfg }: { me: User; cfg: AppConfig }) {
         <MoreSheet
           sections={visible.filter((s) => !s.primary)}
           me={me}
-          cfg={cfg}
+          online={online}
           counts={counts}
-          themeMode={themeMode}
-          cycleTheme={cycleTheme}
           signOut={() => void ctx.signOut()}
           onClose={() => setMoreOpen(false)}
         />
@@ -471,79 +442,71 @@ function SignedIn({ me, cfg }: { me: User; cfg: AppConfig }) {
   );
 }
 
-/** One sidebar entry; "My account" shows who is signed in. */
-function RailLink({ s, me, count }: { s: Section; me: User; count: number | undefined }) {
+/**
+ * One sidebar entry: icon and label (the label is a tooltip while the sidebar shows icons).
+ * Preferences shows the signed-in user's avatar with an online / offline dot.
+ */
+function RailLink({
+  s,
+  count,
+  me,
+  online,
+}: {
+  s: Section;
+  count: number | undefined;
+  me: User;
+  online: boolean;
+}) {
   const account = s.key === 'account';
+  const role = ROLE_TEXT[me.role][0];
+  const state = online ? 'Online' : 'Offline';
   return (
     <NavLink
       id={`t-${s.key}`}
       to={s.path}
       end={s.path === '/'}
-      className={`rail-link${account ? ' rail-account' : ''}${s.primary ? ' primary' : ''}`}
-      data-label={account ? `${me.username} · ${ROLE_TEXT[me.role][0]}` : s.label}
-      title={account ? `My account: ${me.username} (${ROLE_TEXT[me.role][0]})` : undefined}
+      className={`rail-link has-tip${s.primary ? ' primary' : ''}${account ? ' rail-account' : ''}`}
+      data-label={account ? `${s.label} · ${me.username} · ${state}` : s.label}
+      aria-label={
+        account
+          ? `${s.label}: ${me.username}, ${role}, ${state === 'Online' ? 'online' : 'offline: the API cannot be reached'}`
+          : undefined
+      }
     >
       {account ? (
         <span className={`avatar ${me.role}`} aria-hidden="true">
-          {me.username.slice(0, 1).toUpperCase()}
+          <Icon name="account" />
+          <i className={`presence ${online ? 'on' : 'off'}`} />
         </span>
       ) : (
         <Icon name={s.key} />
       )}
-      <span className={account ? 'rail-user' : undefined}>
-        {account ? (
-          <>
-            <b>{me.username}</b>
-            <small>{ROLE_TEXT[me.role][0]}</small>
-          </>
-        ) : (
-          s.label
-        )}
-      </span>
+      <span>{account ? `${s.label} · ${me.username}` : s.label}</span>
       {s.counted ? <b className="count">{count === undefined ? '' : fmtInt(count)}</b> : null}
     </NavLink>
   );
 }
 
-/** Where the data comes from (live source or synthetic fixture) and the Tier 1 ruleset. */
-function SourceStatus({ cfg }: { cfg: AppConfig }) {
-  return (
-    <div
-      className={`rail-status ${cfg.isLiveData ? 'live' : 'fixture'}`}
-      title={`${cfg.isLiveData ? cfg.providerName : 'Synthetic fixture data'} · ruleset ${cfg.strategy.rulesetVersion} · Telegram ${cfg.telegramMode} · scheduler ${cfg.schedulerEnabled ? 'on' : 'off'}`}
-    >
-      <span className="pulse-dot" aria-hidden="true" />
-      <span className="rail-status-text">
-        <b>{cfg.isLiveData ? cfg.providerName : 'Synthetic fixture data'}</b>
-        <small>{cfg.strategy.rulesetVersion}</small>
-      </span>
-    </div>
-  );
-}
-
-/** Phone: the sections that are not in the bottom bar, grouped, with the theme and sign out. */
+/** Phone: the sections that are not in the bottom bar, and sign out. */
 function MoreSheet({
   sections,
   me,
-  cfg,
+  online,
   counts,
-  themeMode,
-  cycleTheme,
   signOut,
   onClose,
 }: {
   sections: Section[];
   me: User;
-  cfg: AppConfig;
+  online: boolean;
   counts: Partial<Record<SectionKey, number | undefined>>;
-  themeMode: string;
-  cycleTheme: () => void;
   signOut: () => void;
   onClose: () => void;
 }) {
   const boxRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
-    boxRef.current?.querySelector<HTMLElement>('a, button')?.focus();
+    // Focus the sheet itself (no ring on the first button after a tap); Tab then walks the items.
+    boxRef.current?.focus({ preventScroll: true });
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -551,7 +514,7 @@ function MoreSheet({
   return (
     <div className="more-sheet" role="dialog" aria-modal="true" aria-label="More sections">
       <div className="more-scrim" aria-hidden="true" onClick={onClose} />
-      <div className="more-box" ref={boxRef}>
+      <div className="more-box" ref={boxRef} tabIndex={-1}>
         <div className="more-head">
           <b>More</b>
           <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>
@@ -560,29 +523,22 @@ function MoreSheet({
         </div>
         {SECTION_GROUPS.map(([group, heading]) => {
           const items = sections.filter((s) => s.group === group);
-          if (!items.length && group !== 'settings') return null;
+          if (!items.length) return null;
           return (
             <div key={group} className="more-group">
               <span className="rail-heading">{heading}</span>
               {items.map((s) => (
-                <RailLink key={s.key} s={s} me={me} count={counts[s.key]} />
+                <RailLink key={s.key} s={s} count={counts[s.key]} me={me} online={online} />
               ))}
-              {group === 'settings' ? (
-                <>
-                  <button type="button" className="rail-link" onClick={cycleTheme}>
-                    <Icon name="theme" />
-                    <span>{`Theme: ${themeMode}`}</span>
-                  </button>
-                  <button type="button" className="rail-link" onClick={signOut}>
-                    <Icon name="signout" />
-                    <span>Sign out</span>
-                  </button>
-                </>
-              ) : null}
             </div>
           );
         })}
-        <SourceStatus cfg={cfg} />
+        <div className="more-actions">
+          <button type="button" className="btn" onClick={signOut}>
+            <Icon name="signout" />
+            Sign out
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -151,9 +151,9 @@ export const SECTIONS: readonly Section[] = [
     key: 'account',
     group: 'settings',
     path: '/account',
-    label: 'My account',
-    title: 'My account',
-    sub: 'Your username, your password, and what your role allows.',
+    label: 'Preferences',
+    title: 'Preferences',
+    sub: 'Your sign-in details, what your role allows, and how this dashboard looks in this browser.',
   },
 ];
 
