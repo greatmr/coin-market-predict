@@ -8,7 +8,14 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 </head>
 <body>
-  <div id="root"></div>
+  <div id="root">
+    <!-- Shown until the app mounts; same markup as components/Splash.tsx. -->
+    <div class="splash" role="status" aria-live="polite">
+      <svg class="splash-art" viewBox="0 0 160 96" aria-hidden="true"><path class="splash-grid" d="M8 86h144M8 62h144M8 38h144"/><g class="splash-candle down"><path d="M18 52V84"/><rect x="13" y="58" width="10" height="20" rx="2"/></g><g class="splash-candle up"><path d="M40 48V80"/><rect x="35" y="54" width="10" height="20" rx="2"/></g><g class="splash-candle down"><path d="M62 54V82"/><rect x="57" y="60" width="10" height="16" rx="2"/></g><g class="splash-candle up"><path d="M84 34V72"/><rect x="79" y="40" width="10" height="26" rx="2"/></g><g class="splash-candle down"><path d="M106 38V66"/><rect x="101" y="44" width="10" height="16" rx="2"/></g><g class="splash-candle up"><path d="M128 16V56"/><rect x="123" y="22" width="10" height="28" rx="2"/></g><path class="splash-line" d="M8 74L40 62L62 68L84 46L106 52L128 28L152 18"/><circle class="splash-dot" cx="152" cy="18" r="4"/></svg>
+      <b class="splash-title">Coins Predicts</b>
+      <span class="splash-text">Loading the screen…</span>
+    </div>
+  </div>
   <script type="module" src="/src/main.tsx"></script>
 </body>
 </html>

@@ -48,11 +48,13 @@ coin). **Find a coin** — the search at the top centre of every page (⌘K / Ct
 searches every known coin by symbol, name or CMC id.
 
 The sidebar groups the sections into *Screen*, *Data & operations* and *Settings* (Telegram,
-users, your account and *Sign out*); its foot shows the data source and ruleset, the theme button
-(auto / light / dark) and the collapse button (desktop: icons only, remembered; tablet: opens the
-full sidebar over the page). On phones the bottom bar keeps Overview, Review queue, Forward test
-and Data; **More** opens the other sections, settings, the theme and *Sign out*. A *Back to top*
-button appears on every device once a page is scrolled down.
+users, and *Preferences*, which shows your avatar with an online / offline dot); *Sign out* is at
+its foot. The round button on the sidebar's edge collapses it to icons on desktop (remembered) and
+opens it over the page on tablet; collapsed items show their name on hover or touch.
+**Preferences** holds your sign-in details, what your role allows, the colour theme (auto / light /
+dark) and whether the desktop sidebar starts collapsed. On phones the bottom bar keeps Overview,
+Review queue, Forward test and Data; **More** opens the other sections (Preferences included) and
+*Sign out*. A *Back to top* button appears on every device once a page is scrolled down.
 
 Window cells show the multiple and a bar against the 1.5× tick (YES in amber), or `N/A`. Hover an N/A for its reason:
 `DAILY_ROW_MISSING` / `DAILY_ROW_INVALID` (a day in that window is missing or invalid — other
