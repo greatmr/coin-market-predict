@@ -12,12 +12,68 @@ import { api, apiPost, errorMessage } from './lib/api';
 import { ROLE_TEXT } from './lib/constants';
 import { hideTip, toast } from './lib/feedback';
 import { fmtClock, fmtInt, setDisplayTimezone, tz } from './lib/format';
-import { SECTIONS, type Section, type SectionKey, coinPath } from './lib/routes';
+import { SECTIONS, SECTION_GROUPS, type Section, type SectionKey, coinPath } from './lib/routes';
 import { AppProvider, type AppState, useApp, useDerived, useOverviewPoll } from './state/app';
 import { useSession } from './state/session';
 import type { AppConfig, OperateResult, Overview, Permission, User } from './types/api';
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
+
+const TABLET = '(min-width: 721px) and (max-width: 1100px)';
+
+function useMedia(query: string): boolean {
+  const [on, setOn] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const update = () => setOn(mq.matches);
+    mq.addEventListener('change', update);
+    return () => mq.removeEventListener('change', update);
+  }, [query]);
+  return on;
+}
+
+/**
+ * Collapsible sidebar. Desktop: full by default, collapses to icons, and the choice is remembered.
+ * Tablet: icons by default; the toggle opens the full sidebar over the page until a link is
+ * chosen, Escape is pressed or the page behind is clicked. Phones keep the bottom bar.
+ */
+function useRail(pathname: string) {
+  const tablet = useMedia(TABLET);
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem('rail') === 'collapsed';
+    } catch {
+      return false;
+    }
+  });
+  const [open, setOpen] = useState(false);
+  useEffect(() => setOpen(false), [pathname, tablet]);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open]);
+  const toggle = () => {
+    if (tablet) setOpen((o) => !o);
+    else
+      setCollapsed((c) => {
+        try {
+          localStorage.setItem('rail', c ? 'expanded' : 'collapsed');
+        } catch {
+          // per-browser convenience only
+        }
+        return !c;
+      });
+  };
+  return {
+    collapsed,
+    open,
+    close: () => setOpen(false),
+    toggle,
+    expanded: tablet ? open : !collapsed,
+  };
+}
 
 function useTheme() {
   const [mode, setMode] = useState<string>(() => {
@@ -97,6 +153,9 @@ function SignedIn({ me, cfg }: { me: User; cfg: AppConfig }) {
   const [pageHead, setPageHead] = useState<{ title: string; sub: string } | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [themeMode, cycleTheme] = useTheme();
+  const rail = useRail(loc.pathname);
+  const [moreOpen, setMoreOpen] = useState(false);
+  useEffect(() => setMoreOpen(false), [loc.pathname]);
   const paletteReturn = useRef<Element | null>(null);
 
   const allowed = useCallback((s: Section) => !s.permission || can(s.permission), [can]);
@@ -274,59 +333,76 @@ function SignedIn({ me, cfg }: { me: User; cfg: AppConfig }) {
         <span />
       </div>
 
-      <nav className="rail" aria-label="Dashboard sections">
+      {rail.open ? <div className="rail-scrim" aria-hidden="true" onClick={rail.close} /> : null}
+      <nav
+        className={`rail${rail.collapsed ? ' collapsed' : ''}${rail.open ? ' open' : ''}`}
+        aria-label="Dashboard sections"
+      >
         <NavLink className="mark" to="/" aria-label="Coins Predicts overview">
           <Icon name="mark" viewBox="0 0 32 32" />
         </NavLink>
         <div className="rail-items" onKeyDown={onRailKey}>
-          {visible.map((s) => (
-            <NavLink
-              key={s.key}
-              id={`t-${s.key}`}
-              to={s.path}
-              end={s.path === '/'}
-              className={s.key === 'account' ? 'rail-link rail-account' : 'rail-link'}
-              data-label={s.label}
-            >
-              <Icon name={s.key} />
-              <span>{s.label}</span>
-              {s.counted ? (
-                <b className="count">{counts[s.key] === undefined ? '' : fmtInt(counts[s.key])}</b>
-              ) : null}
-            </NavLink>
-          ))}
+          {SECTION_GROUPS.map(([group, heading]) => {
+            const items = visible.filter((s) => s.group === group);
+            if (!items.length) return null;
+            return (
+              <div key={group} className={`rail-group rail-group-${group}`}>
+                <span className="rail-heading">{heading}</span>
+                {items.map((s) => (
+                  <RailLink key={s.key} s={s} me={me} count={counts[s.key]} />
+                ))}
+                {group === 'settings' ? (
+                  <button
+                    type="button"
+                    className="rail-link rail-signout"
+                    data-label="Sign out"
+                    onClick={() => void ctx.signOut()}
+                  >
+                    <Icon name="signout" />
+                    <span>Sign out</span>
+                  </button>
+                ) : null}
+              </div>
+            );
+          })}
+          <button
+            type="button"
+            className="rail-link rail-more"
+            aria-haspopup="dialog"
+            aria-expanded={moreOpen}
+            onClick={() => setMoreOpen(true)}
+          >
+            <Icon name="more" />
+            <span>More</span>
+          </button>
         </div>
-        <button
-          className="rail-theme"
-          type="button"
-          aria-label={`Color theme: ${themeMode}`}
-          title={`Theme: ${themeMode}`}
-          onClick={cycleTheme}
-        >
-          <Icon name="theme" />
-        </button>
+        <SourceStatus cfg={cfg} />
+        <div className="rail-bottom">
+          <button
+            className="rail-theme"
+            type="button"
+            aria-label={`Color theme: ${themeMode}`}
+            title={`Theme: ${themeMode}`}
+            onClick={cycleTheme}
+          >
+            <Icon name="theme" />
+          </button>
+          <button
+            className={`rail-theme rail-toggle${rail.expanded ? '' : ' closed'}`}
+            type="button"
+            aria-expanded={rail.expanded}
+            aria-label={rail.expanded ? 'Collapse the sidebar' : 'Expand the sidebar'}
+            title={rail.expanded ? 'Collapse the sidebar' : 'Expand the sidebar'}
+            onClick={rail.toggle}
+          >
+            <Icon name="sidebar" />
+          </button>
+        </div>
       </nav>
 
-      <div className="shell">
+      <div className={`shell${rail.collapsed ? ' rail-collapsed' : ''}`}>
         <header className="top">
-          <div className="title-block">
-            <h1>{title}</h1>
-            <p className="page-sub">
-              {sub}
-              {note ? ` ${note}` : ''}
-            </p>
-          </div>
-          <div className="top-actions">
-            <span className="badges">
-              <span
-                className={`badge ${cfg.isLiveData ? 'live' : 'fixture'}`}
-                title={`Telegram ${cfg.telegramMode}; scheduler ${cfg.schedulerEnabled ? 'on' : 'off'}`}
-              >
-                <span className="pulse-dot" aria-hidden="true" />
-                {cfg.isLiveData ? cfg.providerName : 'Synthetic fixture data'}
-              </span>
-              <span className="badge quiet">{cfg.strategy.rulesetVersion}</span>
-            </span>
+          <div className="top-search">
             <button
               className="search-btn"
               type="button"
@@ -334,16 +410,22 @@ function SignedIn({ me, cfg }: { me: User; cfg: AppConfig }) {
               onClick={openPalette}
             >
               <Icon name="search" />
-              <span>Find a coin</span>
+              <span>Find a coin by symbol, name or CMC id</span>
               <kbd>{isMac ? '⌘K' : 'Ctrl K'}</kbd>
             </button>
-            <UserMenu me={me} />
+          </div>
+          <div className="title-block">
+            <h1>{title}</h1>
+            <p className="page-sub">
+              {sub}
+              {note ? ` ${note}` : ''}
+            </p>
           </div>
         </header>
 
         <Banner overview={overview} />
 
-        <main>
+        <main tabIndex={-1}>
           {forbidden ? (
             <div className="panel">
               <h2>Not available for your role</h2>
@@ -369,6 +451,19 @@ function SignedIn({ me, cfg }: { me: User; cfg: AppConfig }) {
         </footer>
       </div>
 
+      {moreOpen ? (
+        <MoreSheet
+          sections={visible.filter((s) => !s.primary)}
+          me={me}
+          cfg={cfg}
+          counts={counts}
+          themeMode={themeMode}
+          cycleTheme={cycleTheme}
+          signOut={() => void ctx.signOut()}
+          onClose={() => setMoreOpen(false)}
+        />
+      ) : null}
+      <BackToTop />
       {paletteOpen ? <Palette onClose={closePalette} /> : null}
       <DialogHost />
       <Tip />
@@ -376,59 +471,149 @@ function SignedIn({ me, cfg }: { me: User; cfg: AppConfig }) {
   );
 }
 
-function UserMenu({ me }: { me: User }) {
-  const { signOut } = useApp();
-  const [open, setOpen] = useState(false);
-  const chipRef = useRef<HTMLButtonElement | null>(null);
-  useEffect(() => {
-    if (!open) return undefined;
-    const onDoc = (e: MouseEvent) => {
-      if (!(e.target as Element).closest('.user-menu')) setOpen(false);
-    };
-    document.addEventListener('click', onDoc);
-    return () => document.removeEventListener('click', onDoc);
-  }, [open]);
+/** One sidebar entry; "My account" shows who is signed in. */
+function RailLink({ s, me, count }: { s: Section; me: User; count: number | undefined }) {
+  const account = s.key === 'account';
   return (
-    <div className="user-menu">
-      <button
-        ref={chipRef}
-        className="user-chip"
-        type="button"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={(e) => {
-          e.stopPropagation();
-          setOpen((o) => !o);
-        }}
-      >
-        <span className="avatar" aria-hidden="true">
+    <NavLink
+      id={`t-${s.key}`}
+      to={s.path}
+      end={s.path === '/'}
+      className={`rail-link${account ? ' rail-account' : ''}${s.primary ? ' primary' : ''}`}
+      data-label={account ? `${me.username} · ${ROLE_TEXT[me.role][0]}` : s.label}
+      title={account ? `My account: ${me.username} (${ROLE_TEXT[me.role][0]})` : undefined}
+    >
+      {account ? (
+        <span className={`avatar ${me.role}`} aria-hidden="true">
           {me.username.slice(0, 1).toUpperCase()}
         </span>
-        <span className="user-text">
-          <b>{me.username}</b>
-          <small>{ROLE_TEXT[me.role][0]}</small>
-        </span>
-      </button>
-      <div
-        className="user-pop"
-        role="menu"
-        hidden={!open}
-        onClick={() => setOpen(false)}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') {
-            setOpen(false);
-            chipRef.current?.focus();
-          }
-        }}
-      >
-        <NavLink role="menuitem" to="/account">
-          My account
-        </NavLink>
-        <button role="menuitem" type="button" onClick={() => void signOut()}>
-          Sign out
-        </button>
+      ) : (
+        <Icon name={s.key} />
+      )}
+      <span className={account ? 'rail-user' : undefined}>
+        {account ? (
+          <>
+            <b>{me.username}</b>
+            <small>{ROLE_TEXT[me.role][0]}</small>
+          </>
+        ) : (
+          s.label
+        )}
+      </span>
+      {s.counted ? <b className="count">{count === undefined ? '' : fmtInt(count)}</b> : null}
+    </NavLink>
+  );
+}
+
+/** Where the data comes from (live source or synthetic fixture) and the Tier 1 ruleset. */
+function SourceStatus({ cfg }: { cfg: AppConfig }) {
+  return (
+    <div
+      className={`rail-status ${cfg.isLiveData ? 'live' : 'fixture'}`}
+      title={`${cfg.isLiveData ? cfg.providerName : 'Synthetic fixture data'} · ruleset ${cfg.strategy.rulesetVersion} · Telegram ${cfg.telegramMode} · scheduler ${cfg.schedulerEnabled ? 'on' : 'off'}`}
+    >
+      <span className="pulse-dot" aria-hidden="true" />
+      <span className="rail-status-text">
+        <b>{cfg.isLiveData ? cfg.providerName : 'Synthetic fixture data'}</b>
+        <small>{cfg.strategy.rulesetVersion}</small>
+      </span>
+    </div>
+  );
+}
+
+/** Phone: the sections that are not in the bottom bar, grouped, with the theme and sign out. */
+function MoreSheet({
+  sections,
+  me,
+  cfg,
+  counts,
+  themeMode,
+  cycleTheme,
+  signOut,
+  onClose,
+}: {
+  sections: Section[];
+  me: User;
+  cfg: AppConfig;
+  counts: Partial<Record<SectionKey, number | undefined>>;
+  themeMode: string;
+  cycleTheme: () => void;
+  signOut: () => void;
+  onClose: () => void;
+}) {
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    boxRef.current?.querySelector<HTMLElement>('a, button')?.focus();
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return (
+    <div className="more-sheet" role="dialog" aria-modal="true" aria-label="More sections">
+      <div className="more-scrim" aria-hidden="true" onClick={onClose} />
+      <div className="more-box" ref={boxRef}>
+        <div className="more-head">
+          <b>More</b>
+          <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>
+            <Icon name="close" />
+          </button>
+        </div>
+        {SECTION_GROUPS.map(([group, heading]) => {
+          const items = sections.filter((s) => s.group === group);
+          if (!items.length && group !== 'settings') return null;
+          return (
+            <div key={group} className="more-group">
+              <span className="rail-heading">{heading}</span>
+              {items.map((s) => (
+                <RailLink key={s.key} s={s} me={me} count={counts[s.key]} />
+              ))}
+              {group === 'settings' ? (
+                <>
+                  <button type="button" className="rail-link" onClick={cycleTheme}>
+                    <Icon name="theme" />
+                    <span>{`Theme: ${themeMode}`}</span>
+                  </button>
+                  <button type="button" className="rail-link" onClick={signOut}>
+                    <Icon name="signout" />
+                    <span>Sign out</span>
+                  </button>
+                </>
+              ) : null}
+            </div>
+          );
+        })}
+        <SourceStatus cfg={cfg} />
       </div>
     </div>
+  );
+}
+
+/** A "back to top" button once the page has scrolled well past the first screen. */
+function BackToTop() {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    const onScroll = () => setShow(window.scrollY > 600);
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+  const top = () => {
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    window.scrollTo({ top: 0, behavior: reduce ? 'auto' : 'smooth' });
+    document.querySelector<HTMLElement>('main')?.focus({ preventScroll: true });
+  };
+  return (
+    <button
+      type="button"
+      className={`back-to-top${show ? ' show' : ''}`}
+      aria-label="Back to top"
+      title="Back to top"
+      tabIndex={show ? 0 : -1}
+      aria-hidden={!show}
+      onClick={top}
+    >
+      <Icon name="up" />
+    </button>
   );
 }
 

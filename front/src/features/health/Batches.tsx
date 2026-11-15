@@ -4,7 +4,15 @@ import { type PointerEvent, useCallback, useEffect, useState } from 'react';
 
 import { TipHead, TipRow } from '../../components/Feedback';
 import { ChartBox, Ring } from '../../components/charts';
-import { type Column, Lab, LoadError, Table } from '../../components/ui';
+import {
+  type Column,
+  Lab,
+  LoadError,
+  SkeletonBlock,
+  SkeletonTable,
+  SkeletonTiles,
+  Table,
+} from '../../components/ui';
 import { api } from '../../lib/api';
 import { BATCH, QUEUE, RUN, STAGES, type StatusMap, statusText } from '../../lib/constants';
 import { hideTip, showTip } from '../../lib/feedback';
@@ -321,7 +329,7 @@ export default function Batches() {
 
   return (
     <>
-      <div className="tiles">{data ? <HealthTiles health={data.health} /> : null}</div>
+      <div className="tiles">{data ? <HealthTiles health={data.health} /> : <SkeletonTiles />}</div>
       <Gantt run={overview?.latestRun} />
       <div className="panel">
         <div className="panel-head">
@@ -331,6 +339,8 @@ export default function Batches() {
         <div>
           {data && data.batches.length ? (
             <ChartBox>{(W) => <BatchBars W={W} batches={data.batches} />}</ChartBox>
+          ) : !data && !error ? (
+            <SkeletonBlock height={160} />
           ) : (
             <div className="chart-box" />
           )}
@@ -345,7 +355,9 @@ export default function Batches() {
               empty="No crawl batches yet."
               rowKey={(b, i) => b.id || i}
             />
-          ) : null}
+          ) : (
+            <SkeletonTable rows={8} />
+          )}
         </div>
       </div>
       <div className="panel">
@@ -360,7 +372,9 @@ export default function Batches() {
               empty="No runs yet."
               rowKey={(r, i) => r.id || i}
             />
-          ) : null}
+          ) : (
+            <SkeletonTable rows={6} />
+          )}
         </div>
       </div>
       <div className="panel">
@@ -376,7 +390,9 @@ export default function Batches() {
               empty="No open mapping tasks."
               rowKey={(t, i) => t.id || i}
             />
-          ) : null}
+          ) : (
+            <SkeletonTable rows={3} />
+          )}
         </div>
       </div>
     </>

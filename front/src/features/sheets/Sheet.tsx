@@ -15,6 +15,8 @@ import {
   Pager,
   PassCell,
   PointsCell,
+  SkeletonBlock,
+  SkeletonTable,
   Stars,
   Table,
 } from '../../components/ui';
@@ -286,7 +288,9 @@ export default function Sheet({ sheet }: { sheet: SheetKey }) {
               }
               onRow={open}
             />
-          ) : null}
+          ) : (
+            <SkeletonTable rows={12} />
+          )}
         </div>
         {hasScatter ? (
           <div className="sheet-scatter" hidden={view !== 'scatter'}>
@@ -304,7 +308,9 @@ export default function Sheet({ sheet }: { sheet: SheetKey }) {
                   <div className="chart-box" />
                 )}
               </>
-            ) : null}
+            ) : (
+              <SkeletonBlock height={420} />
+            )}
           </div>
         ) : null}
       </div>

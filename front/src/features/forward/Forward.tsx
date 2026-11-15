@@ -14,6 +14,9 @@ import {
   LoadError,
   Pager,
   PointsCell,
+  SkeletonBlock,
+  SkeletonTable,
+  SkeletonTiles,
   Stars,
   Table,
 } from '../../components/ui';
@@ -502,7 +505,13 @@ export default function Forward() {
           </>
         ) : null}
       </div>
-      {s ? <SummaryTiles s={s} /> : <div className="tiles" />}
+      {s ? (
+        <SummaryTiles s={s} />
+      ) : (
+        <div className="tiles">
+          <SkeletonTiles />
+        </div>
+      )}
       {updateRunId ? (
         <UpdatePanel
           key={updateRunId}
@@ -522,7 +531,9 @@ export default function Forward() {
             day-0 High is never counted
           </span>
         </div>
-        <div className="table-wrap">{s ? <StarSummary groups={s.cohort} /> : null}</div>
+        <div className="table-wrap">
+          {s ? <StarSummary groups={s.cohort} /> : <SkeletonTable rows={4} />}
+        </div>
       </div>
       <HowToRead s={s} />
       <div className="grid-2">
@@ -539,7 +550,9 @@ export default function Forward() {
                 empty="No events yet."
                 rowKey={(g) => g.group}
               />
-            ) : null}
+            ) : (
+              <SkeletonTable rows={5} />
+            )}
           </div>
         </div>
         <div className="panel">
@@ -555,7 +568,9 @@ export default function Forward() {
                 empty="No events yet."
                 rowKey={(g) => g.group}
               />
-            ) : null}
+            ) : (
+              <SkeletonTable rows={5} />
+            )}
           </div>
         </div>
       </div>
@@ -566,7 +581,9 @@ export default function Forward() {
             <span className="hint">all stars; display bins, not thresholds</span>
           </div>
           <div>
-            {!s ? null : all && all.finalReturns.n ? (
+            {!s ? (
+              <SkeletonBlock height={180} />
+            ) : all && all.finalReturns.n ? (
               <HBars
                 items={all.returnDistribution.map((b) => ({ label: b.label, value: b.count }))}
               />
@@ -583,7 +600,9 @@ export default function Forward() {
             <span className="hint">the later the signal, the shorter the end-of-day extension</span>
           </div>
           <div>
-            {!s ? null : all && all.events ? (
+            {!s ? (
+              <SkeletonBlock height={128} />
+            ) : all && all.events ? (
               <HourColumns values={all.detectionHourUtc} />
             ) : (
               <div className="empty">No events yet.</div>
@@ -659,7 +678,9 @@ export default function Forward() {
               onRow={(r) => openCoin(r.cmcId)}
               rowKey={(r, i) => r.eventId || i}
             />
-          ) : null}
+          ) : (
+            <SkeletonTable rows={12} label="Loading events…" />
+          )}
         </div>
       </div>
       <div className="pager">
@@ -686,7 +707,9 @@ export default function Forward() {
               empty="No rejected trigger."
               rowKey={(r, i) => r.id || i}
             />
-          ) : null}
+          ) : (
+            <SkeletonTable rows={3} />
+          )}
         </div>
       </div>
     </>

@@ -84,6 +84,33 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M12 4a8 8 0 0 1 0 16z" className="fill" />
     </>
   ),
+  more: (
+    <>
+      <path d="M4 7h16" />
+      <path d="M4 12h16" />
+      <path d="M4 17h16" />
+    </>
+  ),
+  signout: (
+    <>
+      <path d="M14 5h4a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-4" />
+      <path d="M10 16l-4-4 4-4" />
+      <path d="M6 12h10" />
+    </>
+  ),
+  up: (
+    <>
+      <path d="M12 19V6" />
+      <path d="M6.5 11.5L12 6l5.5 5.5" />
+    </>
+  ),
+  sidebar: (
+    <>
+      <rect x="3.5" y="4.5" width="17" height="15" rx="3" />
+      <path d="M9 4.5v15" />
+      <path d="M15.5 10l-2 2 2 2" />
+    </>
+  ),
   search: (
     <>
       <circle cx="11" cy="11" r="6.5" />

@@ -1,6 +1,7 @@
 // Data: the latest batch's data quality (quotes, LBank mapping, the LBank list, scan warnings, last
 // export) and why coins are left out of the screen. Moved here from the overview.
 import { HBars } from '../../components/charts';
+import { SkeletonBlock } from '../../components/ui';
 import { reasonText } from '../../lib/constants';
 import { useApp } from '../../state/app';
 
@@ -19,7 +20,7 @@ export default function Data() {
           <h2>Data quality</h2>
           <span className="hint">{qualityMeta(ov)}</span>
         </div>
-        <div>{ov ? <Quality ov={ov} sc={sc} c={c} /> : null}</div>
+        <div>{ov ? <Quality ov={ov} sc={sc} c={c} /> : <SkeletonBlock height={320} />}</div>
       </div>
       <div className="panel">
         <div className="panel-head">
@@ -32,7 +33,9 @@ export default function Data() {
               items={reasons.map(([k, v]) => ({ label: reasonText(k), value: v, tone: 'rose' }))}
               empty="No exclusions yet."
             />
-          ) : null}
+          ) : (
+            <SkeletonBlock height={320} />
+          )}
         </div>
       </div>
     </div>

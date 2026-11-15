@@ -2,7 +2,7 @@
 import { type ReactNode, useState } from 'react';
 
 import { Ring } from '../../components/charts';
-import { Lab } from '../../components/ui';
+import { Lab, SkeletonBlock } from '../../components/ui';
 import { apiPost, errorMessage } from '../../lib/api';
 import { RUN, STAGES, statusText } from '../../lib/constants';
 import { toast } from '../../lib/feedback';
@@ -22,7 +22,7 @@ export default function Pulse() {
   if (!ov)
     return (
       <div className="panel pulse" aria-live="polite">
-        Loading…
+        <SkeletonBlock height={190} label="Loading the latest run…" />
       </div>
     );
   return (

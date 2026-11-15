@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 
-import { Lab } from '../../components/ui';
+import { Lab, SkeletonTable } from '../../components/ui';
 import { api } from '../../lib/api';
 import { RUN } from '../../lib/constants';
 import { fmtAgo, fmtDay, fmtInt } from '../../lib/format';
@@ -44,7 +44,9 @@ export default function ForwardPanel() {
       </div>
       {failed ? (
         <div className="empty">The forward-test summary could not be loaded.</div>
-      ) : !s ? null : (
+      ) : !s ? (
+        <SkeletonTable rows={4} label="Loading the forward test…" />
+      ) : (
         <>
           <div className="table-wrap">
             <StarSummary groups={s.cohort} compact />
