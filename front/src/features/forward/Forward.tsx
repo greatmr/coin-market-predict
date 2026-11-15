@@ -1,7 +1,8 @@
-// Star Event Forward Test: summary tiles, star-group statistics, event list and rejected triggers.
-// A descriptive measurement, not a trade or a signal (docs/forward-test.md). The event list's
-// view, star filter, search and page live in the URL: /forward?view=final&stars=3&q=btc&page=2
-import { type ChangeEvent, useCallback, useEffect, useRef, useState } from 'react';
+// Star Event Forward Test: summary tiles, results by stars, the event list with its High-check
+// status, and rejected triggers. A descriptive measurement, not a trade or a signal
+// (docs/forward-test.md). List state lives in the URL:
+//   /forward?view=tracking&stars=3&result=CONFIRMED&sort=return&dir=desc&q=btc&page=2
+import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { HBars } from '../../components/charts';
 import { SearchField } from '../../components/icons';
@@ -18,51 +19,57 @@ import {
 } from '../../components/ui';
 import { api, apiPost, errorMessage } from '../../lib/api';
 import { apiUrl } from '../../lib/config';
-import { RUN, type StatusMap, reasonText } from '../../lib/constants';
+import { RUN, reasonText } from '../../lib/constants';
 import { toast } from '../../lib/feedback';
-import { fmtAgo, fmtDay, fmtInt, fmtMult, fmtPct, fmtPrice, fmtTime, utc } from '../../lib/format';
+import { fmtAgo, fmtDay, fmtInt, fmtPct, fmtPrice, fmtTime, tz, utc } from '../../lib/format';
 import { useQueryState } from '../../lib/routes';
 import { useApp } from '../../state/app';
 
+import StarSummary from './StarSummary';
+import UpdatePanel, { checksLine } from './UpdatePanel';
+import {
+  CheckCell,
+  FwdPeak,
+  FwdReturn,
+  FwdWindows,
+  NotesCell,
+  SortHead,
+  WindowCell,
+} from './cells';
+import {
+  CHECK,
+  DAY0_EXPLAINED,
+  FWD_STATUS,
+  OVERLAP_EXPLAINED,
+  RESULT_FILTERS,
+  STATUS_FILTERS,
+  utcMidnightLocal,
+} from './labels';
 import type {
   CohortGroup,
-  EventView,
+  EventSort,
   ForwardEventRow,
   ForwardEventsPage,
   ForwardRejection,
   ForwardSummary,
   ForwardUpdateResult,
-  PassStatus,
 } from './types';
 
-const FWD_STATUS: StatusMap = {
-  OPEN: ['', 'Open'],
-  TRACKING: ['accent', 'Tracking'],
-  AWAITING_FINAL_DAY: ['warning', 'Awaiting final day'],
-  FINAL: ['good', 'Final'],
-  INCOMPLETE: ['serious', 'Incomplete'],
-};
 const FWD_PAGE = 100;
-const FWD_FLAG_TEXT: Record<string, string> = {
-  INCOMPLETE_DAY0: 'day 0 not provable',
-  DAY0_UNRESOLVED: 'day 0 open',
-  FINAL_DAY_PENDING: 'final day pending',
-  HIGH_MISSING: 'High missing',
-  HIGH_INVALID: 'High invalid',
-  PEAK_TIE_UNOBSERVED_DAY0: 'tie with day 0',
-  CONTRACT_EVIDENCE_CHANGED: 'contract changed',
-};
-const VIEWS: readonly (readonly [EventView, string])[] = [
-  ['active', 'Active'],
-  ['final', 'Final'],
-  ['incomplete', 'Incomplete'],
-  ['all', 'All'],
-];
 const STAR_FILTERS: readonly (readonly [string, string])[] = [
   ['', 'All'],
   ['1', '1★'],
   ['2', '2★'],
   ['3', '3★'],
+];
+const SORTS: readonly EventSort[] = [
+  'detected',
+  'return',
+  'stars',
+  'points',
+  'multiple3d',
+  'multiple7d',
+  'multiple30d',
 ];
 const EXPORT_FILES = [
   'workbook.xlsx',
@@ -71,182 +78,10 @@ const EXPORT_FILES = [
   'cohort_summary.csv',
 ];
 
-const isView = (v: string): v is EventView => VIEWS.some(([k]) => k === v);
 const isStars = (v: string) => STAR_FILTERS.some(([k]) => k === v);
-
-function fwdFlag(code: string): string {
-  const [k = '', ...rest] = String(code).split(':');
-  return `${FWD_FLAG_TEXT[k] || k.replace(/_/g, ' ').toLowerCase()}${rest.length ? ` ${rest.join(':')}` : ''}`;
-}
-
-function FwdReturn({ r }: { r: ForwardEventRow }) {
-  const o = r.outcome;
-  if (!o || o.peakReturnPct === null) return <span className="muted">—</span>;
-  const exact = o.peakKind === 'EXACT';
-  return (
-    <span
-      className={exact ? 'fwd-ret' : 'fwd-ret provisional'}
-      title={
-        exact
-          ? 'Final: every included day covered. Highest later High ÷ detection price − 1.'
-          : 'Provisional lower bound: the window is still open, the final day is pending or a day is not covered.'
-      }
-    >
-      {`${exact ? '' : '≥ '}${fmtPct(o.peakReturnPct)}`}
-    </span>
-  );
-}
-
-function FwdPeak({ r }: { r: ForwardEventRow }) {
-  const o = r.outcome;
-  if (!o || !o.peakHighUsd) return <span className="muted">—</span>;
-  return (
-    <div className="fwd-peak">
-      <b>{fmtPrice(o.peakHighUsd)}</b>
-      <span
-        className="muted small"
-        title={
-          o.peakTimePrecision === 'UTC_DAY'
-            ? 'Only the UTC day of this High is known.'
-            : 'Time of the High as published by the source.'
-        }
-      >
-        {o.peakAt ? fmtTime(o.peakAt) : `${o.peakDate ? fmtDay(o.peakDate) : '—'}, time unknown`}
-      </span>
-      {o.extensionPeakFlag === 'TRUE' ? (
-        <Chip title="Inside the end-of-day extension.">after 168 h</Chip>
-      ) : o.extensionPeakFlag === 'UNKNOWN' ? (
-        <Chip title="The time precision cannot show whether this came after 168 h.">168 h?</Chip>
-      ) : null}
-    </div>
-  );
-}
-
-/** The scanner's 3d / 7d / 30d results at detection, compact (multiples, YES in colour). */
-const FwdWindows = ({ r }: { r: ForwardEventRow }) => {
-  const windows: [string, PassStatus, string | null][] = [
-    ['3d', r.pass3d, r.multiple3d],
-    ['7d', r.pass7d, r.multiple7d],
-    ['30d', r.pass30d, r.multiple30d],
-  ];
-  return (
-    <span className="fwd-windows">
-      {windows.map(([d, status, m]) => (
-        <span
-          key={d}
-          className={`pass ${status === 'YES' ? 'yes' : status === 'NO' ? 'no' : 'na'}`}
-          title={`${d}: ${status}`}
-        >
-          <b>{status === 'N/A' ? 'N/A' : fmtMult(m)}</b>
-        </span>
-      ))}
-    </span>
-  );
-};
-
-const EVENT_COLS: Column<ForwardEventRow>[] = [
-  { label: 'Coin', render: (r) => <CoinCell r={r} /> },
-  { label: 'Stars', render: (r) => <Stars n={r.starCount} /> },
-  {
-    label: 'Points',
-    num: true,
-    title: 'Weighted points at detection (weighted_star_v1)',
-    render: (r) => (
-      <PointsCell
-        points={r.weightedPassPoints}
-        complete={r.scoreComplete}
-        strength={r.weightedStrength}
-      />
-    ),
-  },
-  {
-    label: 'Detected',
-    render: (r) => (
-      <span title={`${utc(r.detectedAt)} (UTC date ${r.detectedUtcDate})`}>
-        {fmtTime(r.detectedAt)}
-      </span>
-    ),
-  },
-  {
-    label: 'Price',
-    num: true,
-    title: 'CMC USD price of the qualifying scan: a reference, not a fill',
-    render: (r) => fmtPrice(r.referencePriceUsd),
-  },
-  { label: 'Highest High', render: (r) => <FwdPeak r={r} /> },
-  { label: 'Return', num: true, render: (r) => <FwdReturn r={r} /> },
-  { label: 'Status', render: (r) => <Lab map={FWD_STATUS} k={r.status} /> },
-  {
-    label: 'Days',
-    num: true,
-    title: 'Included days with an eligible High / completed included days (8 in all)',
-    render: (r) => (r.outcome ? `${r.outcome.coveredDays}/${r.outcome.completedDays}` : '0/0'),
-  },
-  {
-    label: 'Window ends',
-    render: (r) => (
-      <span
-        title={`168 h at ${utc(r.deadline168h)}; included until ${utc(r.evaluationEnd)} (${Number(r.effectiveHorizonHours).toFixed(1)} h)`}
-      >
-        {fmtTime(r.evaluationEnd)}
-      </span>
-    ),
-  },
-  {
-    label: '3d · 7d · 30d',
-    title: 'Scanner results at detection',
-    render: (r) => <FwdWindows r={r} />,
-  },
-  {
-    label: 'Notes',
-    render: (r) => (
-      <span className="chips">
-        {r.qualityFlags.map((f) => (
-          <Chip key={f} tone={/^(INCOMPLETE|HIGH_)/.test(f) ? 'warn' : undefined} title={f}>
-            {fwdFlag(f)}
-          </Chip>
-        ))}
-        {r.overlappingEventIds.length ? (
-          <Chip title="Other events of this coin with overlapping windows: correlated, not independent.">
-            {`${r.overlappingEventIds.length} overlapping`}
-          </Chip>
-        ) : null}
-      </span>
-    ),
-  },
-];
-
-const COHORT_COLS: Column<CohortGroup>[] = [
-  {
-    label: 'Group',
-    render: (g) => (g.group === 'all' ? <b>All</b> : <Stars n={Number(g.group)} />),
-  },
-  { label: 'Events', num: true, render: (g) => fmtInt(g.events) },
-  { label: 'Coins', num: true, render: (g) => fmtInt(g.distinctAssets) },
-  { label: 'Final', num: true, render: (g) => fmtInt(g.final) },
-  { label: 'Pending', num: true, render: (g) => fmtInt(g.pending) },
-  { label: 'Incomplete', num: true, render: (g) => fmtInt(g.incomplete) },
-  { label: 'Median', num: true, render: (g) => fmtPct(g.finalReturns.median) },
-  { label: 'Mean', num: true, render: (g) => fmtPct(g.finalReturns.mean) },
-  {
-    label: 'P25 – P75',
-    num: true,
-    render: (g) =>
-      g.finalReturns.n ? `${fmtPct(g.finalReturns.p25)} – ${fmtPct(g.finalReturns.p75)}` : '—',
-  },
-  {
-    label: 'Min – max',
-    num: true,
-    render: (g) =>
-      g.finalReturns.n ? `${fmtPct(g.finalReturns.min)} – ${fmtPct(g.finalReturns.max)}` : '—',
-  },
-  {
-    label: 'Correlated',
-    title: 'Coins with several events, and overlapping same-coin windows',
-    render: (g) =>
-      `${fmtInt(g.correlation.assetsWithMultipleEvents)} coins · ${fmtInt(g.correlation.sameAssetOverlaps)} overlaps`,
-  },
-];
+const statusFilter = (v: string) => STATUS_FILTERS.find(([k]) => k === v) ?? STATUS_FILTERS[0]!;
+const isResult = (v: string) => RESULT_FILTERS.some(([k]) => k === v);
+const isSort = (v: string): v is EventSort => (SORTS as readonly string[]).includes(v);
 
 const GROUP_COLS: Column<CohortGroup>[] = [
   { label: 'Group', render: (g) => <b>{g.group}</b> },
@@ -343,6 +178,7 @@ function SummaryTiles({ s }: { s: ForwardSummary }) {
   const by = s.counts.byStatus;
   const active = (by.OPEN ?? 0) + (by.TRACKING ?? 0) + (by.AWAITING_FINAL_DAY ?? 0);
   const last = s.lastUpdate;
+  const good = s.lastSuccessfulUpdate;
   return (
     <div className="tiles">
       <div className="tile">
@@ -355,23 +191,106 @@ function SummaryTiles({ s }: { s: ForwardSummary }) {
         <b>{`${fmtInt(active)} · ${fmtInt(by.FINAL)} · ${fmtInt(by.INCOMPLETE)}`}</b>
         <span className="muted small">{`${fmtInt(by.AWAITING_FINAL_DAY)} awaiting the final day`}</span>
       </div>
-      <div className="tile">
-        <span className="tile-label">Daily High update</span>
+      <div className="tile" title={last ? checksLine(last) : undefined}>
+        <span className="tile-label">Last High check</span>
         <b>{last ? <Lab map={RUN} k={last.status} /> : 'Not yet'}</b>
         <span className="muted small">
           {last
-            ? `${fmtAgo(last.startedAt)}, for ${fmtDay(last.updateDate)}`
+            ? `${fmtAgo(last.startedAt)} (${last.trigger}), data through ${fmtDay(last.updateDate)} UTC`
             : 'after the first UTC day closes'}
         </span>
+        {good && good.id !== last?.id ? (
+          <span className="muted small">{`last successful ${fmtAgo(good.finishedAt)}`}</span>
+        ) : null}
+        {last?.checks ? (
+          <span className="muted small">
+            {`${fmtInt(last.checks.newRecord)} new · ${fmtInt(last.checks.unchanged)} unchanged · ${fmtInt(last.checks.dataUnavailable + last.checks.errors)} without data`}
+          </span>
+        ) : null}
       </div>
       <div className="tile">
         <span className="tile-label">High coverage</span>
         <b>{`${fmtInt(s.coverage.coveredDays)} / ${fmtInt(s.coverage.completedDays)} days`}</b>
         <span className="muted small">
-          {`${fmtInt(s.coverage.missingDays)} missing, ${fmtInt(s.coverage.day0Unresolved)} with day 0 unproven`}
+          {`${fmtInt(s.coverage.missingDays)} missing, ${fmtInt(s.coverage.day0Unresolved)} with day 0 unconfirmed`}
         </span>
       </div>
     </div>
+  );
+}
+
+/** Definitions behind every column: Return, the window, days and time zones, checks, notes. */
+function HowToRead({ s }: { s: ForwardSummary | undefined }) {
+  return (
+    <details className="panel rules">
+      <summary>
+        <h2>How to read the forward test</h2>
+        <span className="hint">Return, days and time zones, High checks, notes</span>
+      </summary>
+      <div>
+        <ul className="rule-list fwd-defs">
+          <li>
+            <b>Return</b> is the peak return: the highest High confirmed after identification ÷ the
+            CMC price recorded at identification − 1. It is the maximum price increase, not trading
+            profit: the price may have hit a stop before it rose. A value with ≥ is so far (the
+            window is still open or a day is missing); FINAL values are exact.
+          </li>
+          <li>
+            <b>Window.</b> 168 hours from identification, checked through the end of the UTC day in
+            which those 168 hours expire. {s ? s.horizon.days : ''}
+          </li>
+          <li>
+            <b>Time zones.</b>{' '}
+            {`Days are counted in UTC. Times on this page are shown in ${tz()}, where a UTC day starts at ${utcMidnightLocal()}. Hover a time for its UTC value.`}
+          </li>
+          <li>
+            <b>Window column.</b> “Day 3 of 7” is the UTC day the window is in now (day 0 = the
+            identification date). “2 of 3 closed days checked” counts the ended UTC days of the
+            window that have a usable daily High stored, from day 0 on.
+          </li>
+          <li>
+            <b>When Highs are checked.</b> Once per closed UTC day, by the first hourly run after
+            00:00 UTC; again every few hours while a closed day&apos;s High is missing; and when
+            someone clicks <i>Update Highs now</i>. Never when the page opens, and never by the
+            hourly scan itself. The High check column shows each event&apos;s last check and the
+            date it is checked through; the tile above shows the last run.
+          </li>
+          <li>
+            <b>High check results.</b>{' '}
+            {(
+              [
+                'NOT_CHECKED',
+                'NEW_RECORD',
+                'UNCHANGED',
+                'DATA_UNAVAILABLE',
+                'RETRIEVAL_ERROR',
+              ] as const
+            )
+              .map((k) => `${CHECK[k][1]}: ${CHECK[k][2]}`)
+              .join(' ')}
+          </li>
+          <li>
+            <b>Highest High time</b> is when the price reached that High, as published by CMC
+            (timeHigh, minute precision), not when it was retrieved or checked. Highs come only from
+            the coin&apos;s CMC USD daily OHLC: never Close, sampled prices or LBank.
+          </li>
+          <li>
+            <b>Day 0 (yellow).</b> {DAY0_EXPLAINED}
+          </li>
+          <li>
+            <b>Overlapping.</b> {OVERLAP_EXPLAINED}
+          </li>
+          <li>
+            <b>At identification.</b> Stars, points and the 3d / 7d / 30d ratios are recorded when
+            the coin is identified and never change. The coin page shows its current values.
+          </li>
+          <li>
+            <b>Duplicates.</b> One event per coin, UTC day and star count: the same stars again that
+            day add nothing; a different star count opens its own event.
+          </li>
+        </ul>
+      </div>
+    </details>
   );
 }
 
@@ -379,15 +298,26 @@ interface ForwardData {
   sum: ForwardSummary;
   ev: ForwardEventsPage;
   rej: ForwardRejection[];
-  view: EventView;
   search: string;
+  filtered: boolean;
 }
 
 export default function Forward() {
   const { can, openCoin, dataVersion, setNavCount } = useApp();
-  const [query, setQuery] = useQueryState({ view: 'active', stars: '', q: '', page: '1' });
-  const view: EventView = isView(query.view) ? query.view : 'active';
+  const [query, setQuery] = useQueryState({
+    view: 'active',
+    stars: '',
+    result: '',
+    sort: 'detected',
+    dir: 'desc',
+    q: '',
+    page: '1',
+  });
+  const [statusKey, , statusApi] = statusFilter(query.view);
   const stars = isStars(query.stars) ? query.stars : '';
+  const result = isResult(query.result) ? query.result : '';
+  const sort: EventSort = isSort(query.sort) ? query.sort : 'detected';
+  const dir = query.dir === 'asc' ? 'asc' : 'desc';
   const search = query.q.trim();
   const pageNum = Number(query.page);
   const page = Number.isInteger(pageNum) && pageNum >= 1 ? pageNum - 1 : 0;
@@ -395,7 +325,9 @@ export default function Forward() {
   const [searchText, setSearchText] = useState(query.q);
   const [data, setData] = useState<ForwardData | null>(null);
   const [error, setError] = useState<unknown>(null);
-  const [updating, setUpdating] = useState(false);
+  const [updateRunId, setUpdateRunId] = useState<string | null>(null);
+  const [checkRunning, setCheckRunning] = useState(false);
+  const [starting, setStarting] = useState(false);
   const debounce = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // Keep the box in step when the URL changes from outside (back button, a shared link).
@@ -405,11 +337,15 @@ export default function Forward() {
 
   const load = useCallback(async () => {
     const q = new URLSearchParams({
-      view,
+      view: statusApi.view,
+      sort,
+      dir,
       limit: String(FWD_PAGE),
       offset: String(page * FWD_PAGE),
     });
+    if (statusApi.status) q.set('status', statusApi.status);
     if (stars) q.set('stars', stars);
+    if (result) q.set('result', result);
     if (search) q.set('search', search);
     try {
       const [sum, ev, rej] = await Promise.all([
@@ -419,13 +355,25 @@ export default function Forward() {
       ]);
       const by = sum.counts.byStatus;
       setNavCount('forward', (by.OPEN ?? 0) + (by.TRACKING ?? 0) + (by.AWAITING_FINAL_DAY ?? 0));
-      setData({ sum, ev, rej, view, search });
+      setData({
+        sum,
+        ev,
+        rej,
+        search,
+        filtered: statusKey !== 'active' || !!stars || !!result,
+      });
+      // Follow a check that is already running (the hourly run's, or one started elsewhere).
+      if (sum.lastUpdate?.status === 'running') {
+        const runningId = sum.lastUpdate.id;
+        setUpdateRunId((id) => id ?? runningId);
+        setCheckRunning(true);
+      }
       setError(null);
     } catch (e) {
       console.error(e);
       setError(e);
     }
-  }, [view, stars, search, page, setNavCount]);
+  }, [statusApi, statusKey, stars, result, sort, dir, search, page, setNavCount]);
 
   useEffect(() => {
     void load();
@@ -440,30 +388,102 @@ export default function Forward() {
     debounce.current = setTimeout(() => setQuery({ q: v.trim(), page: null }), 250);
   };
 
+  const onSort = useCallback(
+    (k: EventSort) =>
+      setQuery(
+        { sort: k, dir: k === sort && dir === 'desc' ? 'asc' : 'desc', page: null },
+        { push: true },
+      ),
+    [sort, dir, setQuery],
+  );
+
   const updateNow = async () => {
-    setUpdating(true);
+    setStarting(true);
     try {
       const r = await apiPost<ForwardUpdateResult>('forward/update');
-      if (!r.ok) toast(r.reason || 'The update did not run.', 'warning');
-      else
+      if (r.ok && r.updateRunId) {
+        setUpdateRunId(r.updateRunId);
+        setCheckRunning(true);
+      } else
         toast(
-          `Highs updated: ${r.update?.outcomes?.versions ?? 0} outcomes changed, ${r.update?.newlyFinal ?? 0} newly final.`,
+          `The High check did not start: ${r.reason || 'unknown reason'}. The hourly run may be using the pipeline; try again in a few minutes.`,
+          'warning',
         );
-      await load();
     } catch (err) {
-      toast(`Update failed: ${errorMessage(err)}`, 'error');
+      toast(`The High check did not start: ${errorMessage(err)}`, 'error');
     } finally {
-      setUpdating(false);
+      setStarting(false);
     }
   };
+
+  const cols = useMemo<Column<ForwardEventRow>[]>(() => {
+    const head = (k: EventSort, label: string) => (
+      <SortHead k={k} label={label} sort={sort} dir={dir} onSort={onSort} />
+    );
+    return [
+      { label: 'Coin', render: (r) => <CoinCell r={r} /> },
+      { label: head('stars', 'Stars'), render: (r) => <Stars n={r.starCount} /> },
+      {
+        label: head('points', 'Points'),
+        num: true,
+        title: 'Weighted points at identification (weighted_star_v1); never updated',
+        render: (r) => (
+          <PointsCell
+            points={r.weightedPassPoints}
+            complete={r.scoreComplete}
+            strength={r.weightedStrength}
+          />
+        ),
+      },
+      {
+        label: head('detected', 'Identified'),
+        render: (r) => (
+          <span title={`${utc(r.detectedAt)} (UTC date ${r.detectedUtcDate}, day 0)`}>
+            {fmtTime(r.detectedAt)}
+          </span>
+        ),
+      },
+      {
+        label: 'Price',
+        num: true,
+        title:
+          'CMC USD price recorded at identification: fixed for the event, a reference, not a fill',
+        render: (r) => fmtPrice(r.referencePriceUsd),
+      },
+      { label: 'Highest High', render: (r) => <FwdPeak r={r} /> },
+      { label: head('return', 'Return'), num: true, render: (r) => <FwdReturn r={r} /> },
+      { label: 'Status', render: (r) => <Lab map={FWD_STATUS} k={r.status} /> },
+      {
+        label: 'High check',
+        title: 'Result of the last check, the UTC date it is checked through and when it ran',
+        render: (r) => <CheckCell r={r} />,
+      },
+      {
+        label: 'Window (UTC days)',
+        title: 'Day 0 = UTC date of identification … day 7 = UTC date of identification + 168 h',
+        render: (r) => <WindowCell r={r} />,
+      },
+      {
+        label: (
+          <span className="sort-group" title="Ratios at identification (current VMC ÷ mean)">
+            {head('multiple3d', '3d')}
+            {head('multiple7d', '7d')}
+            {head('multiple30d', '30d')}
+          </span>
+        ),
+        render: (r) => <FwdWindows r={r} />,
+      },
+      { label: 'Notes', render: (r) => <NotesCell r={r} /> },
+    ];
+  }, [sort, dir, onSort]);
 
   const s = data?.sum;
   const all = s ? s.cohort.find((g) => g.group === 'all') : undefined;
   const eventsEmpty = data?.search
     ? `No event matches “${data.search}”.`
-    : data?.view === 'active'
-      ? 'No active event. Eligible 1, 2 and 3-star coins of a published queue are recorded automatically.'
-      : 'No events in this view.';
+    : data?.filtered
+      ? 'No events match these filters.'
+      : 'No active event. Eligible 1, 2 and 3-star coins of a published queue are recorded automatically.';
 
   return (
     <>
@@ -483,25 +503,33 @@ export default function Forward() {
         ) : null}
       </div>
       {s ? <SummaryTiles s={s} /> : <div className="tiles" />}
+      {updateRunId ? (
+        <UpdatePanel
+          key={updateRunId}
+          runId={updateRunId}
+          onFinished={() => {
+            setCheckRunning(false);
+            void load();
+          }}
+          onDismiss={() => setUpdateRunId(null)}
+        />
+      ) : null}
       <div className="panel">
         <div className="panel-head">
-          <h2>Star groups</h2>
+          <h2>Results by stars</h2>
           <span className="hint">
-            return statistics use FINAL events only; several events of one coin or one day are
-            correlated
+            active returns are so far (≥); final statistics use FINAL events only; an unconfirmed
+            day-0 High is never counted
           </span>
         </div>
-        <div className="table-wrap">
-          {s ? <Table cols={COHORT_COLS} rows={s.cohort} rowKey={(g) => g.group} /> : null}
-        </div>
+        <div className="table-wrap">{s ? <StarSummary groups={s.cohort} /> : null}</div>
       </div>
+      <HowToRead s={s} />
       <div className="grid-2">
         <div className="panel">
           <div className="panel-head">
             <h2>By pass pattern</h2>
-            <span className="hint">
-              3d / 7d / 30d at detection; median and mean of FINAL events
-            </span>
+            <span className="hint">3d / 7d / 30d at identification; median of FINAL events</span>
           </div>
           <div className="table-wrap">
             {s ? (
@@ -551,7 +579,7 @@ export default function Forward() {
         </div>
         <div className="panel">
           <div className="panel-head">
-            <h2>Detection hour (UTC)</h2>
+            <h2>Identification hour (UTC)</h2>
             <span className="hint">the later the signal, the shorter the end-of-day extension</span>
           </div>
           <div>
@@ -565,13 +593,32 @@ export default function Forward() {
       </div>
       <div className="toolbar">
         <SearchField label="Filter events" value={searchText} onChange={onSearch} />
-        <Seg
-          label="Events"
-          attr="view"
-          items={VIEWS}
-          value={view}
-          onPick={(v) => setQuery({ view: v, page: null }, { push: true })}
-        />
+        <label className="select-field">
+          <span>Status</span>
+          <select
+            value={statusKey}
+            onChange={(e) => setQuery({ view: e.target.value, page: null }, { push: true })}
+          >
+            {STATUS_FILTERS.map(([k, label]) => (
+              <option key={k} value={k}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="select-field">
+          <span>Result</span>
+          <select
+            value={result}
+            onChange={(e) => setQuery({ result: e.target.value, page: null }, { push: true })}
+          >
+            {RESULT_FILTERS.map(([k, label]) => (
+              <option key={k} value={k}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
         <Seg
           label="Stars"
           attr="stars"
@@ -591,10 +638,11 @@ export default function Forward() {
             <button
               type="button"
               className="btn"
-              disabled={updating}
+              disabled={starting || checkRunning}
+              title="Check every active event's daily Highs now. Progress and the result appear above the table."
               onClick={() => void updateNow()}
             >
-              Update Highs now
+              {starting ? 'Starting…' : 'Update Highs now'}
             </button>
           ) : null}
         </span>
@@ -605,7 +653,7 @@ export default function Forward() {
             <LoadError error={error} />
           ) : data ? (
             <Table
-              cols={EVENT_COLS}
+              cols={cols}
               rows={data.ev.rows}
               empty={eventsEmpty}
               onRow={(r) => openCoin(r.cmcId)}

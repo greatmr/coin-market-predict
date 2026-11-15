@@ -564,6 +564,11 @@ function renderForwardSummary(s: Awaited<ReturnType<ForwardReadService['summary'
       .join(' · ')}`,
     `Last trigger ${s.lastTrigger ? `${s.lastTrigger.triggeredAt} (queue ${s.lastTrigger.queueStatus ?? '—'}: ${s.lastTrigger.created} new, ${s.lastTrigger.ignored} already recorded, ${s.lastTrigger.rejected} rejected)` : 'never'}`,
     `Last daily update ${s.lastUpdate ? `${s.lastUpdate.startedAt} for ${s.lastUpdate.updateDate}: ${s.lastUpdate.status}` : 'never'}; last successful ${s.lastSuccessfulUpdate?.finishedAt ?? 'never'}`,
+    ...(s.lastUpdate?.checks
+      ? [
+          `  checked ${s.lastUpdate.checks.checked}: ${s.lastUpdate.checks.newRecord} new highest High, ${s.lastUpdate.checks.unchanged} unchanged, ${s.lastUpdate.checks.dataUnavailable} data unavailable, ${s.lastUpdate.checks.errors} errors, ${s.lastUpdate.checks.notDue} not due`,
+        ]
+      : []),
     `High coverage: ${s.coverage.coveredDays}/${s.coverage.completedDays} completed days covered, ${s.coverage.missingDays} missing, ${s.coverage.invalidDays} invalid, ${s.coverage.day0Unresolved} events with day 0 unresolved`,
     '',
     'group  events assets  final incompl pending | n    median      mean        p25         p75   (final peak_return_pct)',
@@ -621,7 +626,7 @@ function renderForwardEvents(rows: ForwardEventRow[], total: number): string {
   if (!rows.length) return 'No events in this view.';
   return [
     `${rows.length} of ${total} events (newest first)`,
-    'detected (UTC)     ★ symbol      cmc_id   ref price      status              peak High      return       peak at / interval        flags',
+    'detected (UTC)     ★ symbol      cmc_id   ref price      status              peak High      return       peak at / interval        checked through   last check        flags',
     ...rows.map((e) => {
       const o = e.outcome;
       const ret = o?.peakReturnPct
@@ -637,6 +642,8 @@ function renderForwardEvents(rows: ForwardEventRow[], total: number): string {
         (o?.peakHighUsd ? new D(o.peakHighUsd).toSignificantDigits(8).toFixed() : '—').padStart(13),
         ret.padStart(11),
         (o?.peakAt ? o.peakAt.slice(0, 16).replace('T', ' ') : (o?.peakDate ?? '—')).padEnd(24),
+        (e.check.checkedThrough ?? '—').padEnd(16),
+        e.check.status.padEnd(16),
         e.qualityFlags.join(',') || '',
       ].join('  ');
     }),

@@ -25,6 +25,7 @@ export const ErrorCodes = {
 
   // ─── Forward test ────────────────────────────────────────────────────────
   FORWARD_EVENT_NOT_FOUND: 'FORWARD_EVENT_NOT_FOUND',
+  FORWARD_UPDATE_RUN_NOT_FOUND: 'FORWARD_UPDATE_RUN_NOT_FOUND',
 
   // ─── Telegram access ─────────────────────────────────────────────────────
   TELEGRAM_UNKNOWN_RECIPIENT: 'TELEGRAM_UNKNOWN_RECIPIENT',

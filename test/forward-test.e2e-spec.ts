@@ -6,6 +6,7 @@ import { DAY_MS } from '../src/common/utils/dates.js';
 import { D, type DValue } from '../src/common/utils/decimal.js';
 import { slotOf } from '../src/common/utils/time.js';
 import { DailyMetricsService } from '../src/modules/daily-metrics/daily-metrics.service.js';
+import { DailyFetchState } from '../src/modules/daily-metrics/entities/daily-fetch-state.entity.js';
 import { ForwardEvent } from '../src/modules/forward-test/entities/forward-event.entity.js';
 import { ForwardHigh } from '../src/modules/forward-test/entities/forward-high.entity.js';
 import { ForwardOutcome } from '../src/modules/forward-test/entities/forward-outcome.entity.js';
@@ -708,4 +709,194 @@ describe('hourly pipeline integration on the synthetic fixture', () => {
     // The update run table holds no half-written run.
     expect(await ctx.repo(ForwardUpdateRun).countBy({ status: 'running' })).toBe(0);
   }, 120_000);
+});
+
+describe('High check status, window progress and the event list (dashboard)', () => {
+  const read = () => ctx.app.get(ForwardReadService);
+  const apiRow = async (eventId: string) =>
+    (await read().events({ view: 'all', limit: 50, offset: 0 })).rows.find(
+      (r) => r.eventId === eventId,
+    )!;
+
+  it('tells not checked, new record, unchanged, data unavailable and retrieval error apart; checked-through advances', async () => {
+    const id = 780;
+    const eventId = (await sight(row(id, 2, '10', '2026-11-10T14:00:00.000Z'))).created[0]!.eventId;
+    let e = await ctx.repo(ForwardEvent).findOneByOrFail({ id: eventId });
+    expect([e.lastCheckStatus, e.lastCheckAt, e.checkedThrough]).toEqual([null, null, null]);
+    // The signal day is still open: nothing to check, the event stays "not checked yet".
+    let r = await update('2026-11-10T20:00:00.000Z');
+    expect(r.checks).toMatchObject({ checked: 0, notDue: 1 });
+    expect((await ctx.repo(ForwardEvent).findOneByOrFail({ id: eventId })).lastCheckStatus).toBe(
+      null,
+    );
+
+    // Day 0 closes with a post-signal High 12 (15:00 ≥ 14:00): the first confirmed record.
+    await store([day(id, '2026-11-10', '12', '2026-11-10T15:00:00.000Z')]);
+    r = await update('2026-11-11T00:30:00.000Z');
+    expect(r.checks).toMatchObject({ checked: 1, newRecord: 1, unchanged: 0, errors: 0 });
+    e = await ctx.repo(ForwardEvent).findOneByOrFail({ id: eventId });
+    expect([e.lastCheckStatus, e.checkedThrough, e.lastCheckAt?.toISOString()]).toEqual([
+      'NEW_RECORD',
+      '2026-11-10',
+      '2026-11-11T00:30:00.000Z',
+    ]);
+    // A same-day re-check adds nothing: the record found by the newest day stays visible.
+    r = await update('2026-11-11T02:00:00.000Z');
+    e = await ctx.repo(ForwardEvent).findOneByOrFail({ id: eventId });
+    expect([e.lastCheckStatus, e.lastCheckAt?.toISOString(), r.outcomes.versions]).toEqual([
+      'NEW_RECORD',
+      '2026-11-11T02:00:00.000Z',
+      0,
+    ]);
+
+    // A lower High on day 1: the record and the reference price stay, checked-through advances.
+    await store([day(id, '2026-11-11', '11', '2026-11-11T08:00:00.000Z')]);
+    r = await update('2026-11-12T00:30:00.000Z');
+    expect(r.checks).toMatchObject({ checked: 1, newRecord: 0, unchanged: 1 });
+    e = await ctx.repo(ForwardEvent).findOneByOrFail({ id: eventId });
+    expect([e.lastCheckStatus, e.checkedThrough, e.snapshotPriceUsd.toFixed()]).toEqual([
+      'UNCHANGED',
+      '2026-11-11',
+      '10',
+    ]);
+    expect((await latestOutcome(eventId)).peakHighUsd?.toFixed()).toBe('12');
+
+    // Day 2 has no daily row yet: data unavailable, checked-through does not move past the gap.
+    r = await update('2026-11-13T00:30:00.000Z');
+    expect(r.checks).toMatchObject({ dataUnavailable: 1 });
+    e = await ctx.repo(ForwardEvent).findOneByOrFail({ id: eventId });
+    expect([e.lastCheckStatus, e.checkedThrough]).toEqual(['DATA_UNAVAILABLE', '2026-11-11']);
+    expect(e.lastCheckNote).toMatch(/2026-11-12/);
+
+    // The coin's daily-history request failed: a retrieval error, not absent data.
+    await ctx.repo(DailyFetchState).save({
+      providerId: P,
+      cmcId: id,
+      lastAttemptAt: t('2026-11-13T03:59:00.000Z'),
+      lastSuccessAt: null,
+      lastStatus: 'failed',
+      lastError: 'HTTP 503 (synthetic)',
+      rowsReturned: 0,
+      latestDateReturned: null,
+    });
+    r = await update('2026-11-13T04:00:00.000Z');
+    expect(r.checks).toMatchObject({ errors: 1 });
+    e = await ctx.repo(ForwardEvent).findOneByOrFail({ id: eventId });
+    expect([e.lastCheckStatus, e.lastCheckNote]).toEqual([
+      'RETRIEVAL_ERROR',
+      expect.stringMatching(/HTTP 503/),
+    ]);
+
+    // The day arrives with a higher High: a new record, the previous one named in the note.
+    await ctx.repo(DailyFetchState).update({ providerId: P, cmcId: id }, { lastStatus: 'ok' });
+    await store([day(id, '2026-11-12', '15', '2026-11-12T10:00:00.000Z')]);
+    r = await update('2026-11-13T08:00:00.000Z');
+    e = await ctx.repo(ForwardEvent).findOneByOrFail({ id: eventId });
+    expect([e.lastCheckStatus, e.checkedThrough]).toEqual(['NEW_RECORD', '2026-11-12']);
+    expect(e.lastCheckNote).toMatch(/15 USD on 2026-11-12 \(previous record 12 USD\)/);
+
+    // The API row: status, checked-through, day 3 of 7 with 3 days checked, the update run's counts.
+    const api = await apiRow(eventId);
+    expect(api.check).toMatchObject({ status: 'NEW_RECORD', checkedThrough: '2026-11-12' });
+    expect(api.window).toMatchObject({ lastDay: 7, checkedDays: 3 });
+    const run = await read().updateRun(r.updateRunId);
+    expect(run).toMatchObject({
+      status: 'succeeded',
+      progress: { phase: 'done', processed: 1, total: 1 },
+      checks: { checked: 1, newRecord: 1 },
+    });
+  });
+
+  it('keeps an unproven signal-day High out of the result but shows it apart; sorts and filters the list', async () => {
+    // A: detected 14:00, the day's High 20 came at 09:00 (before detection), day 1 only 11.
+    const a = (await sight(row(781, 2, '10', '2026-11-10T14:00:00.000Z'))).created[0]!.eventId;
+    // B: 3 stars, post-signal High 13 → +30 %. C: 1 star, post-signal High 10.5 → +5 %.
+    const b = (await sight(row(782, 3, '10', '2026-11-10T15:00:00.000Z'))).created[0]!.eventId;
+    const c = (await sight(row(783, 1, '10', '2026-11-10T16:00:00.000Z'))).created[0]!.eventId;
+    // One coin per call, as the crawler stores them.
+    await store([
+      day(781, '2026-11-10', '20', '2026-11-10T09:00:00.000Z'),
+      day(781, '2026-11-11', '11', '2026-11-11T09:00:00.000Z'),
+    ]);
+    await store([
+      day(782, '2026-11-10', '13', '2026-11-10T16:00:00.000Z'),
+      day(782, '2026-11-11', '12', '2026-11-11T09:00:00.000Z'),
+    ]);
+    await store([
+      day(783, '2026-11-10', '10.5', '2026-11-10T17:00:00.000Z'),
+      day(783, '2026-11-11', '10.1', '2026-11-11T09:00:00.000Z'),
+    ]);
+    await update('2026-11-12T00:30:00.000Z');
+
+    const ra = await apiRow(a);
+    expect(ra.outcome?.peakHighUsd).toBe('11'); // the confirmed record: day 1, never the day-0 20
+    expect(ra.day0).toMatchObject({
+      highUsd: '20',
+      eligibility: 'DAY0_UNPROVEN',
+      reason: 'time_high_before_detection',
+      changePct: '100',
+    });
+    expect(ra.qualityFlags).toContain('DAY0_UNRESOLVED');
+
+    const list = (q: Parameters<ForwardReadService['events']>[0]) =>
+      read()
+        .events(q)
+        .then((x) => x.rows.map((r) => r.eventId));
+    const base = { view: 'all' as const, limit: 50, offset: 0 };
+    expect(await list({ ...base, sort: 'return', dir: 'desc' })).toEqual([b, a, c]);
+    expect(await list({ ...base, sort: 'return', dir: 'asc' })).toEqual([c, a, b]);
+    expect(await list({ ...base, sort: 'stars', dir: 'asc' })).toEqual([c, a, b]);
+    expect(await list({ ...base, result: 'DAY0_UNCONFIRMED' })).toEqual([a]);
+    expect(await list({ ...base, result: 'CONFIRMED', stars: 3 })).toEqual([b]);
+    expect(await list({ ...base, status: 'TRACKING', result: 'NOT_CHECKED' })).toEqual([]);
+
+    const s = await read().summary(t('2026-11-12T01:00:00.000Z'));
+    const all = s.cohort.find((g) => g.group === 'all')!;
+    expect([
+      all.confirmedHigh,
+      all.awaitingCheck,
+      all.day0Unconfirmed,
+      all.activeReturns.n,
+    ]).toEqual([3, 0, 1, 3]);
+    // +30 %, +10 % (A's confirmed day 1), +5 %: the unproven +100 % never enters the statistics.
+    expect([all.activeReturns.median, all.activeReturns.max]).toEqual(['10', '30']);
+  });
+
+  it('lists the overlapping events of one coin with their identification time, stars, price and overlap', async () => {
+    const first = (await sight(row(784, 2, '10', '2026-11-10T10:00:00.000Z'))).created[0]!.eventId;
+    const second = (await sight(row(784, 3, '12', '2026-11-10T15:00:00.000Z'))).created[0]!.eventId;
+    const third = (await sight(row(784, 2, '14', '2026-11-11T09:00:00.000Z'))).created[0]!.eventId;
+    const far = (await sight(row(784, 1, '9', '2026-11-25T09:00:00.000Z'))).created[0]!.eventId;
+    const o = (await read().overlaps(second))!;
+    expect(
+      o.overlaps.map((x) => [x.eventId, x.relation, x.starCount, x.referencePriceUsd]),
+    ).toEqual([
+      [first, 'same_utc_day', 2, '10'],
+      [third, 'later', 2, '14'],
+    ]);
+    expect(o.overlaps[0]).toMatchObject({
+      overlapStart: '2026-11-10T15:00:00.000Z',
+      overlapEnd: '2026-11-17T23:59:59.999Z',
+    });
+    expect((await read().overlaps(far))!.overlaps).toEqual([]);
+    expect((await apiRow(second)).overlappingEventIds.sort()).toEqual([first, third].sort());
+  });
+
+  it('starts the manual update in the background and reports its run; a held lease refuses to start', async () => {
+    const p = ctx.app.get(PipelineService);
+    const started = await p.startForwardUpdate();
+    expect(started.started).toBe(true);
+    if (!started.started) return;
+    // The lease is held until the background update finishes.
+    const busy = await p.startForwardUpdate();
+    expect(busy).toMatchObject({ started: false, reason: expect.stringMatching(/in progress/) });
+    await started.done;
+    const run = await ctx.app.get(ForwardReadService).updateRun(started.updateRunId);
+    expect(run).toMatchObject({
+      trigger: 'manual',
+      status: 'succeeded',
+      progress: { phase: 'done' },
+    });
+    expect(run?.checks).toMatchObject({ checked: 0, errors: 0 });
+  });
 });

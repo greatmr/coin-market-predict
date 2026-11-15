@@ -8,12 +8,14 @@ import {
   type OutcomeHigh,
   type TriggerCandidate,
   type TriggerContext,
+  checkStatus,
   classifyHigh,
   dayComplete,
   evaluateOutcome,
   eventWindow,
   peakReturnPct,
   validateTrigger,
+  windowProgress,
 } from './forward-rules.js';
 import { FORWARD_REASON as R } from './forward.constants.js';
 
@@ -473,5 +475,78 @@ describe('peak_return_pct (p.8)', () => {
       '50.00000000000000001',
     );
     expect(peakReturnPct(d('9.5'), d('10')).toFixed()).toBe('-5');
+  });
+});
+
+describe('window progress and checked-through date (dashboard bookkeeping)', () => {
+  it('counts UTC calendar days: day 0 is the detection date, day 7 the date of deadline_168h', () => {
+    const at = (iso: string) => windowProgress(W, t(iso));
+    expect(at('2026-11-10T14:00:00.000Z')).toEqual({
+      day: 0,
+      lastDay: 7,
+      closed: false,
+      closedDays: 0,
+    });
+    // 23:59:59.999 UTC is still day 0; the next millisecond is day 1 and closes day 0.
+    expect([at('2026-11-10T23:59:59.999Z').day, at('2026-11-11T00:00:00.000Z').day]).toEqual([
+      0, 1,
+    ]);
+    expect(at('2026-11-11T00:00:00.000Z').closedDays).toBe(1);
+    expect(at('2026-11-17T23:59:59.999Z')).toMatchObject({ day: 7, closed: false, closedDays: 7 });
+    expect(at('2026-11-18T00:30:00.000Z')).toMatchObject({ day: 7, closed: true, closedDays: 8 });
+    // A 00:00 detection still ends on day 7 (168 h is exactly 7 × 24 h).
+    const midnight = eventWindow(t('2026-11-10T00:00:00.000Z'));
+    expect(windowProgress(midnight, t('2026-11-17T12:00:00.000Z')).day).toBe(7);
+    expect(midnight.dates.at(-1)).toBe('2026-11-17');
+  });
+
+  it('checked through = the last closed day before the first missing or invalid one', () => {
+    const day0 = high(W, '2026-11-10', '20', '2026-11-10T09:00:00.000Z'); // unproven still counts as read
+    expect(outcome(week(day0), t('2026-11-13T01:00:00.000Z')).checkedThrough).toBe('2026-11-12');
+    expect(
+      outcome(week(day0, { '2026-11-12': null }), t('2026-11-14T01:00:00.000Z')).checkedThrough,
+    ).toBe('2026-11-11');
+    expect(
+      outcome(
+        week(day0, { '2026-11-11': high(W, '2026-11-11', null) }),
+        t('2026-11-14T01:00:00.000Z'),
+      ).checkedThrough,
+    ).toBe('2026-11-10');
+    expect(outcome(week(null), t('2026-11-14T01:00:00.000Z')).checkedThrough).toBeNull();
+    expect(outcome(week(day0), t('2026-11-10T20:00:00.000Z')).checkedThrough).toBeNull();
+  });
+});
+
+describe('check status', () => {
+  const base = { peakHigh: d('12'), missingDates: [] as string[], invalidDates: [] as string[] };
+
+  it('a raised or first confirmed High is a new record; an equal one is unchanged', () => {
+    expect(checkStatus({ outcome: base, previousPeak: d('11'), fetchFailed: false })).toBe(
+      'NEW_RECORD',
+    );
+    expect(checkStatus({ outcome: base, previousPeak: null, fetchFailed: false })).toBe(
+      'NEW_RECORD',
+    );
+    expect(checkStatus({ outcome: base, previousPeak: d('12.0'), fetchFailed: false })).toBe(
+      'UNCHANGED',
+    );
+    // No confirmed High at all (e.g. only an unproven signal-day High): checked, nothing to record.
+    expect(
+      checkStatus({ outcome: { ...base, peakHigh: null }, previousPeak: null, fetchFailed: false }),
+    ).toBe('UNCHANGED');
+  });
+
+  it('a gap is reported before the record; a failed request is a retrieval error', () => {
+    const gap = { ...base, missingDates: ['2026-11-12'] };
+    expect(checkStatus({ outcome: gap, previousPeak: d('11'), fetchFailed: false })).toBe(
+      'DATA_UNAVAILABLE',
+    );
+    expect(checkStatus({ outcome: gap, previousPeak: d('11'), fetchFailed: true })).toBe(
+      'RETRIEVAL_ERROR',
+    );
+    const invalid = { ...base, invalidDates: ['2026-11-12:high_missing'] };
+    expect(checkStatus({ outcome: invalid, previousPeak: null, fetchFailed: true })).toBe(
+      'DATA_UNAVAILABLE',
+    );
   });
 });

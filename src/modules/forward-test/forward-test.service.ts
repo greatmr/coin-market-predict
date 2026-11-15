@@ -44,7 +44,12 @@ export class ForwardTestService {
   /** The daily High update now (also the manual "one-day update job"), then a fresh export. */
   async update(
     providerId: string,
-    opts: { now: Date; pipelineRunId?: string | null; trigger: 'schedule' | 'manual' },
+    opts: {
+      now: Date;
+      pipelineRunId?: string | null;
+      trigger: 'schedule' | 'manual';
+      onRunCreated?: (updateRunId: string) => void;
+    },
   ): Promise<Omit<ForwardStageReport, 'capture'>> {
     const update = await this.updates.update(providerId, opts);
     const exported = await this.writeExport(opts.now);

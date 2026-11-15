@@ -22,7 +22,12 @@ import type { DValue } from '../../../common/utils/decimal.js';
 import { CrawlBatch } from '../../ingestion/entities/crawl-batch.entity.js';
 import { MarketSnapshot } from '../../ingestion/entities/market-snapshot.entity.js';
 import { PASS_STATUSES, type PassStatus, type ResolvedPair } from '../../strategy/index.js';
-import { FORWARD_EVENT_STATUSES, type ForwardEventStatus } from '../forward.constants.js';
+import {
+  FORWARD_CHECK_STATUSES,
+  FORWARD_EVENT_STATUSES,
+  type ForwardCheckStatus,
+  type ForwardEventStatus,
+} from '../forward.constants.js';
 
 import { ForwardTestWatchlist } from './forward-test-watchlist.entity.js';
 import { ForwardTriggerRun } from './forward-trigger-run.entity.js';
@@ -233,8 +238,30 @@ export class ForwardEvent {
   @Column({ name: 'result_version', type: 'integer', default: 0 })
   resultVersion!: number;
 
+  /** The last successful High check (the outcome was evaluated from the stored daily rows). */
   @Column({ name: 'last_update_at', type: 'timestamptz', nullable: true })
   lastUpdateAt!: Date | null;
+
+  /** The last High check attempt, successful or not (NULL = not checked yet). */
+  @Column({ name: 'last_check_at', type: 'timestamptz', nullable: true })
+  lastCheckAt!: Date | null;
+
+  @Column({
+    name: 'last_check_status',
+    type: 'enum',
+    enum: [...FORWARD_CHECK_STATUSES],
+    enumName: 'forward_check_status',
+    nullable: true,
+  })
+  lastCheckStatus!: ForwardCheckStatus | null;
+
+  /** What the last check found (missing dates, the error, the record it replaced). */
+  @Column({ name: 'last_check_note', type: 'text', nullable: true })
+  lastCheckNote!: string | null;
+
+  /** Every closed included UTC day up to this date has a stored, usable daily High. */
+  @Column({ name: 'checked_through', type: 'date', nullable: true })
+  checkedThrough!: string | null;
 
   @Column({ name: 'finalized_at', type: 'timestamptz', nullable: true })
   finalizedAt!: Date | null;

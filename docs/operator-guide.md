@@ -31,11 +31,13 @@ exports and the Telegram summary. Missed hours are recorded, never invented.
 
 | Section (left rail) | Shows                                                                                                                                                                                                                                                                                                                                                                            |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Overview            | Run ring (progress while a run is going, otherwise a countdown to the next run) with the stage list; a funnel from every listed coin to evaluated, eligible and the review queue; review-queue cards; window results (YES / NO / N/A per window), eligibility donut, stars, exclusion reasons, data quality (quote and LBank status, LBank list age, warnings) and the rule list |
+| Overview            | Run ring (progress while a run is going, otherwise a countdown to the next run) with the stage list; a funnel from every listed coin to evaluated, eligible and the review queue; review-queue cards; the forward test at a glance (results by stars, the last High check, a link to the full table); window results (YES / NO / N/A per window), eligibility donut, stars and the rule list |
 | Review queue        | ELIGIBLE coins with at least one YES among 3d / 7d / 30d, ranked by stars, then weighted points (3d 60 · 7d 25 · 30d 15 per YES; `≥ n` = lower bound because a window is N/A), complete scores first, weighted strength, the 3-day multiple and CMC id ([strategy § 6a](strategy-two-tier-vmc.md#6a-weighted-star-ranking-weighted_star_v1-operator-decision-d3)). A 2-star row always precedes a 1-star row |
 | Eligible            | Every coin passing all hard filters, including 0-star rows                                                                                                                                                                                                                                                                                                                       |
 | Needs review        | Coins with missing or ambiguous inputs (no rank / cap / listing date, ambiguous class, unverified or ambiguous LBank pair, LBank feed down). Windows are still computed                                                                                                                                                                                                          |
 | Excluded            | Coins with a known failed filter, with every reason                                                                                                                                                                                                                                                                                                                              |
+| Forward test        | Star Event Forward Test: results by stars, every event with its High-check status, window progress and notes ([§ 5a](#5a-star-event-forward-test))                                                                                                                                                                                                                               |
+| Data                | Data quality of the latest batch (quote and LBank status, LBank list age and _Refresh LBank list now_, scan warnings, last export) and why coins are left out (exclusion reasons)                                                                                                                                                                                                |
 | Runs & health       | Source, circuit and request budget; the latest run's stages on a timeline; hourly crawl batches (missing / duplicate ranks); runs; open LBank mapping tasks                                                                                                                                                                                                                      |
 | Exports             | Per-batch CSV / XLSX files with checksums                                                                                                                                                                                                                                                                                                                                        |
 | Telegram            | Missed reports, pending requests, members                                                                                                                                                                                                                                                                                                                                        |
@@ -79,7 +81,7 @@ of tappable choices.
 | Banner / status                  | Meaning                                                                                                   | What to do                                                                                                                                                       |
 | -------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Withheld: incomplete batch       | Ranks 1–1200 had a gap or duplicate, or not every listed coin was stored                                  | Check _Runs & health_; the next hourly batch usually recovers. Rows remain inspectable but are not a complete queue                                              |
-| Withheld: LBank feed unavailable | No complete LBank Spot markets list yet, or the stored list is older than `LBANK_PAIRS_MAX_AGE_DAYS` (35) | Press _Refresh LBank list now_ on the Overview (or `lbank:refresh`); check source health if it fails. Every LBank status is UNKNOWN until a complete list exists |
+| Withheld: LBank feed unavailable | No complete LBank Spot markets list yet, or the stored list is older than `LBANK_PAIRS_MAX_AGE_DAYS` (35) | Press _Refresh LBank list now_ on _Data_ (or `lbank:refresh`); check source health if it fails. Every LBank status is UNKNOWN until a complete list exists |
 | Empty                            | No eligible coin met any window                                                                           | Nothing to review this hour; no rule is relaxed to fill it                                                                                                       |
 
 ## 3. Review workflow
@@ -203,10 +205,10 @@ signal.
 The list of LBank Spot pairs comes from the **Markets section of CMC's LBank exchange page**
 (`coinmarketcap.com/exchanges/lbank/?type=spot`, all pages, ~900 pairs, 2 requests). It is
 fetched once and reused; the hourly run fetches it again only when it is
-`LBANK_PAIRS_REFRESH_DAYS` (30) old. The Overview's _LBank Spot list_ row shows when it was
+`LBANK_PAIRS_REFRESH_DAYS` (30) old. The _LBank Spot list_ row on _Data_ shows when it was
 fetched and when it refreshes next.
 
-- **Refresh now:** _Refresh LBank list now_ on the Overview, or `npm run cli -- lbank:refresh`.
+- **Refresh now:** _Refresh LBank list now_ on _Data_, or `npm run cli -- lbank:refresh`.
   It fetches the list, then recomputes and re-exports the latest batch, so the result is visible
   at once. Use it when you know LBank listed or delisted something.
 - **If a refresh fails**, the previous complete list stays in use until it is
@@ -235,12 +237,30 @@ stores each event's daily Highs and recomputes the highest High after detection,
 the UTC day containing detection + 168 h. Rules, statuses, fields and gaps:
 [forward-test.md](forward-test.md).
 
-- **Forward test** tab: star groups (FINAL events only in the return statistics), the final-return
-  distribution, detection hours, Active / Final / Incomplete / All events, rejected triggers,
-  downloads (needs `exports:read`) and *Update Highs now* (needs `scan:operate`).
-- A return shown as `≥ x %` is provisional (window open, final day pending or a day missing); only
-  FINAL events have an exact peak. The return is the highest later High against the detection
-  price — not a trade, not realized profit — and no "pumped" threshold exists.
+- **Forward test** tab: results by stars (events, confirmed Highs, events awaiting a check, active
+  returns so far apart from FINAL statistics), pass-pattern and points tables, the final-return
+  distribution, identification hours, the event list (filters by status, result and stars; sort by
+  Return, stars, points, identification time or a 3d / 7d / 30d ratio), rejected triggers, downloads
+  (needs `exports:read`) and *Update Highs now* (needs `scan:operate`). *How to read the forward
+  test* on the page defines every column.
+- **Return** is the peak return: the highest High confirmed after identification against the CMC
+  price recorded at identification — the maximum increase, not a trade or realized profit (a stop
+  could have been hit first), and no "pumped" threshold exists. `≥ x %` is so far (window open,
+  final day pending or a day missing); only FINAL events have an exact peak.
+- **Days and time zones:** a day is a UTC calendar day; day 0 is the UTC date of identification and
+  day 7 the UTC date of identification + 168 h, included to its end. Times are shown in the display
+  timezone (`DISPLAY_TIMEZONE`, Asia/Tehran: a UTC day starts at 03:30 there).
+- **High check** column: *Not checked yet*, *New record found*, *Checked; record unchanged*, *Data
+  unavailable* or *Data retrieval error*, the UTC date every closed day is checked through, and when
+  the last successful check ran (hover for the note). Highs are checked once per closed UTC day by
+  the first hourly run after 00:00 UTC, retried while a day is missing, and on *Update Highs now* —
+  never when the page opens. *Update Highs now* runs in the background: the page shows its
+  progress, then how many events were checked, got a new highest High, stayed unchanged, had no
+  data or failed.
+- A yellow **Day 0 High** is the identification day's High that CMC dates before identification
+  (or without a time): it is shown but never counted in Return or any statistic. Click it, or the
+  *day 0 unconfirmed* note, for the times. *N overlapping* lists the same coin's other events whose
+  windows overlap this one (this row not included).
 - Warnings: `FRESHNESS` / `UPDATE_FAILED` — the daily update has not run successfully; check the
   run's `forward` stage and the source health. `UPDATE_PARTIAL` — some Highs are not published
   yet; retried automatically. `INCOMPLETE_DAY0` — the signal day's High came before detection and no

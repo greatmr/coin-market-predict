@@ -40,6 +40,10 @@ export class ForwardController {
   events(@Query(new ZodValidationPipe(ForwardEventsQuerySchema)) q: ForwardEventsQueryDto) {
     return this.read.events({
       view: q.view,
+      status: q.status,
+      result: q.result,
+      sort: q.sort,
+      dir: q.dir,
       stars: q.stars,
       search: q.search || undefined,
       limit: q.limit,
@@ -56,6 +60,30 @@ export class ForwardController {
         code: ErrorCodes.FORWARD_EVENT_NOT_FOUND,
       });
     return e;
+  }
+
+  /** The same coin's other events whose windows overlap this one's (correlated observations). */
+  @Get('events/:id/overlaps')
+  async overlaps(@Param('id', new ZodValidationPipe(UuidSchema)) id: string) {
+    const o = await this.read.overlaps(id);
+    if (!o)
+      throw new NotFoundException({
+        message: 'no forward-test event with this id',
+        code: ErrorCodes.FORWARD_EVENT_NOT_FOUND,
+      });
+    return o;
+  }
+
+  /** One daily High update: progress while it runs, then its per-event check counts. */
+  @Get('update-runs/:id')
+  async updateRun(@Param('id', new ZodValidationPipe(UuidSchema)) id: string) {
+    const r = await this.read.updateRun(id);
+    if (!r)
+      throw new NotFoundException({
+        message: 'no forward-test update run with this id',
+        code: ErrorCodes.FORWARD_UPDATE_RUN_NOT_FOUND,
+      });
+    return r;
   }
 
   @Get('rejections')
@@ -84,16 +112,15 @@ export class ForwardController {
     res.send(out.body);
   }
 
-  /** The daily High update now, under the pipeline lease (it never creates an event). */
+  /**
+   * Start the daily High update now, in the background under the pipeline lease (it never creates
+   * an event). Returns the run id to follow at `GET /api/forward/update-runs/:id`.
+   */
   @RequirePermission('scan:operate')
   @Post('update')
   async update() {
-    const r = await this.pipeline.runForwardUpdate();
-    if ('skipped' in r) return { ok: false, reason: r.skipped };
-    return {
-      ok: r.update && !('skipped' in r.update) && r.update.status !== 'failed',
-      update: r.update,
-      export: r.export,
-    };
+    const r = await this.pipeline.startForwardUpdate();
+    if (!r.started) return { ok: false, reason: r.reason };
+    return { ok: true, updateRunId: r.updateRunId };
   }
 }

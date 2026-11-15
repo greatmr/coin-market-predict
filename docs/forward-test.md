@@ -34,8 +34,8 @@ VMC or star rule changed, so `RULESET_VERSION` is unchanged. Module boundary:
 
 | Surface | What |
 |---|---|
-| Dashboard | **Forward test** tab: star groups, pass-pattern and weighted-points tables, final-return distribution, detection hours, Active / Final / Incomplete / All events, rejected triggers, downloads, *Update Highs now* |
-| API | `GET /api/forward` (report), `GET /api/forward/events?view=active\|final\|incomplete\|all&stars=&search=`, `GET /api/forward/events/:id`, `GET /api/forward/rejections`, `GET /api/forward/export/<sheet>.csv\|workbook.xlsx` (`exports:read`), `POST /api/forward/update` (`scan:operate`) |
+| Dashboard | **Forward test** tab: results by stars (§ 9), pass-pattern and weighted-points tables, final-return distribution, identification hours, the event list with each event's High check (§ 7a), window progress (§ 5) and expandable notes, filters (status, result, stars), sorting (Return, stars, points, identification time, 3d / 7d / 30d ratio), rejected triggers, downloads, *Update Highs now* with progress and result counts; *How to read the forward test* defines every column. **Overview**: results by stars and the last check, linking to the tab |
+| API | `GET /api/forward` (report), `GET /api/forward/events?view=active\|final\|incomplete\|all&status=&result=&sort=&dir=&stars=&search=`, `GET /api/forward/events/:id`, `GET /api/forward/events/:id/overlaps`, `GET /api/forward/rejections`, `GET /api/forward/export/<sheet>.csv\|workbook.xlsx` (`exports:read`), `POST /api/forward/update` (`scan:operate`; starts the update in the background and returns its run id), `GET /api/forward/update-runs/:id` (progress, then per-event check counts) |
 | MCP (read-only) | `get_forward_test_summary`, `get_forward_events`, `get_forward_event` |
 | CLI | `forward:status`, `forward:events`, `forward:update`, `forward:export` (§ 12) |
 | Files | `<TIER1_EXPORT_DIR>/<provider>/<time>Z_forward-test[_SYNTHETIC]/` after each daily update; samples in [examples/](examples/README.md) |
@@ -101,6 +101,15 @@ effective_horizon = length of [detected_at, evaluation_end] in hours: (168, 192]
 Example: 10 Nov 14:00 UTC → deadline 17 Nov 14:00 → included until 17 Nov 23:59:59.999 (178 h).
 A peak after `deadline_168h` sets `extension_peak_flag = TRUE`.
 
+**Days and time zones.** Every day in the forward test is a UTC calendar day
+(00:00:00.000–23:59:59.999 UTC): the event key, the included dates and the daily Highs. Day 0 is
+the UTC date of `detected_at`; because 168 h is exactly 7 × 24 h, the date of `deadline_168h` is
+always day 7. The dashboard's *Window* column shows "Day k of 7" for the UTC day `now` falls in,
+"Window closed" after `evaluation_end`, and "c of n closed days checked" (closed included days
+with a usable High from day 0 on, § 7a). Times are *displayed* in `DISPLAY_TIMEZONE` (Asia/Tehran,
+where a UTC day starts at 03:30); hovering shows UTC. The display timezone never changes a day
+boundary.
+
 ## 6. High data: source and interval coverage (p.5, p.6)
 
 **Source.** The existing crawler's daily OHLC route
@@ -130,6 +139,16 @@ or an LBank Spot High (a different series without a captured LBank reference pri
 | Final day (date of `deadline_168h`) | that day's High | same; includes the end-of-day extension | still missing after the window: `AWAITING_FINAL_DAY` (late final day) |
 | After `evaluation_end`, before `detected_at` | — | never | excluded |
 
+**On the dashboard** a `DAY0_UNPROVEN` High that still matters (`day0_state = UNRESOLVED`) is
+shown next to the confirmed peak in yellow — "It is unknown whether this high occurred before or
+after identification" when CMC gives no time, otherwise CMC's time of the High against the
+identification time — and never enters Return, `peak_return_pct` or any statistic. Example from
+the live data (BERA, CMC 24647, 14 Nov): `time_high` 05:07 UTC is after both identifications
+(2★ 00:07, 3★ 02:07 UTC), so that High counts (`DAY0_POST_SIGNAL`); our own hourly snapshot at
+05:05 UTC (0.13638 USD, 99.6 % of the 0.13699 High) is consistent with it. The 10 Nov 2★ event
+(19:48 UTC) had a day-0 High at 15:04 UTC, before identification: `DAY0_UNPROVEN`, later settled
+by the higher 14 Nov High (`SHORTCUT`).
+
 The peak is the largest eligible High; ties go to the earliest. Its time is the source's
 `time_high` (`SOURCE_TIME`) or, if unknown, only its UTC day (`UTC_DAY`); with `UTC_DAY` on the final
 day, `extension_peak_flag` is `UNKNOWN`. When a later High equals the unproven day-0 High, the value
@@ -151,7 +170,10 @@ due: at the first run after a UTC day closes; again after `TIER1_DAILY_RETRY_HOU
 included High is missing (for up to `MISSING_DATA_RETRY_DAYS` = 3 days after `evaluation_end`);
 and at the next run after a failure. A failed forward stage marks the run `partial` and never
 fails the scan, exports or Telegram. Manually: `forward:update` or *Update Highs now*, under the
-pipeline lease.
+pipeline lease (the dashboard starts it in the background and follows `forward_update_run`). The
+hourly scan itself and opening a page never check Highs. Where to see it: the *Last High check*
+tile (status, trigger, the covered UTC date, counts) and each event's *High check* column (§ 7a);
+`forward:status` in the CLI.
 
 **How.** For every event that is not FINAL — and FINAL events while their days can still be
 revised (`evaluation_end` within `TIER1_DAILY_LOOKBACK_DAYS`) — the update reads the effective
@@ -163,17 +185,39 @@ rows used), the next `forward_outcome.result_version` is written (`first`, `dail
 `source_revision`). Rerunning adds nothing. Events never become FINAL early because of a pump, nor
 because seven calendar dates elapsed.
 
+### 7a. High check status per event (dashboard bookkeeping, M011)
+
+Each daily update records on every event with a closed included day the result of that check —
+bookkeeping, not part of the outcome, so `FORWARD_RULES_VERSION` is unchanged:
+
+| `last_check_status` | Meaning |
+|---|---|
+| NULL (*Not checked yet*) | the signal day has not closed, or no update has run since it closed |
+| `NEW_RECORD` | the current outcome version raised the highest confirmed High against the version before it, or gave the first one |
+| `UNCHANGED` | checked; the previous record stands (a lower later High keeps it, § 9); also when there is no confirmed High yet (e.g. only an unproven day 0) |
+| `DATA_UNAVAILABLE` | a closed included day has no usable CMC daily High yet (missing or invalid); retried |
+| `RETRIEVAL_ERROR` | that day is missing after a failed daily-history request (`daily_fetch_state.last_status = failed`, or the source was unavailable), or evaluating the event failed; earlier outcomes are kept |
+
+A gap is reported before the record. The status compares stored outcome versions, not the last
+run, so a same-day re-check that adds nothing keeps showing a new record until the next day is
+checked. `checked_through` is the last included date up to which every closed day has a stored,
+usable High (day 0 counts once read, proven or not); a missing or invalid day stops it.
+`last_check_at` is the last attempt, `last_update_at` the last successful check, and
+`last_check_note` says what was found (the previous record, the missing dates, the error). Each
+update run stores `counts.checks` (checked, new record, unchanged, data unavailable, errors, not
+due) and, while running, `counts.progress` (phase, processed, total).
+
 ## 8. Storage model (p.8)
 
 | Spec | Table | Content |
 |---|---|---|
-| `forward_events` | `forward_event` | the immutable detection snapshot (§ 3, including the ranking fields since M009), `deadline_168h`, `evaluation_end`, `effective_horizon_hours`, `rules_version`; tracking state `status`, `quality_flags`, `result_version`, `last_update_at`, `finalized_at`. Unique key § 4; checks `star_count BETWEEN 1 AND 3`, `snapshot_price_usd > 0`; trigger `forward_event_immutable_snapshot` |
+| `forward_events` | `forward_event` | the immutable detection snapshot (§ 3, including the ranking fields since M009), `deadline_168h`, `evaluation_end`, `effective_horizon_hours`, `rules_version`; tracking state `status`, `quality_flags`, `result_version`, `last_update_at`, `finalized_at`, and since M011 `last_check_at`, `last_check_status`, `last_check_note`, `checked_through` (§ 7a). Unique key § 4; checks `star_count BETWEEN 1 AND 3`, `snapshot_price_usd > 0`; trigger `forward_event_immutable_snapshot` |
 | `forward_highs` | `forward_high` | `event_id`, `date_utc`, `period_start/end`, `source`, `source_revision_id` (→ `daily_metric_revision`), `revision`, `high_usd`, `time_high`, `quote_currency`, `observed_at` (retrieved), `eligibility`, `reason`, `is_current`, `superseded_at` |
 | `forward_outcomes` | `forward_outcome` | one row per `result_version`: `status`, `coverage_status`, `peak_kind` (EXACT / LOWER_BOUND / NONE), `peak_high_usd`, `peak_high_id`, `peak_at`, `peak_time_precision`, `peak_period_start/end`, `peak_return_pct`, `extension_peak_flag`, `effective_horizon_hours`, `day0_state`, covered / completed days, missing and invalid dates, reasons, the High rows used, `finalized_at`, `rules_version` |
 | watchlist | `forward_test_watchlist` | one row per coin: identity and contract evidence at the first event, first / last event time, event count. Events reference it (`RESTRICT`): removing a coin can never delete its history |
 | failed triggers | `forward_trigger_rejection` | one row per batch, coin and star count: reasons and observed values |
 | batch log | `forward_trigger_run` | each reading of a published queue: rows seen, created, ignored (with the existing event id), rejected |
-| update log | `forward_update_run` | each daily update: covered date, status, counts, coverage, fetch report, notes |
+| update log | `forward_update_run` | each daily update: covered date, status, counts (with `checks` and `progress`, § 7a), coverage, fetch report, notes |
 | High capture | `daily_metric_revision.time_high`, `time_low` | § 6 |
 
 Snake_case singular names follow [ADR-0001](adr/0001-typeorm-modular-layout.md). Nothing here is
@@ -184,8 +228,19 @@ ever pruned (p.10); retention never touches these tables.
 ```
 peak_return_pct = 100 × (peak_high_usd / snapshot_price_usd − 1)    exact decimals, stored at 30 dp
 ```
-`peak_kind = EXACT` only for FINAL events; every other value is a provisional lower bound and is
-shown as `≥ x %`. The initial price is never overwritten.
+This is the dashboard's **Return**: the maximum price increase after identification (peak
+return), not realized trading profit — the price could hit a stop and rise again; trading outcomes
+with stop and exit rules are a separate, later definition. `peak_kind = EXACT` only for FINAL
+events; every other value is a provisional lower bound and is shown as `≥ x %`. A later higher
+High raises it; a lower one leaves it and only advances `checked_through`. The initial price is
+never overwritten.
+
+**Results by stars** (dashboard, `Cohort_Summary`): per star group the events, events with a
+confirmed High, events awaiting their first check, events whose only candidate is an unconfirmed
+day-0 High; active events (open / tracking / awaiting) with the median and mean of their
+provisional returns (lower bounds, events with a confirmed High only) kept apart from completed
+events (FINAL · INCOMPLETE) whose statistics use FINAL events only. An unproven day-0 High is never
+in any of these numbers.
 
 **Event export** (one row per event, overlapping 2- and 3-star events as separate rows): sheets
 `Events_Active` (OPEN, TRACKING, AWAITING_FINAL_DAY), `Events_Final`, `Events_Incomplete`, with
@@ -198,10 +253,13 @@ peak_kind, highest_future_high_usd, high_time_utc, high_interval_start_utc,
 high_interval_end_utc, high_time_precision, peak_return_pct, extension_peak_flag, day0_state,
 completed_days, covered_days, expected_days, missing_dates, invalid_dates, data_quality,
 result_version, revision_reason, rules_version, last_update_utc, finalized_at_utc,
-asset_event_count, overlapping_event_ids, data_label`.
+checked_through_utc_date, last_check_status, last_check_utc, day0_high_usd, day0_high_time_utc,
+day0_high_eligibility, asset_event_count, overlapping_event_ids, data_label`.
 
 **Star-group report** (`Cohort_Summary`, one row per group with its `dimension`: star count
-1★ / 2★ / 3★ / all; detection-time **pass pattern** such as `NO/YES/YES`, listed in the queue order
+1★ / 2★ / 3★ / all, with `confirmed_high`, `awaiting_check`, `day0_unconfirmed`,
+`active_with_high_n`, `active_mean_peak_return_pct`, `active_median_peak_return_pct`; detection-time
+**pass pattern** such as `NO/YES/YES`, listed in the queue order
 of the pattern; and **weighted-points band** — complete scores in fixed equal-width bands 75–100,
 50–74, 25–49, 0–24 points, with incomplete (lower-bound) scores and events detected before the
 ranking in groups of their own, F14): events, distinct coins,
@@ -251,12 +309,16 @@ successful update.
 | A forward-test failure never fails the hourly run | e2e › *a forward-test failure never fails the hourly run* |
 | Ranking addendum § 5–6: the same coin keeps 2 stars twice on one UTC date with different points → one 2-star event with the first snapshot (YES/YES/NO, 85, strength 1.91); a later 3-star result → its own event; the snapshot is immutable | e2e › *snapshots the ranking known at detection…*; pipeline events copy the scanner's ranking (e2e › *records the published queue…*) |
 | Outcomes compared by star count, pass pattern and weighted-points band, with counts and quality | `cohort.spec.ts` › *by pass pattern and weighted-points band* |
+| Check status per event: not checked, new record, unchanged (a lower High keeps the record and the price, checked-through advances), data unavailable, retrieval error; a same-day re-check keeps the new record | `forward-rules.spec.ts` › *check status*, *window progress and checked-through date*; e2e › *tells not checked, new record, unchanged…* |
+| An unproven day-0 High is shown apart and never counted; sorting by Return / stars, result filters; active vs completed statistics | e2e › *keeps an unproven signal-day High out of the result…*; `cohort.spec.ts` › *separates active from completed events…* |
+| Overlapping events listed with identification time, stars, price and the shared window | e2e › *lists the overlapping events of one coin…* |
+| *Update Highs now* starts in the background, reports its run and progress; a held lease refuses | e2e › *starts the manual update in the background…* |
 
 ## 12. Runbook
 
 **Local**
 ```bash
-npm run db:migrate                        # M008 (back up first: operator-guide § 9)
+npm run db:migrate                        # M008, M011 (back up first: operator-guide § 9)
 npm start                                 # the hourly run records events and updates Highs
 npm run cli -- forward:status             # star groups, coverage, last trigger / update, warnings
 npm run cli -- forward:events --view active    # or final | incomplete | all, --stars 1|2|3, --json
@@ -286,7 +348,9 @@ without an intraday source (U1); those peaks are lower bounds and stay out of th
 aggregates.
 
 **Rollback**: M008 only adds tables and two nullable columns, which older code ignores; check out
-the previous commit and rebuild. Do not run `db:revert` on real data.
+the previous commit and rebuild. M011 adds four nullable tracking columns to `forward_event`
+(back-filled from the stored outcomes) and widens the immutability trigger's list of mutable
+columns; older code ignores them. Do not run `db:revert` on real data.
 
 ## 13. Implementation assumptions
 

@@ -218,6 +218,37 @@ export class PipelineService {
     );
   }
 
+  /**
+   * Dashboard "Update Highs now": start the daily High update in the background under the pipeline
+   * lease and return its run id at once, so the page can follow `forward_update_run` progress
+   * instead of waiting on one long request. `done` settles when it finishes (tests await it).
+   */
+  async startForwardUpdate(): Promise<
+    { started: true; updateRunId: string; done: Promise<void> } | { started: false; reason: string }
+  > {
+    const lease = await this.takeLease();
+    if ('skipped' in lease) return { started: false, reason: lease.skipped };
+    let created!: (id: string) => void;
+    const runId = new Promise<string>((resolve) => (created = resolve));
+    const work = this.forward
+      .update(this.providerId, { now: this.clock.now(), trigger: 'manual', onRunCreated: created })
+      .finally(() => lease.release());
+    const done = work.then(
+      () => undefined,
+      (err: unknown) => this.log.error(`manual forward update failed: ${redact(err)}`),
+    );
+    // Before its run row exists the update can only fail by throwing; report that to the caller.
+    const first = await Promise.race([runId, work.then(() => null)]).catch((err: unknown) => err);
+    if (typeof first === 'string') return { started: true, updateRunId: first, done };
+    return {
+      started: false,
+      reason:
+        first instanceof Error || typeof first === 'object'
+          ? `the update could not start: ${redact(first).slice(0, 300)}`
+          : 'the update finished without a run record',
+    };
+  }
+
   /** Re-export a scanned batch under the pipeline lease, so it never races an hourly export. */
   async exportBatch(batchId: string): Promise<ExportResult | { skipped: string }> {
     return this.exclusive(() => this.exports.export(batchId));
