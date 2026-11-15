@@ -75,6 +75,44 @@ export type CoverageStatus = (typeof COVERAGE_STATUSES)[number];
 export const FORWARD_UPDATE_STATUSES = ['running', 'succeeded', 'partial', 'failed'] as const;
 export type ForwardUpdateStatus = (typeof FORWARD_UPDATE_STATUSES)[number];
 
+/**
+ * Result of an event's latest High check (bookkeeping for the dashboard, not a rule; NULL = not
+ * checked yet). NEW_RECORD: the newest checked day raised the highest High (or gave the first
+ * confirmed one); UNCHANGED: checked, the previous record stands; DATA_UNAVAILABLE: a closed day
+ * has no usable CMC daily High yet; RETRIEVAL_ERROR: the request or the evaluation failed.
+ */
+export const FORWARD_CHECK_STATUSES = [
+  'NEW_RECORD',
+  'UNCHANGED',
+  'DATA_UNAVAILABLE',
+  'RETRIEVAL_ERROR',
+] as const;
+export type ForwardCheckStatus = (typeof FORWARD_CHECK_STATUSES)[number];
+
+/** Days of the window after the signal day: day 0 (detection date) … day 7 (date of deadline_168h). */
+export const WINDOW_LAST_DAY = 7;
+
+/** Sort keys of the event list (API `sort`); values are the detection snapshot or latest outcome. */
+export const EVENT_SORT_KEYS = [
+  'detected',
+  'return',
+  'stars',
+  'points',
+  'multiple3d',
+  'multiple7d',
+  'multiple30d',
+] as const;
+export type EventSortKey = (typeof EVENT_SORT_KEYS)[number];
+
+/** Result filters of the event list (API `result`): a check status, or what the peak rests on. */
+export const EVENT_RESULT_FILTERS = [
+  'NOT_CHECKED',
+  ...FORWARD_CHECK_STATUSES,
+  'CONFIRMED',
+  'DAY0_UNCONFIRMED',
+] as const;
+export type EventResultFilter = (typeof EVENT_RESULT_FILTERS)[number];
+
 /** Reason codes (stable strings: they appear in the database, exports, the API and tests). */
 export const FORWARD_REASON = {
   // trigger (PDF p.3, p.10)

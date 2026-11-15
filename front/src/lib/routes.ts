@@ -1,6 +1,6 @@
 // URL structure (React Router, no hash routing). List state lives in the query string so every view
 // can be shared, reloaded and reached with the back button:
-//   /queue?q=btc&page=2&rows=250&view=scatter      /forward?view=final&stars=3&page=1
+//   /queue?q=btc&page=2&rows=250&view=scatter      /forward?view=final&stars=3&sort=return&page=1
 //   /coins/1027?tab=history&batch=<id>             /login?next=/queue
 import { useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router';
@@ -14,6 +14,7 @@ export type SectionKey =
   | 'needs_review'
   | 'excluded'
   | 'forward'
+  | 'data'
   | 'batches'
   | 'exports'
   | 'access'
@@ -79,6 +80,13 @@ export const SECTIONS: readonly Section[] = [
     title: 'Forward test',
     sub: 'The first priced 1, 2 and 3-star detection per coin, UTC day and star count, followed to the end of the UTC day containing detection + 168 h. The return is the highest later High against the detection price: not a trade, not realized profit.',
     counted: true,
+  },
+  {
+    key: 'data',
+    path: '/data',
+    label: 'Data',
+    title: 'Data',
+    sub: 'Data quality of the latest batch (quotes, LBank mapping and list, scan warnings, last export) and why coins are left out of the screen.',
   },
   {
     key: 'batches',

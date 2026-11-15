@@ -51,6 +51,8 @@ function ev(
     passes,
     weightedPassPoints: scored ? r.weightedPassPoints : null,
     scoreComplete: scored ? r.scoreComplete : null,
+    checked: status !== 'OPEN',
+    day0Unconfirmed: false,
   };
 }
 
@@ -112,6 +114,24 @@ describe('star-group report (p.9)', () => {
     // An AWAITING 100 % never reaches the 3-star aggregates.
     expect(g('3').finalReturns.n).toBe(1);
     expect(str(g('3').finalReturns.max)).toBe('20');
+  });
+
+  it('separates active from completed events; an unconfirmed signal-day High is never a result', () => {
+    const day0Only: CohortEvent = {
+      ...ev(1, 792, '2026-11-12T05:00:00Z', 'TRACKING', null),
+      peakKind: 'NONE',
+      day0Unconfirmed: true,
+    };
+    const one = cohortReport([...events, day0Only]).groups.find((x) => x.group === '1')!;
+    // 789 TRACKING +5 % (confirmed), 790 OPEN (not checked), 792 TRACKING with only a day-0 High.
+    expect([one.events, one.confirmedHigh, one.awaitingCheck, one.day0Unconfirmed]).toEqual([
+      3, 1, 1, 1,
+    ]);
+    expect([one.activeReturns.n, str(one.activeReturns.mean), one.completed]).toEqual([1, '5', 0]);
+    const all = g('all');
+    expect([all.completed, all.finalReturns.n, all.activeReturns.n]).toEqual([4, 3, 2]);
+    // Active means are lower bounds of open windows, never mixed into the final statistics.
+    expect([str(all.activeReturns.median), str(all.finalReturns.median)]).toEqual(['52.5', '20']);
   });
 
   it('bins the final returns for the distribution', () => {

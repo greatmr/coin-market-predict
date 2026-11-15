@@ -48,6 +48,13 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M15 6h5v5" />
     </>
   ),
+  data: (
+    <>
+      <ellipse cx="12" cy="6" rx="7" ry="3" />
+      <path d="M5 6v12c0 1.66 3.13 3 7 3s7-1.34 7-3V6" />
+      <path d="M5 12c0 1.66 3.13 3 7 3s7-1.34 7-3" />
+    </>
+  ),
   batches: <path d="M3 12h4l2-6 4 12 2-6h6" />,
   exports: (
     <>

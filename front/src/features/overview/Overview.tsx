@@ -1,16 +1,16 @@
-// Overview: run pulse, the screen funnel, the queue strip, window / eligibility / star mixes,
-// exclusion reasons, data quality and the Tier 1 rules.
+// Overview: run pulse, the screen funnel, the queue strip, the forward test at a glance, window /
+// eligibility / star mixes and the Tier 1 rules. Data quality and exclusion reasons are on Data.
 import { Link, useNavigate } from 'react-router';
 
 import { ChartBox, Donut, HBars } from '../../components/charts';
-import { QUEUE, reasonText, statusText } from '../../lib/constants';
+import { QUEUE, statusText } from '../../lib/constants';
 import { fmtInt, fmtTime, fmtUsd } from '../../lib/format';
 import { pathOf } from '../../lib/routes';
 import { useApp } from '../../state/app';
 import type { AppConfig } from '../../types/api';
 
+import ForwardPanel from './ForwardPanel';
 import Pulse from './Pulse';
-import Quality, { qualityMeta } from './Quality';
 import QueueStrip from './QueueStrip';
 import { Funnel, type FunnelStage, StackRows } from './charts';
 import type { ScanCountsDetail, Tally } from './types';
@@ -23,7 +23,6 @@ export default function Overview() {
   const c: ScanCountsDetail = (sc?.counts as ScanCountsDetail | undefined) ?? {};
   const pass = (k: 'pass3d' | 'pass7d' | 'pass30d'): Tally => c.pass?.[k] ?? {};
   const st: Tally = c.stars ?? {};
-  const reasons = Object.entries(c.reasons ?? {}).sort((x, y) => y[1] - x[1]);
   const noScan = <div className="empty">No scan yet.</div>;
 
   const stages: FunnelStage[] | null = sc
@@ -67,6 +66,8 @@ export default function Overview() {
         </div>
         <div className="queue-strip">{ov ? <QueueStrip sc={sc} /> : null}</div>
       </div>
+
+      <ForwardPanel />
 
       <div className="grid-3">
         <div className="panel">
@@ -166,29 +167,9 @@ export default function Overview() {
         </div>
       </div>
 
-      <div className="grid-2">
-        <div className="panel">
-          <div className="panel-head">
-            <h2>Why coins are left out</h2>
-            <span className="hint">a coin can have several reasons</span>
-          </div>
-          <div>
-            {ov ? (
-              <HBars
-                items={reasons.map(([k, v]) => ({ label: reasonText(k), value: v, tone: 'rose' }))}
-                empty="No exclusions yet."
-              />
-            ) : null}
-          </div>
-        </div>
-        <div className="panel">
-          <div className="panel-head">
-            <h2>Data quality</h2>
-            <span className="hint">{qualityMeta(ov)}</span>
-          </div>
-          <div>{ov ? <Quality ov={ov} sc={sc} c={c} /> : null}</div>
-        </div>
-      </div>
+      <p className="muted small overview-data-link">
+        Data quality and why coins are left out are on <Link to={pathOf('data')}>Data</Link>.
+      </p>
 
       <Rules cfg={cfg} />
     </>

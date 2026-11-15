@@ -76,6 +76,10 @@ export interface DialogOptions {
   body: ReactNode;
   ok?: string;
   danger?: boolean;
+  /** Read-only: one Close button, no Cancel. */
+  info?: boolean;
+  /** A wider box (tables). */
+  wide?: boolean;
   /** Runs on submit; a thrown error is shown in the dialog. */
   onSubmit: (data: FormData, form: HTMLFormElement) => Promise<void> | void;
 }
@@ -90,6 +94,8 @@ export function dialog({
   body,
   ok = 'OK',
   danger = false,
+  info = false,
+  wide = false,
   onSubmit,
 }: DialogOptions): Promise<boolean> {
   return new Promise((resolve) => {
@@ -98,6 +104,8 @@ export function dialog({
       body,
       ok,
       danger,
+      info,
+      wide,
       onSubmit,
       close: (v) => {
         dialogs.set(null);
@@ -107,3 +115,7 @@ export function dialog({
   });
 }
 export const useDialog = () => useStore(dialogs);
+
+/** A read-only explanation or list in the modal box, closed with one button. */
+export const infoDialog = (title: string, body: ReactNode, opts: { wide?: boolean } = {}) =>
+  dialog({ title, body, ok: 'Close', info: true, wide: opts.wide, onSubmit: () => undefined });

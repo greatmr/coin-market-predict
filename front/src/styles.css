@@ -61,7 +61,8 @@
   --r-sm: 10px;
   /* Inter (self-hosted, variable weight + optical size; @fontsource-variable/inter): one family on
      every platform, tabular figures for aligned numbers, display cut for large text. */
-  --font: 'Inter Variable', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --font:
+    'Inter Variable', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
   --font-display: var(--font);
   --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
@@ -92,6 +93,9 @@
   --bad: var(--danger-400);
   --bad-soft: color-mix(in srgb, var(--danger-400) 16%, transparent);
   --caution: var(--danger-200);
+  /* Unconfirmed (yellow): a value shown but not counted, e.g. an identification-day High. */
+  --unsure: #f2c94c;
+  --unsure-soft: color-mix(in srgb, #f2c94c 15%, transparent);
   --track: color-mix(in srgb, var(--secondary-100) 9%, transparent);
   --grid: color-mix(in srgb, var(--secondary-100) 7%, transparent);
   --shadow: 0 18px 50px -24px color-mix(in srgb, var(--secondary-800) 95%, transparent);
@@ -130,6 +134,8 @@
     --bad: var(--danger-600);
     --bad-soft: color-mix(in srgb, var(--danger-600) 10%, transparent);
     --caution: var(--danger-500);
+    --unsure: #8a5d00;
+    --unsure-soft: color-mix(in srgb, #b07a00 12%, transparent);
     --track: color-mix(in srgb, var(--secondary-800) 8%, transparent);
     --grid: color-mix(in srgb, var(--secondary-800) 7%, transparent);
     --shadow: 0 18px 40px -26px color-mix(in srgb, var(--secondary-600) 45%, transparent);
@@ -166,6 +172,8 @@
   --bad: var(--danger-600);
   --bad-soft: color-mix(in srgb, var(--danger-600) 10%, transparent);
   --caution: var(--danger-500);
+  --unsure: #8a5d00;
+  --unsure-soft: color-mix(in srgb, #b07a00 12%, transparent);
   --track: color-mix(in srgb, var(--secondary-800) 8%, transparent);
   --grid: color-mix(in srgb, var(--secondary-800) 7%, transparent);
   --shadow: 0 18px 40px -26px color-mix(in srgb, var(--secondary-600) 45%, transparent);
@@ -2150,6 +2158,126 @@ select option {
   font-size: 10.5px;
   color: var(--muted);
   text-align: center;
+}
+/* Multi-line cells: the High check, the window progress. */
+.fwd-check,
+.fwd-window {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+/* An identification-day High that is shown but never counted (its time vs identification unknown
+   or before it): yellow, with a "?" that opens the explanation. */
+.fwd-day0 {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--unsure);
+  background: var(--unsure-soft);
+  color: var(--unsure);
+  font: 600 12px var(--font);
+  cursor: pointer;
+}
+.fwd-day0 i {
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--unsure);
+  color: var(--bg-1);
+  font-style: normal;
+  font-size: 10.5px;
+}
+.fwd-day0-text {
+  color: var(--unsure);
+}
+button.chip {
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+button.chip.fwd-day0-chip {
+  color: var(--unsure);
+  border-color: var(--unsure);
+  background: var(--unsure-soft);
+}
+button.chip:hover {
+  border-color: var(--accent);
+}
+/* Sortable headers. */
+.sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+.sort-btn i {
+  font-style: normal;
+  color: var(--muted);
+  opacity: 0.7;
+}
+.sort-btn.on,
+.sort-btn.on i {
+  color: var(--accent);
+  opacity: 1;
+}
+.sort-group {
+  display: inline-flex;
+  gap: 10px;
+}
+.select-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.fwd-update .panel-head .btn {
+  margin-left: auto;
+}
+.fwd-update .item-progress {
+  gap: 7px;
+}
+.fwd-defs {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+.fwd-defs b {
+  color: var(--text);
+}
+.fwd-explain {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.fwd-explain p {
+  margin: 0;
+}
+.fwd-explain td.wrap {
+  white-space: normal;
+  min-width: 16em;
+}
+.fwd-overview-foot {
+  margin: 12px 0 0;
+}
+.overview-data-link {
+  margin: 0;
+}
+.dialog-box.wide {
+  width: min(960px, 100%);
+  max-height: calc(100vh - 32px);
+  overflow: auto;
 }
 
 /* Tiles (runs & health) */

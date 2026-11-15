@@ -9,7 +9,8 @@ import type { UserRole } from '../auth/permissions.js';
 
 import { ForwardController } from './forward.controller.js';
 
-type Route = 'summary' | 'events' | 'event' | 'rejections' | 'download' | 'update';
+type Route =
+  'summary' | 'events' | 'event' | 'overlaps' | 'updateRun' | 'rejections' | 'download' | 'update';
 
 /** Whether a signed-in user of `role` passes the guard for one forward-test route. */
 async function allowed(role: UserRole, route: Route): Promise<boolean> {
@@ -41,7 +42,14 @@ async function allowed(role: UserRole, route: Route): Promise<boolean> {
 describe('forward-test routes and roles', () => {
   it('lets every role read the star-group report, events and rejections', async () => {
     for (const role of ['owner', 'analyzer', 'reviewer'] as const)
-      for (const route of ['summary', 'events', 'event', 'rejections'] as const)
+      for (const route of [
+        'summary',
+        'events',
+        'event',
+        'overlaps',
+        'updateRun',
+        'rejections',
+      ] as const)
         expect(await allowed(role, route), `${role} ${route}`).toBe(true);
   });
 

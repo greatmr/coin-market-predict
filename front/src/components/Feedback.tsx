@@ -102,7 +102,12 @@ export function DialogHost() {
         }
       }}
     >
-      <form ref={formRef} className="palette-box dialog-box" autoComplete="off" onSubmit={submit}>
+      <form
+        ref={formRef}
+        className={`palette-box dialog-box${d.wide ? ' wide' : ''}`}
+        autoComplete="off"
+        onSubmit={submit}
+      >
         <h2 id="dialog-title">{d.title}</h2>
         <fieldset className="plain" disabled={busy}>
           <div>{d.body}</div>
@@ -110,9 +115,11 @@ export function DialogHost() {
             {error}
           </div>
           <div className="row-actions end">
-            <button type="button" className="btn" onClick={() => d.close(false)}>
-              Cancel
-            </button>
+            {d.info ? null : (
+              <button type="button" className="btn" onClick={() => d.close(false)}>
+                Cancel
+              </button>
+            )}
             <button
               ref={okRef}
               type="submit"

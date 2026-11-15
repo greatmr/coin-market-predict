@@ -32,6 +32,13 @@ export interface CohortEvent {
   /** Detection-time weighted pass points and completeness; null when detected before the ranking. */
   weightedPassPoints: number | null;
   scoreComplete: boolean | null;
+  /** At least one High check has evaluated the event (it has an outcome). */
+  checked: boolean;
+  /**
+   * The signal-day High is not proven to come after detection and no later High reached it
+   * (DAY0_UNRESOLVED / INCOMPLETE_DAY0): that High never counts as a confirmed result.
+   */
+  day0Unconfirmed: boolean;
 }
 
 /**
@@ -119,9 +126,22 @@ export interface CohortGroup {
   incomplete: number;
   /** OPEN + TRACKING + AWAITING_FINAL_DAY. */
   pending: number;
+  /** FINAL + INCOMPLETE: the window has closed. */
+  completed: number;
   byStatus: Record<ForwardEventStatus, number>;
+  /** Events with a confirmed highest High (an eligible post-detection High), any status. */
+  confirmedHigh: number;
+  /** Events not checked yet (signal day still open, or no update since it closed). */
+  awaitingCheck: number;
+  /** Events whose only candidate High is the unconfirmed signal-day High (see CohortEvent). */
+  day0Unconfirmed: number;
   /** peak_return_pct over FINAL events only. */
   finalReturns: Stats;
+  /**
+   * Provisional peak_return_pct (lower bounds) of active events with a confirmed High. Kept apart
+   * from finalReturns: an open window can still rise.
+   */
+  activeReturns: Stats;
   returnDistribution: Bin[];
   detectionHourUtc: number[];
   horizonHours: Stats & { bins: Bin[] };
@@ -204,6 +224,9 @@ function group(
   const finals = events
     .filter((e) => e.status === 'FINAL' && e.peakKind === 'EXACT' && e.peakReturnPct !== null)
     .map((e) => e.peakReturnPct!);
+  const actives = events
+    .filter((e) => ACTIVE_EVENT_STATUSES.includes(e.status) && e.peakReturnPct !== null)
+    .map((e) => e.peakReturnPct!);
   const returnDistribution = RETURN_BINS.map((b) => ({
     label: b.label,
     count: finals.filter((v) => (b.min === null || v.gte(b.min)) && (b.max === null || v.lt(b.max)))
@@ -225,8 +248,13 @@ function group(
     final: byStatus.FINAL,
     incomplete: byStatus.INCOMPLETE,
     pending: ACTIVE_EVENT_STATUSES.reduce((s, st) => s + byStatus[st], 0),
+    completed: byStatus.FINAL + byStatus.INCOMPLETE,
     byStatus,
+    confirmedHigh: events.filter((e) => e.peakReturnPct !== null).length,
+    awaitingCheck: events.filter((e) => !e.checked).length,
+    day0Unconfirmed: events.filter((e) => e.day0Unconfirmed).length,
     finalReturns: stats(finals),
+    activeReturns: stats(actives),
     returnDistribution,
     detectionHourUtc,
     horizonHours: {

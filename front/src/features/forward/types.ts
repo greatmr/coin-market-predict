@@ -5,6 +5,14 @@ import type { Iso } from '../../types/api';
 export type ForwardStatus = 'OPEN' | 'TRACKING' | 'AWAITING_FINAL_DAY' | 'FINAL' | 'INCOMPLETE';
 export type PassStatus = 'YES' | 'NO' | 'N/A';
 export type EventView = 'active' | 'final' | 'incomplete' | 'all';
+/** Result of an event's latest High check (forward_event.last_check_status). */
+export type CheckStatus =
+  'NOT_CHECKED' | 'NEW_RECORD' | 'UNCHANGED' | 'DATA_UNAVAILABLE' | 'RETRIEVAL_ERROR';
+/** `sort` of GET /api/forward/events. */
+export type EventSort =
+  'detected' | 'return' | 'stars' | 'points' | 'multiple3d' | 'multiple7d' | 'multiple30d';
+/** `result` of GET /api/forward/events. */
+export type ResultFilter = CheckStatus | 'CONFIRMED' | 'DAY0_UNCONFIRMED';
 
 export interface ForwardOutcome {
   resultVersion: number;
@@ -71,6 +79,55 @@ export interface ForwardEventRow {
   outcome: ForwardOutcome | null;
   assetEventCount: number;
   overlappingEventIds: string[];
+  check: {
+    status: CheckStatus;
+    lastCheckAt: Iso | null;
+    lastSuccessAt: Iso | null;
+    /** YYYY-MM-DD (UTC): every closed day up to here has a usable daily High. */
+    checkedThrough: string | null;
+    note: string | null;
+  };
+  /** day: 0 (UTC date of identification) … 7 (UTC date of identification + 168 h). */
+  window: {
+    day: number;
+    lastDay: number;
+    closed: boolean;
+    closedDays: number;
+    checkedDays: number;
+  };
+  /** The identification day's daily High; DAY0_UNPROVEN never enters a result. */
+  day0: {
+    highUsd: string | null;
+    timeHigh: Iso | null;
+    eligibility: 'FULL_DAY' | 'DAY0_POST_SIGNAL' | 'DAY0_UNPROVEN' | 'INVALID';
+    reason: string | null;
+    changePct: string | null;
+  } | null;
+}
+
+/** GET /api/forward/events/:id/overlaps */
+export interface ForwardOverlaps {
+  event: OverlapEvent;
+  rule: string;
+  overlaps: (OverlapEvent & {
+    relation: 'same_utc_day' | 'earlier' | 'later';
+    overlapStart: Iso;
+    overlapEnd: Iso;
+    overlapHours: string;
+    peakReturnPct: string | null;
+    peakKind: string | null;
+  })[];
+}
+export interface OverlapEvent {
+  eventId: string;
+  symbol: string;
+  name: string;
+  starCount: number;
+  detectedAt: Iso;
+  detectedUtcDate: string;
+  referencePriceUsd: string;
+  evaluationEnd: Iso;
+  status: ForwardStatus;
 }
 
 /** GET /api/forward/events */
@@ -98,8 +155,15 @@ export interface CohortGroup {
   final: number;
   incomplete: number;
   pending: number;
+  /** FINAL + INCOMPLETE. */
+  completed: number;
   byStatus: Record<ForwardStatus, number>;
+  confirmedHigh: number;
+  awaitingCheck: number;
+  day0Unconfirmed: number;
   finalReturns: ReturnStats;
+  /** Provisional (lower-bound) returns of active events with a confirmed High. */
+  activeReturns: ReturnStats;
   returnDistribution: { label: string; count: number }[];
   detectionHourUtc: number[];
   horizonHours: ReturnStats & { bins: { label: string; count: number }[] };
@@ -113,15 +177,32 @@ export interface CohortGroup {
   };
 }
 
+export interface UpdateChecks {
+  checked: number;
+  newRecord: number;
+  unchanged: number;
+  dataUnavailable: number;
+  errors: number;
+  notDue: number;
+}
+
+/** A daily High update; also GET /api/forward/update-runs/:id while it runs. */
 export interface UpdateRun {
   id: string;
   trigger: string;
   updateDate: string;
-  status: string;
+  status: 'running' | 'succeeded' | 'partial' | 'failed' | string;
   startedAt: Iso;
   finishedAt: Iso | null;
   notes: string[];
   error: string | null;
+  progress: {
+    phase: 'starting' | 'fetching' | 'evaluating' | 'done' | string;
+    processed: number;
+    total: number;
+  } | null;
+  /** Per-event check results (null for runs recorded before they were counted). */
+  checks: UpdateChecks | null;
 }
 
 /** GET /api/forward */
@@ -130,7 +211,7 @@ export interface ForwardSummary {
   providerName: string;
   isLive: boolean | null;
   rulesVersion: string;
-  horizon: { hours: number; rule: string };
+  horizon: { hours: number; rule: string; days: string };
   notice: string;
   counts: {
     events: number;
@@ -175,14 +256,9 @@ export interface ForwardRejection {
   createdAt: Iso;
 }
 
-/** POST /api/forward/update */
+/** POST /api/forward/update: started in the background, or why not. */
 export interface ForwardUpdateResult {
   ok: boolean;
   reason?: string;
-  update?: {
-    status?: string;
-    newlyFinal?: number;
-    outcomes?: { versions: number; unchanged: number };
-    [key: string]: unknown;
-  };
+  updateRunId?: string;
 }

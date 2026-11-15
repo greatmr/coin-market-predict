@@ -12,6 +12,7 @@ import { SessionProvider } from './state/session';
 const Overview = lazy(() => import('./features/overview/Overview'));
 const Sheet = lazy(() => import('./features/sheets/Sheet'));
 const Forward = lazy(() => import('./features/forward/Forward'));
+const Data = lazy(() => import('./features/data/Data'));
 const Batches = lazy(() => import('./features/health/Batches'));
 const Exports = lazy(() => import('./features/health/Exports'));
 const Access = lazy(() => import('./features/telegram/Access'));
@@ -53,6 +54,7 @@ const ELEMENTS: Record<SectionKey, ReactNode> = {
   needs_review: <Sheet sheet="needs_review" key="needs_review" />,
   excluded: <Sheet sheet="excluded" key="excluded" />,
   forward: <Forward />,
+  data: <Data />,
   batches: <Batches />,
   exports: <Exports />,
   access: <Access />,

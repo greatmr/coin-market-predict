@@ -5,7 +5,7 @@ import { type DataSource, type EntityManager, In, MoreThanOrEqual, Not } from 't
 import { safeBigintToNumber } from '../../common/entities/bigint.js';
 import { redact } from '../../common/security/redact.js';
 import { DAY_MS, addDays, eachDay, isoDate } from '../../common/utils/dates.js';
-import { dec, forStorage, sha256 } from '../../common/utils/decimal.js';
+import { type DValue, dec, forStorage, sha256 } from '../../common/utils/decimal.js';
 
 import { APP_CONFIG, type AppConfig } from '../../config/index.js';
 
@@ -13,6 +13,7 @@ import {
   DailyMetricsService,
   type DailyRefreshReport,
 } from '../daily-metrics/daily-metrics.service.js';
+import { DailyFetchState } from '../daily-metrics/entities/daily-fetch-state.entity.js';
 import { CmcAsset } from '../ingestion/entities/cmc-asset.entity.js';
 
 import { ForwardEvent } from './entities/forward-event.entity.js';
@@ -23,15 +24,18 @@ import {
   type EventWindow,
   type ForwardOutcome as Outcome,
   type OutcomeHigh,
+  checkStatus,
   classifyHigh,
   dayComplete,
   evaluateOutcome,
 } from './forward-rules.js';
 import {
+  ACTIVE_EVENT_STATUSES,
   FETCH_MAX_MINUTES,
   FORWARD_EVENT_STATUSES,
   FORWARD_REASON,
   FORWARD_RULES_VERSION,
+  type ForwardCheckStatus,
   type ForwardEventStatus,
   type ForwardUpdateStatus,
   MISSING_DATA_RETRY_DAYS,
@@ -57,7 +61,27 @@ export interface UpdateReport {
   /** Targeted daily-row fetch for tracked assets the daily stage does not cover. */
   fetch: DailyRefreshReport | null;
   failedEvents: number;
+  /** Per-event result of this run's High check (the dashboard's "Update Highs now" summary). */
+  checks: UpdateChecks;
   notes: string[];
+}
+
+export interface UpdateChecks {
+  /** Events with at least one closed included day, i.e. something to check. */
+  checked: number;
+  newRecord: number;
+  unchanged: number;
+  dataUnavailable: number;
+  errors: number;
+  /** Events whose signal day has not closed yet (nothing to check). */
+  notDue: number;
+}
+
+/** Progress of a running update, stored in `forward_update_run.counts.progress`. */
+export interface UpdateProgress {
+  phase: 'starting' | 'fetching' | 'evaluating' | 'done';
+  processed: number;
+  total: number;
 }
 
 /** The current High row of one included date, with the source revision it came from. */
@@ -78,6 +102,18 @@ interface DailyHighRow {
   source: string;
   retrieved_at: Date;
 }
+
+const CHECK_KEY: Record<
+  ForwardCheckStatus,
+  'newRecord' | 'unchanged' | 'dataUnavailable' | 'errors'
+> = {
+  NEW_RECORD: 'newRecord',
+  UNCHANGED: 'unchanged',
+  DATA_UNAVAILABLE: 'dataUnavailable',
+  RETRIEVAL_ERROR: 'errors',
+};
+
+const PROGRESS_EVERY_MS = 1_000;
 
 const STATUS_ZERO = () =>
   Object.fromEntries(FORWARD_EVENT_STATUSES.map((s) => [s, 0])) as Record<
@@ -149,6 +185,8 @@ export class ForwardUpdateService {
       trigger: 'schedule' | 'manual';
       pipelineRunId?: string | null;
       fetch?: boolean;
+      /** Called once the run row exists (the dashboard starts the update in the background). */
+      onRunCreated?: (updateRunId: string) => void;
     },
   ): Promise<UpdateReport> {
     const { now } = opts;
@@ -166,9 +204,18 @@ export class ForwardUpdateService {
         updateDate: addDays(isoDate(now), -1),
         startedAt: now,
         status: 'running',
+        counts: { progress: { phase: 'starting', processed: 0, total: 0 } },
         notes: [],
       }),
     );
+    opts.onRunCreated?.(run.id);
+    let progressAt = 0;
+    const progress = async (p: UpdateProgress, force = false) => {
+      const at = Date.now();
+      if (!force && at - progressAt < PROGRESS_EVERY_MS) return;
+      progressAt = at;
+      await runs.update({ id: run.id }, { counts: { progress: { ...p } } }).catch(() => undefined);
+    };
     const report: UpdateReport = {
       updateRunId: run.id,
       status: 'running',
@@ -188,11 +235,21 @@ export class ForwardUpdateService {
       },
       fetch: null,
       failedEvents: 0,
+      checks: {
+        checked: 0,
+        newRecord: 0,
+        unchanged: 0,
+        dataUnavailable: 0,
+        errors: 0,
+        notDue: 0,
+      },
       notes: [],
     };
+    let events: ForwardEvent[] = [];
+    const reached = new Set<string>();
     try {
       const revisionFloor = new Date(now.getTime() - this.cfg.TIER1_DAILY_LOOKBACK_DAYS * DAY_MS);
-      const events = await this.db.getRepository(ForwardEvent).find({
+      events = await this.db.getRepository(ForwardEvent).find({
         where: [
           { providerId, status: Not('FINAL') },
           // FINAL events stay open to late source revisions while their days can still be revised.
@@ -200,6 +257,7 @@ export class ForwardUpdateService {
         ],
         order: { detectedAt: 'ASC' },
       });
+      await progress({ phase: 'fetching', processed: 0, total: events.length }, true);
       if (opts.fetch !== false) report.fetch = await this.fetchMissing(providerId, events, now);
       if (report.fetch?.stoppedBy)
         report.notes.push(
@@ -220,12 +278,39 @@ export class ForwardUpdateService {
             ).map((a) => [a.cmcId, a])
           : [],
       );
+      // A missing day after a failed daily-history request is a retrieval error, not absent data.
+      const sourceDown = report.fetch?.stoppedBy === 'source_unavailable';
+      const fetchStates = new Map(
+        events.length
+          ? (
+              await this.db.getRepository(DailyFetchState).find({
+                where: { providerId, cmcId: In([...new Set(events.map((e) => e.cmcId))]) },
+              })
+            ).map((f) => [f.cmcId, f])
+          : [],
+      );
       const waiting: string[] = [];
+      let processed = 0;
+      await progress({ phase: 'evaluating', processed, total: events.length }, true);
       for (const e of events) {
+        await progress({ phase: 'evaluating', processed: processed++, total: events.length });
+        reached.add(e.id);
+        const fs = fetchStates.get(e.cmcId);
+        const fetchError =
+          fs?.lastStatus === 'failed'
+            ? `the daily-history request failed: ${redact(fs.lastError ?? 'no detail').slice(0, 200)}`
+            : sourceDown
+              ? 'the source was unavailable during this update'
+              : null;
         try {
           const r = await this.db.transaction((m) =>
-            this.evaluateEvent(m, e, now, run.id, assets.get(e.cmcId) ?? null),
+            this.evaluateEvent(m, e, now, run.id, assets.get(e.cmcId) ?? null, fetchError),
           );
+          if (r.check === null) report.checks.notDue++;
+          else {
+            report.checks.checked++;
+            report.checks[CHECK_KEY[r.check]]++;
+          }
           report.events++;
           report.byStatus[r.outcome.status]++;
           if (r.outcome.status === 'FINAL' && e.status !== 'FINAL') report.newlyFinal++;
@@ -250,8 +335,11 @@ export class ForwardUpdateService {
             );
         } catch (err) {
           report.failedEvents++;
-          if (report.failedEvents <= 5)
-            report.notes.push(`event ${e.id}: ${redact(err).slice(0, 200)}`);
+          report.checks.checked++;
+          report.checks.errors++;
+          const message = redact(err).slice(0, 200);
+          if (report.failedEvents <= 5) report.notes.push(`event ${e.id}: ${message}`);
+          await this.markCheckFailed([e.id], now, `the evaluation failed: ${message}`);
         }
       }
       report.status =
@@ -260,27 +348,51 @@ export class ForwardUpdateService {
         report.notes.unshift(
           `${waiting.length} events lack a High for a completed day, retried after ${this.cfg.TIER1_DAILY_RETRY_HOURS} h: ${waiting.slice(0, 3).join('; ')}${waiting.length > 3 ? '; …' : ''}`,
         );
+      const c = report.checks;
       report.notes.push(
-        `${report.events} events updated: ${report.outcomes.versions} new outcome versions, ${report.newlyFinal} newly FINAL; Highs ${report.highs.inserted} new, ${report.highs.superseded} superseded by a source revision`,
+        `${c.checked} events checked: ${c.newRecord} new highest High, ${c.unchanged} unchanged, ${c.dataUnavailable} data unavailable, ${c.errors} errors (${c.notDue} not due yet); ${report.outcomes.versions} new outcome versions, ${report.newlyFinal} newly FINAL; Highs ${report.highs.inserted} new, ${report.highs.superseded} superseded by a source revision`,
       );
+      const done: UpdateProgress = { phase: 'done', processed, total: events.length };
       await runs.update(
         { id: run.id },
         {
           status: report.status,
           finishedAt: new Date(),
-          counts: JSON.parse(JSON.stringify({ ...report, notes: undefined })) as never,
+          counts: JSON.parse(
+            JSON.stringify({ ...report, notes: undefined, progress: done }),
+          ) as never,
           notes: report.notes,
         },
       );
       this.log.log(`forward update ${report.updateDate}: ${report.status}; ${report.notes.at(-1)}`);
       return report;
     } catch (err) {
-      await runs.update(
-        { id: run.id },
-        { status: 'failed', finishedAt: new Date(), error: redact(err).slice(0, 2000) },
-      );
+      const error = redact(err).slice(0, 2000);
+      await runs.update({ id: run.id }, { status: 'failed', finishedAt: new Date(), error });
+      // Events this run did not reach show the failed attempt, not an older success.
+      const unreached = events
+        .filter(
+          (e) =>
+            ACTIVE_EVENT_STATUSES.includes(e.status) &&
+            dayComplete(e.detectedUtcDate, now) &&
+            !reached.has(e.id),
+        )
+        .map((e) => e.id);
+      await this.markCheckFailed(unreached, now, `the update failed: ${error.slice(0, 200)}`);
       throw err;
     }
+  }
+
+  /** Best effort: record a failed check on events (never fails the caller). */
+  private async markCheckFailed(ids: string[], now: Date, note: string): Promise<void> {
+    if (!ids.length) return;
+    await this.db
+      .getRepository(ForwardEvent)
+      .update(
+        { id: In(ids) },
+        { lastCheckAt: now, lastCheckStatus: 'RETRIEVAL_ERROR', lastCheckNote: note },
+      )
+      .catch((e: unknown) => this.log.warn(`could not record a failed check: ${redact(e)}`));
   }
 
   /**
@@ -333,12 +445,15 @@ export class ForwardUpdateService {
     now: Date,
     updateRunId: string,
     asset: Pick<CmcAsset, 'platformChain' | 'platformAddress'> | null,
+    fetchError: string | null,
   ): Promise<{
     outcome: Outcome;
     inserted: number;
     superseded: number;
     unchanged: number;
     versioned: boolean;
+    /** Result of this check; null when the signal day has not closed (nothing to check). */
+    check: ForwardCheckStatus | null;
   }> {
     const w = storedWindow(e);
     const completed = w.dates.filter((d) => dayComplete(d, now));
@@ -463,11 +578,20 @@ export class ForwardUpdateService {
     const latest = await outcomes.findOne({
       where: { eventId: e.id },
       order: { resultVersion: 'DESC' },
-      select: { id: true, resultVersion: true, contentHash: true, finalizedAt: true },
+      select: {
+        id: true,
+        resultVersion: true,
+        contentHash: true,
+        finalizedAt: true,
+        peakHighUsd: true,
+      },
     });
     let versioned = false;
     let resultVersion = latest?.resultVersion ?? 0;
     let finalizedAt = e.finalizedAt;
+    // The record before the current version: the latest one when this check writes a new version,
+    // else the latest one's predecessor (a re-check that adds nothing keeps its status).
+    let previousPeak = latest?.peakHighUsd ?? null;
     if (completed.length && (!latest || latest.contentHash !== contentHash)) {
       resultVersion++;
       versioned = true;
@@ -503,7 +627,17 @@ export class ForwardUpdateService {
         computedAt: now,
         updateRunId,
       });
-    }
+    } else if (latest && latest.resultVersion > 1) {
+      const before = await outcomes.findOne({
+        where: { eventId: e.id, resultVersion: latest.resultVersion - 1 },
+        select: { id: true, peakHighUsd: true },
+      });
+      previousPeak = before?.peakHighUsd ?? null;
+    } else previousPeak = null;
+
+    const check = completed.length
+      ? checkStatus({ outcome, previousPeak, fetchFailed: fetchError !== null })
+      : null;
     await m.getRepository(ForwardEvent).update(
       { id: e.id },
       {
@@ -512,8 +646,42 @@ export class ForwardUpdateService {
         resultVersion,
         lastUpdateAt: completed.length ? now : e.lastUpdateAt,
         finalizedAt: outcome.status === 'FINAL' ? finalizedAt : null,
+        ...(check
+          ? {
+              lastCheckAt: now,
+              lastCheckStatus: check,
+              lastCheckNote: checkNote(check, outcome, previousPeak, fetchError),
+              checkedThrough: outcome.checkedThrough,
+            }
+          : {}),
       },
     );
-    return { outcome, inserted, superseded, unchanged, versioned };
+    return { outcome, inserted, superseded, unchanged, versioned, check };
+  }
+}
+
+/** A short, plain explanation of a check result (stored with the event, shown on hover). */
+function checkNote(
+  check: ForwardCheckStatus,
+  o: Outcome,
+  previousPeak: DValue | null,
+  fetchError: string | null,
+): string {
+  const gaps = [...o.missingDates, ...o.invalidDates.map((x) => x.slice(0, 10))];
+  switch (check) {
+    case 'RETRIEVAL_ERROR':
+      return `No CMC daily High for ${o.missingDates.join(', ')}: ${fetchError ?? 'the request failed'}. Retried automatically.`;
+    case 'DATA_UNAVAILABLE':
+      return `No usable CMC daily High for ${gaps.join(', ')} yet. Retried automatically.`;
+    case 'NEW_RECORD':
+      return previousPeak
+        ? `New highest High ${o.peakHigh!.toFixed()} USD on ${o.peakDate} (previous record ${previousPeak.toFixed()} USD).`
+        : `First confirmed High: ${o.peakHigh!.toFixed()} USD on ${o.peakDate}.`;
+    case 'UNCHANGED':
+      return o.peakHigh
+        ? `Highest High unchanged: ${o.peakHigh.toFixed()} USD on ${o.peakDate}.`
+        : o.day0 === 'UNRESOLVED'
+          ? 'No confirmed High yet: the signal-day High is not proven to come after detection.'
+          : 'No confirmed High yet.';
   }
 }

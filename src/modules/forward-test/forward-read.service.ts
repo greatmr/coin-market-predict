@@ -2,8 +2,8 @@ import { Inject, Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { Brackets, type DataSource, In, MoreThanOrEqual } from 'typeorm';
 
-import { DAY_MS } from '../../common/utils/dates.js';
-import { D, type DValue, forStorage } from '../../common/utils/decimal.js';
+import { DAY_MS, parseIsoDate } from '../../common/utils/dates.js';
+import { D, type DValue, dec, forStorage } from '../../common/utils/decimal.js';
 
 import { APP_CONFIG, type AppConfig } from '../../config/index.js';
 
@@ -18,13 +18,19 @@ import { ForwardTestWatchlist } from './entities/forward-test-watchlist.entity.j
 import { ForwardTriggerRejection } from './entities/forward-trigger-rejection.entity.js';
 import { ForwardTriggerRun } from './entities/forward-trigger-run.entity.js';
 import { ForwardUpdateRun } from './entities/forward-update-run.entity.js';
+import { type WindowProgress, peakReturnPct, windowProgress } from './forward-rules.js';
+import { storedWindow } from './forward-update.service.js';
 import {
   ACTIVE_EVENT_STATUSES,
+  type EventResultFilter,
+  type EventSortKey,
   FORWARD_EVENT_STATUSES,
   FORWARD_REASON,
   FORWARD_RULES_VERSION,
+  type ForwardCheckStatus,
   type ForwardEventStatus,
   HORIZON_HOURS,
+  type HighEligibility,
 } from './forward.constants.js';
 
 export type EventView = 'active' | 'final' | 'incomplete' | 'all';
@@ -38,6 +44,26 @@ export const VIEW_STATUSES: Record<EventView, readonly ForwardEventStatus[]> = {
 
 export const FORWARD_NOTICE =
   'Observed maximum future High from the CMC detection price: a hypothetical upside, not an executable trade, not a close-to-close return and not realized P/L (no fees, spread or slippage). No pump threshold is defined; read the actual percentages.';
+
+/** SQL of each sort key: the detection snapshot or the latest outcome (`o`). */
+const SORT_SQL: Record<EventSortKey, string> = {
+  detected: 'e.detected_at',
+  return: 'o.peak_return_pct',
+  stars: 'e.star_count',
+  points: 'e.weighted_pass_points',
+  multiple3d: 'e.multiple_3d',
+  multiple7d: 'e.multiple_7d',
+  multiple30d: 'e.multiple_30d',
+};
+
+/** Signal-day flags of an unconfirmed day-0 High (DAY0_UNRESOLVED while open, INCOMPLETE_DAY0 after). */
+const DAY0_UNCONFIRMED_FLAGS: readonly string[] = [
+  FORWARD_REASON.day0Unresolved,
+  FORWARD_REASON.incompleteDay0,
+];
+
+export const DAY_DEFINITION =
+  'A day is a UTC calendar day (00:00:00.000–23:59:59.999 UTC). Day 0 is the UTC date of identification; day 7 is the UTC date of identification + 168 h, included to its end.';
 
 /** Exact decimal text (30 dp at most, as stored), never a float. */
 const s = (v: DValue | null | undefined) => (v === null || v === undefined ? null : forStorage(v));
@@ -107,6 +133,31 @@ export interface ForwardEventRow {
   } | null;
   assetEventCount: number;
   overlappingEventIds: string[];
+  /** The latest High check of this event (NOT_CHECKED before the first one). */
+  check: {
+    status: ForwardCheckStatus | 'NOT_CHECKED';
+    /** Last attempt, successful or not. */
+    lastCheckAt: string | null;
+    /** Last successful check (the outcome was evaluated). */
+    lastSuccessAt: string | null;
+    /** Every closed included UTC day up to this date has a usable daily High. */
+    checkedThrough: string | null;
+    note: string | null;
+  };
+  /** Position in the window at read time; `checkedDays` = days 0 … checkedThrough. */
+  window: WindowProgress & { checkedDays: number };
+  /**
+   * The signal-day (day 0) daily High as stored: it counts only when its source time is at or after
+   * identification (DAY0_POST_SIGNAL); DAY0_UNPROVEN is shown apart and never enters a result.
+   */
+  day0: {
+    highUsd: string | null;
+    timeHigh: string | null;
+    eligibility: HighEligibility;
+    reason: string | null;
+    /** 100 × (day-0 High / reference price − 1): what it would be if it were post-signal. */
+    changePct: string | null;
+  } | null;
 }
 
 function outcomeJson(o: ForwardOutcome): NonNullable<ForwardEventRow['outcome']> {
@@ -152,6 +203,7 @@ export function cohortGroupJson(g: CohortGroup) {
   return {
     ...g,
     finalReturns: statsJson(g.finalReturns),
+    activeReturns: statsJson(g.activeReturns),
     horizonHours: { ...statsJson(g.horizonHours), bins: g.horizonHours.bins },
   };
 }
@@ -174,6 +226,10 @@ export class ForwardReadService {
   /** Event rows with their latest outcome, newest detection first. */
   async events(q: {
     view: EventView;
+    status?: ForwardEventStatus;
+    result?: EventResultFilter;
+    sort?: EventSortKey;
+    dir?: 'asc' | 'desc';
     stars?: number;
     search?: string;
     limit: number;
@@ -182,9 +238,19 @@ export class ForwardReadService {
     const qb = this.db
       .getRepository(ForwardEvent)
       .createQueryBuilder('e')
+      .leftJoin(ForwardOutcome, 'o', 'o.event_id = e.id AND o.result_version = e.result_version')
       .where('e.provider_id = :providerId', { providerId: this.providerId })
-      .andWhere('e.status IN (:...statuses)', { statuses: VIEW_STATUSES[q.view] });
+      .andWhere('e.status IN (:...statuses)', {
+        statuses: q.status ? [q.status] : VIEW_STATUSES[q.view],
+      });
     if (q.stars) qb.andWhere('e.star_count = :stars', { stars: q.stars });
+    if (q.result === 'NOT_CHECKED') qb.andWhere('e.last_check_status IS NULL');
+    else if (q.result === 'CONFIRMED') qb.andWhere('o.peak_high_usd IS NOT NULL');
+    else if (q.result === 'DAY0_UNCONFIRMED')
+      qb.andWhere('e.quality_flags && CAST(:day0Flags AS text[])', {
+        day0Flags: DAY0_UNCONFIRMED_FLAGS,
+      });
+    else if (q.result) qb.andWhere('e.last_check_status = :result', { result: q.result });
     const search = q.search?.trim();
     if (search) {
       const id = /^\d{1,10}$/.test(search) ? Number(search) : null;
@@ -197,9 +263,13 @@ export class ForwardReadService {
         }),
       );
     }
+    const primary = SORT_SQL[q.sort ?? 'detected'];
+    qb.orderBy(primary, q.dir === 'asc' ? 'ASC' : 'DESC', 'NULLS LAST');
+    // Order keys are a map in TypeORM: a tie-breaker on the same column would replace the primary.
+    for (const tie of ['e.detected_at', 'e.star_count'])
+      if (tie !== primary) qb.addOrderBy(tie, 'DESC');
     const [events, total] = await qb
-      .orderBy('e.detected_at', 'DESC')
-      .addOrderBy('e.star_count', 'DESC')
+      .addOrderBy('e.id', 'ASC')
       .offset(q.offset)
       .limit(q.limit)
       .getManyAndCount();
@@ -215,8 +285,26 @@ export class ForwardReadService {
     return this.rows(events);
   }
 
-  private async rows(events: ForwardEvent[]): Promise<ForwardEventRow[]> {
+  private async rows(events: ForwardEvent[], now = new Date()): Promise<ForwardEventRow[]> {
     if (!events.length) return [];
+    const day0 = new Map(
+      (
+        (await this.db.query(
+          `SELECT h.event_id AS "eventId", h.high_usd::text AS "high", h.time_high AS "timeHigh",
+                  h.eligibility, h.reason
+             FROM forward_high h
+             JOIN forward_event e ON e.id = h.event_id AND h.date_utc = e.detected_utc_date
+            WHERE h.is_current AND h.event_id = ANY($1::uuid[])`,
+          [events.map((e) => e.id)],
+        )) as Array<{
+          eventId: string;
+          high: string | null;
+          timeHigh: Date | null;
+          eligibility: HighEligibility;
+          reason: string | null;
+        }>
+      ).map((h) => [h.eventId, h]),
+    );
     // Only each event's latest version (older versions stay in the table for audit).
     const outcomes = new Map(
       (
@@ -238,6 +326,14 @@ export class ForwardReadService {
     for (const e of siblings) perAsset.set(e.cmcId, (perAsset.get(e.cmcId) ?? 0) + 1);
     return events.map((e) => {
       const o = outcomes.get(e.id);
+      const d0 = day0.get(e.id);
+      const d0High = d0 ? dec(d0.high) : null;
+      const checkedDays = e.checkedThrough
+        ? Math.round(
+            (parseIsoDate(e.checkedThrough).getTime() - parseIsoDate(e.detectedUtcDate).getTime()) /
+              DAY_MS,
+          ) + 1
+        : 0;
       return {
         eventId: e.id,
         cmcId: e.cmcId,
@@ -278,8 +374,102 @@ export class ForwardReadService {
         outcome: o ? outcomeJson(o) : null,
         assetEventCount: perAsset.get(e.cmcId) ?? 1,
         overlappingEventIds: overlaps.get(e.id) ?? [],
+        check: {
+          status: e.lastCheckStatus ?? 'NOT_CHECKED',
+          lastCheckAt: iso(e.lastCheckAt),
+          lastSuccessAt: iso(e.lastUpdateAt),
+          checkedThrough: e.checkedThrough,
+          note: e.lastCheckNote,
+        },
+        window: { ...windowProgress(storedWindow(e), now), checkedDays },
+        day0: d0
+          ? {
+              highUsd: d0High?.toFixed() ?? null,
+              timeHigh: iso(d0.timeHigh),
+              eligibility: d0.eligibility,
+              reason: d0.reason,
+              changePct:
+                d0High && d0High.isFinite() && d0High.gt(0)
+                  ? s(peakReturnPct(d0High, e.snapshotPriceUsd))
+                  : null,
+            }
+          : null,
       };
     });
+  }
+
+  /**
+   * The same coin's other events (any star count) whose windows [detected_at, evaluation_end] share
+   * at least one moment with this one's: correlated observations of one price path.
+   */
+  async overlaps(id: string) {
+    const repo = this.db.getRepository(ForwardEvent);
+    const e = await repo.findOneBy({ id, providerId: this.providerId });
+    if (!e) return null;
+    const others = await repo
+      .createQueryBuilder('x')
+      .where('x.provider_id = :p AND x.cmc_id = :c AND x.id <> :id', {
+        p: this.providerId,
+        c: e.cmcId,
+        id: e.id,
+      })
+      .andWhere('x.detected_at <= :end AND x.evaluation_end >= :start', {
+        end: e.evaluationEnd,
+        start: e.detectedAt,
+      })
+      .orderBy('x.detected_at', 'ASC')
+      .addOrderBy('x.star_count', 'ASC')
+      .getMany();
+    const outcomes = new Map(
+      others.length
+        ? (
+            await this.db
+              .getRepository(ForwardOutcome)
+              .createQueryBuilder('o')
+              .innerJoin(
+                ForwardEvent,
+                'x',
+                'x.id = o.event_id AND x.result_version = o.result_version',
+              )
+              .where('o.event_id = ANY(:ids)', { ids: others.map((x) => x.id) })
+              .getMany()
+          ).map((o) => [o.eventId, o])
+        : [],
+    );
+    const summary = (x: ForwardEvent) => ({
+      eventId: x.id,
+      symbol: x.symbol,
+      name: x.name,
+      starCount: x.starCount,
+      detectedAt: x.detectedAt.toISOString(),
+      detectedUtcDate: x.detectedUtcDate,
+      referencePriceUsd: x.snapshotPriceUsd.toFixed(),
+      evaluationEnd: x.evaluationEnd.toISOString(),
+      status: x.status,
+    });
+    return {
+      event: summary(e),
+      rule: 'Same CMC id, any star count, and windows from identification to the end of the window that share at least one moment. Each is its own event (one per coin, UTC day and star count), but they follow one price path, so they are correlated, not independent.',
+      overlaps: others.map((x) => {
+        const o = outcomes.get(x.id);
+        const start = Math.max(x.detectedAt.getTime(), e.detectedAt.getTime());
+        const end = Math.min(x.evaluationEnd.getTime(), e.evaluationEnd.getTime());
+        return {
+          ...summary(x),
+          relation:
+            x.detectedUtcDate === e.detectedUtcDate
+              ? ('same_utc_day' as const)
+              : x.detectedAt < e.detectedAt
+                ? ('earlier' as const)
+                : ('later' as const),
+          overlapStart: new Date(start).toISOString(),
+          overlapEnd: new Date(end).toISOString(),
+          overlapHours: s(new D(end + 1 - start).div(3_600_000)),
+          peakReturnPct: o ? s(o.peakReturnPct) : null,
+          peakKind: o?.peakKind ?? null,
+        };
+      }),
+    };
   }
 
   /** One event with every High observation (superseded ones too) and every outcome version. */
@@ -460,6 +650,8 @@ export class ForwardReadService {
           passes: [e.pass3d, e.pass7d, e.pass30d] as const,
           weightedPassPoints: e.weightedPassPoints,
           scoreComplete: e.scoreComplete,
+          checked: e.resultVersion > 0,
+          day0Unconfirmed: e.qualityFlags.some((f) => DAY0_UNCONFIRMED_FLAGS.includes(f)),
         };
       }),
     );
@@ -502,6 +694,7 @@ export class ForwardReadService {
       horizon: {
         hours: HORIZON_HOURS,
         rule: 'Highs from detected_at through 23:59:59.999 UTC of the day containing detected_at + 168 h',
+        days: DAY_DEFINITION,
       },
       notice: FORWARD_NOTICE,
       counts: {
@@ -534,7 +727,20 @@ export class ForwardReadService {
     };
   }
 
+  /** One daily High update: progress while it runs, then its per-event check counts. */
+  async updateRun(id: string) {
+    const r = await this.db
+      .getRepository(ForwardUpdateRun)
+      .findOneBy({ id, providerId: this.providerId });
+    return r ? this.updateRunJson(r) : null;
+  }
+
   private updateRunJson(r: ForwardUpdateRun) {
+    const counts = (r.counts ?? {}) as {
+      progress?: { phase: string; processed: number; total: number };
+      checks?: Record<string, number>;
+      events?: number;
+    };
     return {
       id: r.id,
       trigger: r.trigger,
@@ -544,6 +750,9 @@ export class ForwardReadService {
       finishedAt: iso(r.finishedAt),
       notes: r.notes,
       error: r.error,
+      progress: counts.progress ?? null,
+      /** Per-event results (runs before M011 have none). */
+      checks: counts.checks ?? null,
     };
   }
 }

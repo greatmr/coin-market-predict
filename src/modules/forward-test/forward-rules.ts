@@ -4,12 +4,14 @@ import { D, type DValue } from '../../common/utils/decimal.js';
 import {
   type CoverageStatus,
   type ExtensionFlag,
+  type ForwardCheckStatus,
   type ForwardEventStatus,
   HORIZON_MS,
   type HighEligibility,
   type PeakKind,
   FORWARD_REASON as R,
   type TimePrecision,
+  WINDOW_LAST_DAY,
 } from './forward.constants.js';
 
 /**
@@ -51,6 +53,33 @@ export function eventWindow(detectedAt: Date): EventWindow {
 /** A UTC date is complete once its last millisecond has passed. */
 export const dayComplete = (date: IsoDate, now: Date): boolean =>
   now.getTime() >= parseIsoDate(date).getTime() + DAY_MS;
+
+export interface WindowProgress {
+  /** UTC day of the window that `now` falls in: 0 = the detection date … 7 = the date of deadline_168h. */
+  day: number;
+  lastDay: number;
+  /** now is past evaluation_end. */
+  closed: boolean;
+  /** Included UTC days that have ended (0–8). */
+  closedDays: number;
+}
+
+/**
+ * Where an event stands in its window. Days are UTC calendar days (00:00:00.000–23:59:59.999 UTC):
+ * the detection date is day 0 and, because 168 h is exactly 7 × 24 h, the date of deadline_168h is
+ * always day 7.
+ */
+export function windowProgress(w: EventWindow, now: Date): WindowProgress {
+  const elapsed = Math.floor(
+    (parseIsoDate(isoDate(now)).getTime() - parseIsoDate(w.detectedUtcDate).getTime()) / DAY_MS,
+  );
+  return {
+    day: Math.min(WINDOW_LAST_DAY, Math.max(0, elapsed)),
+    lastDay: WINDOW_LAST_DAY,
+    closed: now.getTime() > w.evaluationEnd.getTime(),
+    closedDays: w.dates.filter((d) => dayComplete(d, now)).length,
+  };
+}
 
 // ── Trigger (p.3, p.4, p.10) ─────────────────────────────────────────────────────────────────
 
@@ -211,6 +240,11 @@ export interface ForwardOutcome {
   expectedDays: number;
   completedDays: number;
   coveredDays: number;
+  /**
+   * The last included date through which every closed day has a stored, usable daily High (a
+   * missing or invalid day stops it); null before the first one. Bookkeeping, not part of the result.
+   */
+  checkedThrough: IsoDate | null;
   missingDates: IsoDate[];
   /** `<date>:<reason>` */
   invalidDates: string[];
@@ -246,6 +280,12 @@ export function evaluateOutcome(input: {
     else if (h.eligibility === 'INVALID') invalidDates.push(`${d}:${h.reason ?? 'invalid'}`);
     else if (h.eligibility === 'DAY0_UNPROVEN') day0Bound = h.high;
     else exact.push(h);
+  }
+  let checkedThrough: IsoDate | null = null;
+  for (const d of completed) {
+    const h = byDate.get(d);
+    if (!h || h.eligibility === 'INVALID') break;
+    checkedThrough = d;
   }
   // Dates are in order, so a strict comparison keeps the earliest of equal Highs.
   const best = exact.reduce<OutcomeHigh | null>(
@@ -323,6 +363,7 @@ export function evaluateOutcome(input: {
     expectedDays: w.dates.length,
     completedDays: completed.length,
     coveredDays: exact.length + (day0 === 'SHORTCUT' ? 1 : 0),
+    checkedThrough,
     missingDates,
     invalidDates,
     reasons,
@@ -332,4 +373,27 @@ export function evaluateOutcome(input: {
 /** peak_return_pct = 100 × (peak_high_usd / snapshot_price_usd − 1), unrounded (p.8). */
 export function peakReturnPct(peakHigh: DValue, price: DValue): DValue {
   return peakHigh.div(price).minus(1).times(100);
+}
+
+// ── Check status (dashboard bookkeeping, not an outcome rule) ────────────────────────────────
+
+/**
+ * The result of an event's latest High check. A closed day without a usable High is reported first
+ * (a failed request as RETRIEVAL_ERROR, otherwise DATA_UNAVAILABLE); else NEW_RECORD when the current
+ * outcome version raised the highest confirmed High against the version before it (or gave the first
+ * one), UNCHANGED when the record stands. Comparing stored versions, not the last run, keeps a new
+ * record visible after a same-day re-check that adds nothing.
+ */
+export function checkStatus(input: {
+  outcome: Pick<ForwardOutcome, 'peakHigh' | 'missingDates' | 'invalidDates'>;
+  /** Peak of the outcome version before the current one; null when none or no peak. */
+  previousPeak: DValue | null;
+  /** The daily-history request for this coin failed (or the source was unavailable). */
+  fetchFailed: boolean;
+}): ForwardCheckStatus {
+  const { outcome: o, previousPeak } = input;
+  if (o.missingDates.length && input.fetchFailed) return 'RETRIEVAL_ERROR';
+  if (o.missingDates.length || o.invalidDates.length) return 'DATA_UNAVAILABLE';
+  const raised = o.peakHigh !== null && (previousPeak === null || !o.peakHigh.eq(previousPeak));
+  return raised ? 'NEW_RECORD' : 'UNCHANGED';
 }
