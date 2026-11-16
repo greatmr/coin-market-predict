@@ -13,14 +13,21 @@ import {
   SkeletonTiles,
   Table,
 } from '../../components/ui';
-import { api } from '../../lib/api';
+import { api, apiPost } from '../../lib/api';
 import { BATCH, QUEUE, RUN, STAGES, type StatusMap, statusText } from '../../lib/constants';
-import { hideTip, showTip } from '../../lib/feedback';
+import { dialog, hideTip, showTip, toast } from '../../lib/feedback';
 import { fmtAgo, fmtInt, fmtMs, fmtSpan, fmtTime } from '../../lib/format';
 import { useApp } from '../../state/app';
 import type { PipelineRun } from '../../types/api';
 
-import type { BatchRow, HealthPayload, MappingTask } from './types';
+import type {
+  BatchRow,
+  HealthPayload,
+  MappingTask,
+  RecoverResult,
+  RunRecovery,
+  RunRow,
+} from './types';
 
 const CIRCUIT: StatusMap = {
   CLOSED: ['good', 'Closed'],
@@ -256,7 +263,33 @@ const BATCH_COLS: Column<BatchRow>[] = [
   },
 ];
 
-const RUN_COLS: Column<HealthPayload['runs'][number]>[] = [
+const RECOVER_ACTION: Record<RunRecovery['action'], string> = {
+  crawl_current: 'crawled again',
+  reprocess_batch: 'stored crawl reprocessed',
+  catch_up_current: 'caught up with the current hour',
+  catch_up_daily: 'daily history refilled, latest batch recomputed',
+};
+const RECOVERABLE = ['failed', 'missed'];
+
+function RecoveryNote({ rec }: { rec: RunRecovery }) {
+  const what = RECOVER_ACTION[rec.action] ?? rec.action;
+  const text =
+    rec.status === 'running'
+      ? `Recovering: ${what}…`
+      : rec.status === 'failed'
+        ? `Recovery failed (${what}): ${rec.error ?? 'unknown error'}`
+        : `Recovered: ${what}${rec.summary ? `. ${rec.summary}` : ''}`;
+  return (
+    <span
+      className={`small ${rec.status === 'failed' ? 'error' : 'muted'}`}
+      title={`by ${rec.requestedBy}, ${fmtTime(rec.requestedAt)}`}
+    >
+      {text}
+    </span>
+  );
+}
+
+const RUN_COLS: Column<RunRow>[] = [
   { label: 'Slot', render: (r) => fmtTime(r.slotTime) },
   { label: 'Kind', render: (r) => r.kind },
   { label: 'Status', render: (r) => <Lab map={RUN} k={r.status} /> },
@@ -280,6 +313,41 @@ const RUN_COLS: Column<HealthPayload['runs'][number]>[] = [
   { label: 'Error', render: (r) => <span className="small error">{r.error || ''}</span> },
 ];
 
+/** Owner-only "Recover" on a failed or missed hour; explains first what can and cannot come back. */
+function recoverRun(r: RunRow, onStarted: () => void) {
+  void dialog({
+    title: `Recover the ${fmtTime(r.slotTime)} run?`,
+    body: (
+      <>
+        <p>What runs depends on what this hour left behind:</p>
+        <ul className="small">
+          <li>The current hour: crawled again now.</li>
+          <li>A past hour whose crawl was stored: scan and export recomputed from that crawl.</li>
+          <li>
+            A past hour with nothing stored: the source only gives current prices, so that
+            hour&apos;s snapshot cannot be fetched again and stays a gap. Instead, everything still
+            available is fetched: the current hour if it has not run, otherwise daily history (which
+            covers the whole 30-day window) and a fresh scan of the latest batch.
+          </li>
+        </ul>
+        <p className="muted small">
+          No Telegram report is sent and no forward-test event is created for a past hour.
+        </p>
+      </>
+    ),
+    ok: 'Recover',
+    onSubmit: async () => {
+      const res = await apiPost<RecoverResult>(`pipeline/runs/${r.id}/recover`, {});
+      if (!res.ok) throw new Error(res.reason || 'recovery did not start');
+      toast(
+        `Recovery started: ${res.action ? RECOVER_ACTION[res.action] : 'running'}. This table updates when it finishes.`,
+      );
+    },
+  }).then((started) => {
+    if (started) onStarted();
+  });
+}
+
 interface HealthData {
   batches: BatchRow[];
   health: HealthPayload;
@@ -287,7 +355,7 @@ interface HealthData {
 }
 
 export default function Batches() {
-  const { overview, openCoin, dataVersion } = useApp();
+  const { overview, openCoin, dataVersion, can } = useApp();
   const [data, setData] = useState<HealthData | null>(null);
   const [error, setError] = useState<unknown>(null);
 
@@ -308,6 +376,44 @@ export default function Batches() {
   useEffect(() => {
     void load();
   }, [dataVersion, load]);
+
+  // Follow a recovery running in the background until its note settles.
+  const recovering = !!data?.health.runs.some((r) => r.metrics?.recovery?.status === 'running');
+  useEffect(() => {
+    if (!recovering) return;
+    const t = setInterval(() => void load(), 5_000);
+    return () => clearInterval(t);
+  }, [recovering, load]);
+
+  const runCols: Column<RunRow>[] = [
+    ...RUN_COLS,
+    {
+      label: 'Recovery',
+      render: (r) => {
+        const rec = r.metrics?.recovery;
+        const canRecover =
+          can('pipeline:recover') &&
+          RECOVERABLE.includes(r.status) &&
+          rec?.status !== 'running' &&
+          r.kind === 'hourly';
+        return (
+          <span className="recover-cell">
+            {rec ? <RecoveryNote rec={rec} /> : null}
+            {canRecover ? (
+              <button
+                type="button"
+                className="btn small"
+                title="Fetch again what this hour missed, where the source still has it"
+                onClick={() => recoverRun(r, () => void load())}
+              >
+                {rec ? 'Recover again' : 'Recover'}
+              </button>
+            ) : null}
+          </span>
+        );
+      },
+    },
+  ];
 
   const taskCols: Column<MappingTask>[] = [
     {
@@ -367,7 +473,7 @@ export default function Batches() {
         <div className="table-wrap">
           {data ? (
             <Table
-              cols={RUN_COLS}
+              cols={runCols}
               rows={data.health.runs}
               empty="No runs yet."
               rowKey={(r, i) => r.id || i}

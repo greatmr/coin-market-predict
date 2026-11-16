@@ -66,6 +66,19 @@ export interface Coverage {
   monthlyRequestBudget: number | null;
 }
 
+/** metrics.recovery of a run an owner recovered (PipelineService.recoverRun). */
+export interface RunRecovery {
+  action: 'crawl_current' | 'reprocess_batch' | 'catch_up_current' | 'catch_up_daily';
+  requestedBy: string;
+  requestedAt: Iso;
+  status: 'running' | 'done' | 'failed';
+  finishedAt?: Iso;
+  batchId?: string | null;
+  runId?: string | null;
+  summary?: string;
+  error?: string;
+}
+
 export interface RunRow {
   id: string;
   kind: string;
@@ -73,6 +86,16 @@ export interface RunRow {
   status: string;
   error: string | null;
   stages: PipelineStage[];
+  metrics?: { recovery?: RunRecovery } | null;
+}
+
+/** POST /api/pipeline/runs/:id/recover */
+export interface RecoverResult {
+  ok: boolean;
+  slot: Iso | null;
+  reason?: string;
+  action?: RunRecovery['action'];
+  batchId?: string | null;
 }
 
 /** GET /api/health */

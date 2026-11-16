@@ -53,6 +53,41 @@ export type RetryCrawlResult =
   | { started: true; slot: string; circuitReset: boolean; done: Promise<RunOutcome> }
   | { started: false; slot: string; reason: string };
 
+/**
+ * What "Recover" did for a failed or missed hour (see `recoverRun`):
+ *  - crawl_current     the hour is the current one: crawl it again (same as "Retry crawl now")
+ *  - reprocess_batch   the hour's crawl is stored: scan and export it again from the stored inputs
+ *  - catch_up_current  nothing was stored for the hour: run the current hour now instead
+ *  - catch_up_daily    nothing stored and the current hour is done: refill daily history for the
+ *                      latest batch's candidates, then scan and export that batch again
+ */
+export type RecoverAction =
+  'crawl_current' | 'reprocess_batch' | 'catch_up_current' | 'catch_up_daily';
+export const RECOVERABLE_RUN_STATUSES: readonly string[] = ['failed', 'missed'];
+
+export interface RunRecovery {
+  action: RecoverAction;
+  requestedBy: string;
+  requestedAt: string;
+  status: 'running' | 'done' | 'failed';
+  finishedAt?: string;
+  /** The batch that was (re)processed, and for catch_up_current the run that did the work. */
+  batchId?: string | null;
+  runId?: string | null;
+  summary?: string;
+  error?: string;
+}
+
+export type RecoverRunResult =
+  | {
+      started: true;
+      action: RecoverAction;
+      slot: string;
+      batchId: string | null;
+      done: Promise<unknown>;
+    }
+  | { started: false; slot: string | null; reason: string };
+
 @Injectable()
 export class PipelineService {
   private readonly log = new Logger(PipelineService.name);
@@ -179,6 +214,147 @@ export class PipelineService {
     } finally {
       if (!handedOff) await lease.release();
     }
+  }
+
+  /**
+   * Owner's "Recover" on a failed or missed hourly run (dashboard, Runs & health). A past hour can
+   * never be crawled again: the source only serves current quotes, and storing them under an old
+   * slot would be an invented snapshot. So a past hour with no stored crawl stays a visible gap,
+   * and recovery fetches everything that *can* still be fetched (see `RecoverAction`). Daily
+   * history needs no backfill of its own: one request per candidate covers the whole look-back
+   * window. Recovery never sends Telegram reports or creates forward-test events for a past hour.
+   * The run keeps its status; what was done is recorded in its `metrics.recovery`.
+   */
+  async recoverRun(runId: string, requestedBy: string): Promise<RecoverRunResult> {
+    const providerId = this.providerId;
+    const run = await this.runs.findOneBy({ id: runId, providerId });
+    if (!run || run.kind !== 'hourly')
+      return { started: false, slot: null, reason: 'no hourly pipeline run with this id' };
+    const slotIso = run.slotTime.toISOString();
+    if (!RECOVERABLE_RUN_STATUSES.includes(run.status))
+      return {
+        started: false,
+        slot: slotIso,
+        reason: `this run is ${run.status}; only failed or missed runs can be recovered`,
+      };
+    const current = slotOf(this.clock.now());
+    if (run.slotTime.getTime() === current.getTime()) {
+      const r = await this.retryCrawl();
+      if (!r.started) return { started: false, slot: r.slot, reason: r.reason };
+      return { started: true, action: 'crawl_current', slot: r.slot, batchId: null, done: r.done };
+    }
+
+    const lease = await this.takeLease();
+    if ('skipped' in lease) return { started: false, slot: slotIso, reason: lease.skipped };
+    let handedOff = false;
+    try {
+      const batches = this.db.getRepository(CrawlBatch);
+      const stored = await batches.findOneBy({ providerId, slotTime: run.slotTime });
+      let action: RecoverAction;
+      let batchId: string | null = null;
+      let work: () => Promise<Pick<RunRecovery, 'batchId' | 'runId' | 'summary'>>;
+      const rescan = async (id: string, note: string) => {
+        const scan = await this.scanner.scan(id, [note]);
+        const exp = await this.exports.export(id);
+        return `queue ${scan.queueStatus}, ${String(scan.counts.queue ?? 0)} in queue; export ${exp.status}`;
+      };
+
+      if (stored && stored.status !== 'FAILED') {
+        action = 'reprocess_batch';
+        batchId = stored.id;
+        work = async () => ({
+          batchId: stored.id,
+          summary: await rescan(
+            stored.id,
+            `RECOVERED: results recomputed from this hour's stored crawl at ${requestedBy}'s request`,
+          ),
+        });
+      } else {
+        const cur = await this.runs.findOneBy({ kind: 'hourly', slotTime: current, providerId });
+        if (cur?.status !== 'succeeded' && cur?.status !== 'partial') {
+          action = 'catch_up_current';
+          work = async () => {
+            const o = await this.execute(current, 'hourly', false);
+            if (o.status === 'failed') throw new Error(o.reason ?? 'the current hour failed');
+            return {
+              runId: o.runId,
+              batchId: o.batchId ?? null,
+              summary: `current hour ${o.slot} ${o.status}`,
+            };
+          };
+        } else {
+          const latest = await this.scanner.latestBatch(providerId);
+          if (!latest)
+            return { started: false, slot: slotIso, reason: 'no stored crawl batch to catch up' };
+          action = 'catch_up_daily';
+          batchId = latest.id;
+          work = async () => {
+            const ctx = await this.scanner.loadContext(latest.id);
+            const daily = await this.daily.refresh(
+              providerId,
+              { id: latest.id, crawledAt: ctx.asOf },
+              this.scanner.dailyCandidates(ctx),
+            );
+            const summary = await rescan(
+              latest.id,
+              `RECOVERED: daily history refreshed (${daily.status}, ${daily.fetched} fetched) and results recomputed at ${requestedBy}'s request`,
+            );
+            return {
+              batchId: latest.id,
+              summary: `daily ${daily.status}: ${daily.fetched} fetched, ${daily.remaining} still missing ${daily.latestCompletedDate}; ${summary}`,
+            };
+          };
+        }
+      }
+
+      const base: RunRecovery = {
+        action,
+        requestedBy,
+        requestedAt: this.clock.now().toISOString(),
+        status: 'running',
+        batchId,
+      };
+      await this.noteRecovery(run.id, base);
+      this.log.log(`recovery of run ${run.id} (${slotIso}) by ${requestedBy}: ${action}`);
+      const done = work()
+        .then(
+          (r) =>
+            this.noteRecovery(run.id, {
+              ...base,
+              ...r,
+              status: 'done',
+              finishedAt: new Date().toISOString(),
+            }),
+          (err: unknown) => {
+            this.log.warn(`recovery of run ${run.id} failed: ${redact(err)}`);
+            return this.noteRecovery(run.id, {
+              ...base,
+              status: 'failed',
+              finishedAt: new Date().toISOString(),
+              error: redact(err).slice(0, 500),
+            });
+          },
+        )
+        .catch((err: unknown) => this.log.error(`recovery note failed: ${redact(err)}`))
+        .finally(() => lease.release());
+      handedOff = true;
+      return { started: true, action, slot: slotIso, batchId, done };
+    } finally {
+      if (!handedOff) await lease.release();
+    }
+  }
+
+  private async noteRecovery(runId: string, recovery: RunRecovery): Promise<void> {
+    await this.runs
+      .createQueryBuilder()
+      .update(PipelineRun)
+      .set({
+        metrics: () =>
+          `COALESCE(metrics, '{}'::jsonb) || jsonb_build_object('recovery', :recovery::jsonb)`,
+      })
+      .where('id = :id', { id: runId })
+      .setParameter('recovery', JSON.stringify(recovery))
+      .execute();
   }
 
   /**

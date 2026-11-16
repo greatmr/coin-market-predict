@@ -206,4 +206,101 @@ describe('hourly pipeline', () => {
     }).toEqual(before);
     expect(before.snaps).toBeGreaterThan(0);
   });
+
+  describe('owner recovery of a failed or missed run', () => {
+    const recovery = async (id: string) =>
+      (
+        (await ctx.repo(PipelineRun).findOneByOrFail({ id })).metrics as {
+          recovery?: unknown;
+        } | null
+      )?.recovery as Record<string, unknown> | undefined;
+    const pastRun = async (status: 'missed' | 'failed', hoursAgo: number) => {
+      const p = ctx.app.get(PipelineService);
+      await ctx.app.get(IngestionService).ensureProvider();
+      return ctx.repo(PipelineRun).save(
+        ctx.repo(PipelineRun).create({
+          kind: 'hourly',
+          slotTime: addHours(slotOf(new Date()), -hoursAgo),
+          providerId: p.providerId,
+          status,
+          startedAt: new Date(),
+          finishedAt: new Date(),
+          isLiveData: false,
+          error: 'application was not running during this hour',
+        }),
+      );
+    };
+
+    it('never crawls a past hour with nothing stored: it runs the current hour instead', async () => {
+      const p = ctx.app.get(PipelineService);
+      const missed = await pastRun('missed', 3);
+      const r = await p.recoverRun(missed.id, 'owner');
+      if (!r.started) throw new Error(r.reason);
+      expect(r.action).toBe('catch_up_current');
+      await r.done;
+      expect(await ctx.repo(CrawlBatch).countBy({ slotTime: missed.slotTime })).toBe(0);
+      const cur = await ctx
+        .repo(PipelineRun)
+        .findOneByOrFail({ kind: 'hourly', slotTime: slotOf(new Date()) });
+      expect(['succeeded', 'partial']).toContain(cur.status);
+      const after = await ctx.repo(PipelineRun).findOneByOrFail({ id: missed.id });
+      expect(after.status).toBe('missed');
+      expect(await recovery(missed.id)).toMatchObject({
+        action: 'catch_up_current',
+        requestedBy: 'owner',
+        status: 'done',
+        runId: cur.id,
+      });
+
+      // With the current hour done, a second recovery refills daily history and rescans the latest batch.
+      const again = await p.recoverRun(missed.id, 'owner');
+      if (!again.started) throw new Error(again.reason);
+      expect(again.action).toBe('catch_up_daily');
+      await again.done;
+      expect(await recovery(missed.id)).toMatchObject({ action: 'catch_up_daily', status: 'done' });
+      expect(await ctx.repo(PipelineRun).countBy({ slotTime: missed.slotTime })).toBe(1);
+    });
+
+    it('reprocesses a past hour from its stored crawl without Telegram or a new crawl', async () => {
+      const p = ctx.app.get(PipelineService);
+      const first = await p.runSlot();
+      // Pretend that run was a past hour that failed after its crawl was stored.
+      await ctx.repo(PipelineRun).update({ id: first.runId! }, { status: 'failed' });
+      const snaps = await ctx.repo(MarketSnapshot).count();
+      const deliveries = await ctx.repo(TelegramDelivery).count();
+      p.clock = { now: () => addHours(new Date(), 2) };
+      const r = await p.recoverRun(first.runId!, 'owner');
+      if (!r.started) throw new Error(r.reason);
+      expect(r).toMatchObject({ action: 'reprocess_batch', batchId: first.batchId });
+      await r.done;
+      expect(await recovery(first.runId!)).toMatchObject({
+        status: 'done',
+        batchId: first.batchId,
+      });
+      expect(await ctx.repo(MarketSnapshot).count()).toBe(snaps);
+      expect(await ctx.repo(TelegramDelivery).count()).toBe(deliveries);
+    });
+
+    it('refuses completed runs, unknown ids and a held lease', async () => {
+      const p = ctx.app.get(PipelineService);
+      const done = await p.runSlot();
+      expect(await p.recoverRun(done.runId!, 'owner')).toMatchObject({
+        started: false,
+        reason: expect.stringMatching(/only failed or missed/),
+      });
+      expect(await p.recoverRun('00000000-0000-4000-8000-000000000000', 'owner')).toMatchObject({
+        started: false,
+        reason: expect.stringMatching(/no hourly pipeline run/),
+      });
+      const missed = await pastRun('missed', 5);
+      const lease = ctx.app.get(LeaseService);
+      expect(await lease.acquire(PIPELINE_LEASE, 'other-instance', 60_000)).toBe(true);
+      expect(await p.recoverRun(missed.id, 'owner')).toMatchObject({
+        started: false,
+        reason: expect.stringMatching(/lease/),
+      });
+      await lease.release(PIPELINE_LEASE, 'other-instance');
+      expect(await recovery(missed.id)).toBeUndefined();
+    });
+  });
 });

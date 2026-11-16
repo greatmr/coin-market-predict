@@ -34,6 +34,10 @@ describe('dashboard roles', () => {
     }
   });
 
+  it('keeps recovering a failed or missed pipeline run owner-only', () => {
+    for (const role of USER_ROLES) expect(can(role, 'pipeline:recover')).toBe(role === 'owner');
+  });
+
   it('keeps the Claude coin agent owner-only', () => {
     for (const role of USER_ROLES) expect(can(role, 'agent:use')).toBe(role === 'owner');
   });

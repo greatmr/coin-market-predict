@@ -1,7 +1,11 @@
-import { Controller, Post } from '@nestjs/common';
+import { Controller, Param, Post } from '@nestjs/common';
 
-import { RequirePermission } from '../auth/auth.guard.js';
+import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
+
+import { type AuthContext, CurrentAuth, RequirePermission } from '../auth/auth.guard.js';
 import { PipelineService } from '../pipeline/pipeline.service.js';
+
+import { UuidSchema } from './dto/common.dto.js';
 
 /** Manual control of the hourly crawl. */
 @Controller('pipeline')
@@ -19,5 +23,22 @@ export class PipelineController {
     if (!r.started) return { ok: false, slot: r.slot, reason: r.reason };
     void r.done; // runs in the background; the outcome is stored on the pipeline run
     return { ok: true, slot: r.slot, circuitReset: r.circuitReset };
+  }
+
+  /**
+   * Owner's "Recover" on a failed or missed run (PipelineService.recoverRun): re-crawl the current
+   * hour, reprocess a stored batch, or catch up what can still be fetched. Runs in the background;
+   * the outcome is stored in the run's `metrics.recovery`.
+   */
+  @RequirePermission('pipeline:recover')
+  @Post('runs/:id/recover')
+  async recover(
+    @Param('id', new ZodValidationPipe(UuidSchema)) id: string,
+    @CurrentAuth() a: AuthContext,
+  ) {
+    const r = await this.pipeline.recoverRun(id, a.user.username);
+    if (!r.started) return { ok: false, slot: r.slot, reason: r.reason };
+    void r.done;
+    return { ok: true, slot: r.slot, action: r.action, batchId: r.batchId };
   }
 }

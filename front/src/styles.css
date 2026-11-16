@@ -3246,9 +3246,11 @@ body.signed-out .shell {
   white-space: nowrap;
 }
 
-.dialog {
+/* Two classes, so the later .palette rules (12vh top padding, top alignment) never win: with them
+   the box started 12vh down while its max-height assumed 16px, pushing the buttons off screen. */
+.palette.dialog {
   align-items: center;
-  padding-top: 16px;
+  padding: 16px;
 }
 .dialog-box {
   width: min(440px, 100%);
@@ -3256,10 +3258,23 @@ body.signed-out .shell {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  /* Never taller than the screen: the content scrolls, the title and buttons stay in view. */
-  max-height: calc(100vh - 32px);
-  max-height: calc(100dvh - 32px);
+  /* Never taller than the overlay's padded area: the content scrolls, the title and buttons stay in view. */
+  max-height: 100%;
+  min-height: 0;
   animation: dialogIn 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.dialog-box > fieldset.plain {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.recover-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 .dialog-body {
   flex: 1 1 auto;
@@ -3268,7 +3283,8 @@ body.signed-out .shell {
   overscroll-behavior: contain;
 }
 .dialog-box > h2,
-.dialog-box .row-actions {
+.dialog-box .row-actions,
+.dialog-box .form-error {
   flex: none;
 }
 @keyframes dialogIn {

@@ -146,6 +146,13 @@ UTC hour; daily rows exist only for screen candidates. Rules
 - **Restart recovery**: completed stages are skipped on resume; missed hours are recorded as
   `missed` and never backfilled from a live source; the current hour runs on startup when
   `MISSED_RUN_POLICY=current_slot`.
+- **Owner recovery** (`POST /api/pipeline/runs/:id/recover`, `pipeline:recover`, owner only;
+  `PipelineService.recoverRun`): on a `failed` or `missed` hourly run, under the pipeline lease and in
+  the background. The current hour is crawled again; a past hour with a stored crawl is rescanned
+  and re-exported from it; a past hour with nothing stored stays a gap (the source serves only
+  current quotes) and recovery instead runs the current hour, or, if that is done, refreshes daily
+  history for the latest batch's candidates and rescans it. It never sends Telegram or creates
+  forward-test events for a past hour; the run keeps its status and gains `metrics.recovery`.
 - **Bounded retries**: collect retries once; HTTP client bounded attempts with backoff; the daily
   stage stops on denial, rate limiting or five consecutive failures and resumes next run;
   Telegram up to 6 attempts on its own schedule (never re-runs collection or analysis).

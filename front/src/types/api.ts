@@ -14,6 +14,7 @@ export type Permission =
   | 'scan:operate'
   | 'telegram:manage'
   | 'users:manage'
+  | 'pipeline:recover'
   | 'agent:use';
 
 export interface User {

@@ -2,8 +2,8 @@
  * Dashboard roles and what each may see and do. Pure data: the HTTP guard, the dashboard and the
  * tests all read this one table, so a permission never means two different things.
  *
- *  - owner     everything, including user management, the Telegram audience (personal chat ids) and
- *              the Claude coin agent
+ *  - owner     everything, including user management, the Telegram audience (personal chat ids),
+ *              recovering failed or missed pipeline runs and the Claude coin agent
  *  - analyzer  every data page, run health and exports; operates the screen (reprocess a batch,
  *              refresh the LBank list) but records no human decisions
  *  - reviewer  the market pages and coin details; records reviews and LBank decisions, nothing
@@ -27,6 +27,8 @@ export const PERMISSIONS = [
   'telegram:manage',
   /** Create, change, reset and delete dashboard users. */
   'users:manage',
+  /** Recover a failed or missed hourly pipeline run (re-crawl, reprocess or catch up). */
+  'pipeline:recover',
   /** Run the Claude coin agent and read its analyses (rate-limited; uses the owner's subscription). */
   'agent:use',
 ] as const;

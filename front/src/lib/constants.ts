@@ -115,5 +115,6 @@ export const PERMISSION_TEXT: Record<Permission, string> = {
   'scan:operate': 'Reprocess a batch, refresh the LBank list and retry a failed crawl',
   'telegram:manage': 'Manage Telegram members and re-send reports',
   'users:manage': 'Add, change and remove users',
+  'pipeline:recover': 'Recover a failed or missed pipeline run',
   'agent:use': 'Ask the Claude agent for its view on a coin (limited runs)',
 };
