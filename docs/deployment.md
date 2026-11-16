@@ -86,17 +86,17 @@ container start. Check with `dc exec api node dist/cli.js db:status`; forward-te
 
 ## API on its own subdomain (optional)
 By default the dashboard and the API share `https://predict.jahantalab.com` (`web` proxies `/api`).
-To serve the API at `https://api.predict.jahantalab.com` instead (same site, so the session cookie
+To serve the API at `https://api-predict.jahantalab.com` instead (same site, so the session cookie
 still works):
 1. Add to `.env.prod`: `DASHBOARD_ORIGIN=https://predict.jahantalab.com` and
-   `API_ORIGIN=https://api.predict.jahantalab.com`.
+   `API_ORIGIN=https://api-predict.jahantalab.com`.
 2. Start with the override:
    `docker compose -f deploy/docker-compose.prod.yml -f deploy/docker-compose.api-subdomain.yml --env-file .env.prod up -d --build`
    (it publishes the API on `127.0.0.1:38418`, sets `CORS_ORIGINS` on `api`, and `API_BASE_URL`
    and `CSP_CONNECT_SRC` on `web`).
-3. DNS `api.predict` → the server, then install `deploy/nginx/api.predict.jahantalab.com.conf` and
-   run `certbot --nginx -d api.predict.jahantalab.com`.
-MCP clients then use `https://api.predict.jahantalab.com/mcp`. Without these steps nothing changes.
+3. DNS `api-predict` → the server, then install `deploy/nginx/api-predict.jahantalab.com.conf` and
+   run `certbot --nginx -d api-predict.jahantalab.com`.
+MCP clients then use `https://api-predict.jahantalab.com/mcp`. Without these steps nothing changes.
 
 ## Configuration notes
 - Edit `.env.prod`, then `dc up -d` (recreates the app with the new values).

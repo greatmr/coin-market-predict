@@ -145,7 +145,7 @@ const schema = z
     TRUST_PROXY: z.string().trim().optional(),
     /**
      * Browser origins allowed to call /api from another host, comma-separated exact origins (e.g.
-     * https://predict.example.com when the API runs on api.predict.example.com). Empty: same origin
+     * https://predict.example.com when the API runs on api-predict.example.com). Empty: same origin
      * only (the web container proxies /api, the default). Credentials (the session cookie) are allowed
      * for these origins, and their writes pass the write guard.
      */

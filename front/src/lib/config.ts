@@ -1,7 +1,7 @@
 // Runtime configuration, read once at start from /app-config.json (written by the web container from
 // its environment, so one image works on the same origin or with the API on another host).
 //   apiBase: ''                                  -> same origin: /api/... (the default)
-//   apiBase: 'https://api.predict.example.com'   -> that host: https://api.../api/...
+//   apiBase: 'https://api-predict.example.com'   -> that host: https://api.../api/...
 
 export interface RuntimeConfig {
   apiBase: string;

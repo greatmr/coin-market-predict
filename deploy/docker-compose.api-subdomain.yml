@@ -1,12 +1,12 @@
-# Optional: the API on its own subdomain (e.g. https://api.predict.jahantalab.com) while the dashboard
+# Optional: the API on its own subdomain (e.g. https://api-predict.jahantalab.com) while the dashboard
 # stays on https://predict.jahantalab.com. Both are the same site, so the SameSite=Strict session
 # cookie keeps working; the API allows the dashboard origin by CORS (with credentials) and the
 # dashboard calls the API there. Without this file, the dashboard and /api share one origin.
 #   docker compose -f deploy/docker-compose.prod.yml -f deploy/docker-compose.api-subdomain.yml \
 #     --env-file .env.prod up -d --build
 # .env.prod needs:  DASHBOARD_ORIGIN=https://predict.jahantalab.com
-#                   API_ORIGIN=https://api.predict.jahantalab.com
-# and host Nginx a vhost for the API host: deploy/nginx/api.predict.jahantalab.com.conf.
+#                   API_ORIGIN=https://api-predict.jahantalab.com
+# and host Nginx a vhost for the API host: deploy/nginx/api-predict.jahantalab.com.conf.
 services:
   api:
     environment:
