@@ -5,15 +5,19 @@ import {
   EVENT_SORT_KEYS,
   FORWARD_EVENT_STATUSES,
 } from '../../forward-test/forward.constants.js';
+import { BITHUMB_FILTERS, MARKET_FILTERS } from '../../venues/exchange-lists.js';
 
 /**
  * `GET /api/forward/events`: active (open / tracking / awaiting the final day), final, incomplete
- * or all; `status` narrows to one event status, `result` to a High-check result; sorted by `sort`.
+ * or all; `status` narrows to one event status, `result` to a High-check result, `market` to the
+ * coin's LBank Spot / Futures listing, `bithumb` to its Bithumb listing; sorted by `sort`.
  */
 export const ForwardEventsQuerySchema = z.object({
   view: z.enum(['active', 'final', 'incomplete', 'all']).default('active'),
   status: z.enum(FORWARD_EVENT_STATUSES).optional(),
   result: z.enum(EVENT_RESULT_FILTERS).optional(),
+  market: z.enum(MARKET_FILTERS).optional(),
+  bithumb: z.enum(BITHUMB_FILTERS).optional(),
   sort: z.enum(EVENT_SORT_KEYS).default('detected'),
   dir: z.enum(['asc', 'desc']).default('desc'),
   stars: z.coerce.number().int().min(1).max(3).optional(),

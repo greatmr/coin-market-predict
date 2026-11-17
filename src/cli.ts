@@ -24,6 +24,7 @@ import {
   type EventView,
   type ForwardEventRow,
   ForwardReadService,
+  listStatusJson,
 } from './modules/forward-test/forward-read.service.js';
 import { IngestionService } from './modules/ingestion/ingestion.service.js';
 import { PipelineService } from './modules/pipeline/pipeline.service.js';
@@ -58,6 +59,10 @@ const HELP = `Coins Predicts CLI — Two-Tier VMC strategy (docs/strategy-two-ti
   lbank:status                 The stored LBank Spot markets list: fetched when, next automatic refresh
   lbank:refresh                Fetch the LBank Spot markets list now (normally every
                                LBANK_PAIRS_REFRESH_DAYS), then recompute and re-export the latest batch
+  exchange-lists:status        LBank Spot, LBank Futures and Bithumb markets lists behind the listing
+                               attributes (verified / stale / failed, fetched when)
+  exchange-lists:refresh       Fetch the LBank Futures and Bithumb lists now (normally every
+                               EXCHANGE_LISTS_REFRESH_HOURS); no Tier 1 rule reads them, nothing is rescanned
   daily:import-csv --id CMC_ID --file history.csv
                                Import a CSV downloaded from the coin's CMC "Historical Data" page
                                as completed daily rows (manual source, revisions kept)
@@ -197,6 +202,18 @@ async function main() {
               },
         );
         if ('skipped' in r || !r.lbank.usable) process.exitCode = 1;
+        break;
+      }
+      case 'exchange-lists:status': {
+        const views = await ctx.get(VenuesService).exchangeListViews(cfg.DATA_SOURCE);
+        out(Object.values(views).map(listStatusJson));
+        break;
+      }
+      case 'exchange-lists:refresh': {
+        const r = await ctx.get(PipelineService).refreshExchangeLists();
+        out(r);
+        if ('skipped' in r || r.some((l) => l.status === 'FAILED' || l.status === 'SKIPPED'))
+          process.exitCode = 1;
         break;
       }
       case 'tier1:batches': {

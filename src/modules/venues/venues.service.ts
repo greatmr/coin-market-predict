@@ -12,8 +12,19 @@ import { SourceHealthService } from '../sources/source-health.service.js';
 import { TIER1_SOURCE, type Tier1Source } from '../sources/source.types.js';
 import { LBANK, type VenuePair } from '../strategy/index.js';
 
-import { VenueCrawl } from './entities/venue-crawl.entity.js';
+import { VenueCrawl, type VenueCrawlKind } from './entities/venue-crawl.entity.js';
 import { VenuePairEvent } from './entities/venue-pair-event.entity.js';
+import {
+  EXCHANGE_LISTS,
+  EXCHANGE_LIST_KEYS,
+  EXTRA_EXCHANGE_LISTS,
+  type ExchangeListKey,
+  LIST_REQUEST_ALLOWANCE,
+  LIST_RETRY_MS,
+  type ListView,
+  listView,
+  refreshDue,
+} from './exchange-lists.js';
 
 export interface LbankCrawlReport {
   /** REUSED = the stored list is younger than LBANK_PAIRS_REFRESH_DAYS, nothing was fetched. */
@@ -55,6 +66,24 @@ export interface VenueRefreshReport {
   notes: string[];
 }
 
+/** One LBank Futures / Bithumb list in the `venues` stage or a manual refresh (ADR-0007). */
+export interface ExchangeListReport {
+  key: ExchangeListKey;
+  label: string;
+  /**
+   * COMPLETE / INCOMPLETE / FAILED: fetched now. REUSED: the stored list is younger than
+   * EXCHANGE_LISTS_REFRESH_HOURS. RETRY_LATER: a recent attempt failed; it is retried later.
+   * SKIPPED: no exchange lists from this source, the request reserve, or the source stopped.
+   */
+  status: 'COMPLETE' | 'INCOMPLETE' | 'FAILED' | 'REUSED' | 'RETRY_LATER' | 'SKIPPED';
+  crawlId: string | null;
+  pairs: number;
+  expected: number | null;
+  notes: string[];
+}
+
+const LIST_PAIRS_CACHE = 6;
+
 /**
  * Venue inputs collected by the existing CMC website crawler (gaps G6, G7): LBank Spot pairs
  * for every batch and CMC Markets spot pairs for review candidates. Every crawl keeps the
@@ -86,6 +115,17 @@ export class VenuesService {
   private get crawls() {
     return this.db.getRepository(VenueCrawl);
   }
+
+  private get listRefreshMs() {
+    return this.cfg.EXCHANGE_LISTS_REFRESH_HOURS * 3_600_000;
+  }
+
+  private get listMaxAgeMs() {
+    return this.cfg.EXCHANGE_LISTS_MAX_AGE_HOURS * 3_600_000;
+  }
+
+  /** Crawls are never changed after they are stored, so their pairs are cached by id. */
+  private readonly listPairs = new Map<string, VenuePair[]>();
 
   /** Newest COMPLETE LBank Spot markets list (the one scans use). */
   latestLbankList(providerId: string) {
@@ -305,6 +345,193 @@ export class VenuesService {
       listed: rows.filter((r) => r.event === 'LISTED').length,
       absent: rows.filter((r) => r.event === 'ABSENT').length,
     };
+  }
+
+  private latestCrawl(providerId: string, kind: VenueCrawlKind, complete: boolean) {
+    return this.crawls.findOne({
+      where: { providerId, kind, ...(complete ? { status: 'COMPLETE' as const } : {}) },
+      order: { finishedAt: 'DESC', id: 'DESC' },
+      select: {
+        id: true,
+        status: true,
+        finishedAt: true,
+        fetchedCount: true,
+        expectedCount: true,
+        error: true,
+      },
+    });
+  }
+
+  /**
+   * LBank Futures and Bithumb Spot markets lists (ADR-0007), fetched when the stored one is
+   * EXCHANGE_LISTS_REFRESH_HOURS old (a failed attempt is retried after LIST_RETRY_MS at most), or
+   * now with `force`. Every attempt is stored, failures too. No Tier 1 rule reads these lists, so
+   * nothing is rescanned. Never throws for a source problem; stops at the request reserve or when
+   * the source becomes unavailable.
+   */
+  async ensureExchangeLists(
+    providerId: string,
+    batchId: string | null,
+    at: Date,
+    opts: { force?: boolean; trigger?: 'schedule' | 'manual' } = {},
+  ): Promise<ExchangeListReport[]> {
+    const trigger = opts.trigger ?? (opts.force ? 'manual' : 'schedule');
+    const out: ExchangeListReport[] = [];
+    let stopped: string | null = null;
+    for (const spec of EXTRA_EXCHANGE_LISTS) {
+      const report = (
+        status: ExchangeListReport['status'],
+        notes: string[],
+        list: { id: string; fetchedCount: number; expectedCount: number | null } | null = null,
+      ) =>
+        out.push({
+          key: spec.key,
+          label: spec.label,
+          status,
+          crawlId: list?.id ?? null,
+          pairs: list?.fetchedCount ?? 0,
+          expected: list?.expectedCount ?? null,
+          notes,
+        });
+      if (!this.source || this.source.providerId !== providerId) {
+        report('SKIPPED', [
+          'this data source supplies no exchange markets lists: listings stay Unknown',
+        ]);
+        continue;
+      }
+      const [complete, attempt] = await Promise.all([
+        this.latestCrawl(providerId, spec.kind, true),
+        this.latestCrawl(providerId, spec.kind, false),
+      ]);
+      const due = opts.force ? 'DUE' : refreshDue(complete, attempt, at, this.listRefreshMs);
+      if (due === 'FRESH') {
+        report(
+          'REUSED',
+          [`reusing the ${spec.label} list fetched ${complete!.finishedAt.toISOString()}`],
+          complete,
+        );
+        continue;
+      }
+      if (due === 'RETRY_LATER') {
+        const retryHours = Math.min(this.listRefreshMs, LIST_RETRY_MS) / 3_600_000;
+        report(
+          'RETRY_LATER',
+          [
+            `the ${attempt!.status} attempt of ${attempt!.finishedAt.toISOString()} is retried ${retryHours} h after it`,
+          ],
+          complete,
+        );
+        continue;
+      }
+      if (stopped) {
+        report('SKIPPED', [`not fetched: ${stopped}`], complete);
+        continue;
+      }
+      if ((await this.health.spendableRequests(providerId, at)) < LIST_REQUEST_ALLOWANCE) {
+        report('SKIPPED', ['not fetched: request budget reserve for the hourly listing'], complete);
+        continue;
+      }
+      const startedAt = new Date();
+      const summary = { trigger, list: spec.key, categories: [...spec.categories] };
+      try {
+        const r = await this.source.exchangePairs(
+          { exchange: spec.exchange, categories: spec.categories },
+          at,
+        );
+        const status = r.complete ? 'COMPLETE' : 'INCOMPLETE';
+        const crawl = await this.crawls.save(
+          this.crawls.create({
+            providerId,
+            kind: spec.kind,
+            batchId,
+            startedAt,
+            finishedAt: new Date(),
+            status,
+            expectedCount: r.expectedCount,
+            fetchedCount: r.pairs.length,
+            requests: r.requests,
+            pairs: r.pairs,
+            summary,
+            source: r.source,
+            sourceParams: r.params,
+            responseSha256: r.responseSha256,
+            notes: r.notes,
+          }),
+        );
+        this.log.log(
+          `${spec.label} markets list (${trigger}): ${r.pairs.length}/${r.expectedCount ?? '?'} (${status})`,
+        );
+        report(status, r.notes, crawl);
+      } catch (err) {
+        const message = redact(err).slice(0, 500);
+        const crawl = await this.crawls.save(
+          this.crawls.create({
+            providerId,
+            kind: spec.kind,
+            batchId,
+            startedAt,
+            finishedAt: new Date(),
+            status: 'FAILED',
+            fetchedCount: 0,
+            pairs: [],
+            summary,
+            source: spec.kind,
+            sourceParams: {},
+            error: message,
+          }),
+        );
+        this.log.warn(`${spec.label} markets list failed (${trigger}): ${message}`);
+        report('FAILED', [message], { ...crawl, fetchedCount: 0, expectedCount: null });
+        if (stopsCrawl(err)) stopped = 'the source is unavailable';
+      }
+    }
+    return out;
+  }
+
+  /**
+   * What each exchange list can say now: the LBank Spot list (the scanner's, valid for
+   * LBANK_PAIRS_MAX_AGE_DAYS) and the LBank Futures and Bithumb lists (valid for
+   * EXCHANGE_LISTS_MAX_AGE_HOURS).
+   */
+  async exchangeListViews(
+    providerId: string,
+    now = new Date(),
+  ): Promise<Record<ExchangeListKey, ListView>> {
+    const supported = !!this.source && this.source.providerId === providerId;
+    const views = await Promise.all(
+      EXCHANGE_LIST_KEYS.map(async (key) => {
+        const spec = EXCHANGE_LISTS[key];
+        const [complete, attempt] = await Promise.all([
+          this.latestCrawl(providerId, spec.kind, true),
+          this.latestCrawl(providerId, spec.kind, false),
+        ]);
+        const maxAgeMs = key === 'lbankSpot' ? this.maxAgeMs : this.listMaxAgeMs;
+        const pairs = complete ? await this.cachedPairs(complete.id) : [];
+        return listView(
+          spec,
+          complete ? { ...complete, status: 'COMPLETE', pairs } : null,
+          attempt,
+          now,
+          maxAgeMs,
+          supported,
+        );
+      }),
+    );
+    return Object.fromEntries(views.map((v) => [v.key, v])) as Record<ExchangeListKey, ListView>;
+  }
+
+  private async cachedPairs(crawlId: string): Promise<VenuePair[]> {
+    const hit = this.listPairs.get(crawlId);
+    if (hit) return hit;
+    const row = await this.crawls.findOne({
+      where: { id: crawlId },
+      select: { id: true, pairs: true },
+    });
+    const pairs = row?.pairs ?? [];
+    if (this.listPairs.size >= LIST_PAIRS_CACHE)
+      this.listPairs.delete(this.listPairs.keys().next().value!);
+    this.listPairs.set(crawlId, pairs);
+    return pairs;
   }
 
   /** CMC Markets spot pairs for review candidates (stage `venues`), at most once per refresh period each. */

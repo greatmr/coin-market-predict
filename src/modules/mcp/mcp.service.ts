@@ -141,7 +141,7 @@ export class McpService {
       defineTool({
         name: 'get_forward_events',
         description:
-          'Forward-test events (one per CMC id, UTC date and star count): detection time and CMC reference price, 3d/7d/30d results, deadline_168h, evaluation_end, the highest eligible future High with its time or interval, peak_return_pct (provisional lower bound unless peakKind is EXACT), status and data quality. view: active, final, incomplete or all.',
+          "Forward-test events (one per CMC id, UTC date and star count): detection time and CMC reference price, 3d/7d/30d results, deadline_168h, evaluation_end, the highest eligible future High with its time or interval, peak_return_pct (provisional lower bound unless peakKind is EXACT), status and data quality. coinAverageReturn: the arithmetic mean of the numeric Returns over all stored events of the same CMC id (events without a Return left out; a lower bound when lowerBounds > 0; a peak return, not profit). exchanges: the coin's current LBank Spot, LBank Futures and Bithumb listing (YES / NO / UNKNOWN when the list is not verified). view: active, final, incomplete or all.",
         scope: 'read',
         input: {
           view: z.enum(['active', 'final', 'incomplete', 'all']).optional(),

@@ -26,7 +26,11 @@ import { SourceUnavailableError } from '../sources/http/polite-client.js';
 import { SourceHealthService } from '../sources/source-health.service.js';
 import { ReportService } from '../telegram/report.service.js';
 import { TelegramService } from '../telegram/telegram.service.js';
-import { type LbankCrawlReport, VenuesService } from '../venues/venues.service.js';
+import {
+  type ExchangeListReport,
+  type LbankCrawlReport,
+  VenuesService,
+} from '../venues/venues.service.js';
 
 import { PipelineRun } from './entities/pipeline-run.entity.js';
 import { PipelineStage } from './entities/pipeline-stage.entity.js';
@@ -454,6 +458,20 @@ export class PipelineService {
     });
   }
 
+  /**
+   * Manual refresh of the LBank Futures and Bithumb lists (`exchange-lists:refresh`), under the
+   * pipeline lease so it never doubles an hourly run's requests. Nothing is rescanned: no Tier 1
+   * rule reads these lists (ADR-0007).
+   */
+  async refreshExchangeLists(): Promise<ExchangeListReport[] | { skipped: string }> {
+    return this.exclusive(() =>
+      this.venues.ensureExchangeLists(this.providerId, null, this.clock.now(), {
+        force: true,
+        trigger: 'manual',
+      }),
+    );
+  }
+
   private async execute(slot: Date, kind: string, force: boolean): Promise<RunOutcome> {
     const providerId = this.providerId;
     await this.ingestion.ensureProvider();
@@ -687,7 +705,19 @@ export class PipelineService {
             batchId!,
             scan.venueCandidates.map((c) => c.cmcId),
           );
-          return { ...report, annotated };
+          // LBank Futures and Bithumb lists (ADR-0007): after the scan, which never reads them;
+          // at most once per EXCHANGE_LISTS_REFRESH_HOURS, never fatal.
+          const lists = await this.venues.ensureExchangeLists(
+            providerId,
+            batchId!,
+            this.clock.now(),
+            { trigger: 'schedule' },
+          );
+          return {
+            ...report,
+            annotated,
+            exchangeLists: lists.map((l) => ({ list: l.key, status: l.status, pairs: l.pairs })),
+          };
         },
         { skipIfDone: false },
       ).catch((err) => {

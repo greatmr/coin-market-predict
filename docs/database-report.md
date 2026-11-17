@@ -34,6 +34,7 @@ daily    (hourly)     ─► DailyMetricRevision (every version) → DailyMetric
                          DailyFetchState (when to retry a missing day)
 scan                  ─► ScanRun (one per batch) + ScanResult (one per coin per batch)
 venues                ─► VenueCrawl (asset_markets, one per review candidate)
+                         VenueCrawl (lbank_futures_pairs, bithumb_spot_pairs, every 24 h; ADR-0007)
 export / notify       ─► CSV + XLSX files on disk, TelegramDelivery
 human review          ─► Review, VenueDecision (append-only)
 run bookkeeping       ─► PipelineRun, PipelineStage, JobLease, SourceHealth, AppState
@@ -90,7 +91,10 @@ run bookkeeping       ─► PipelineRun, PipelineStage, JobLease, SourceHealth,
 
 - `VenueCrawl` stores each LBank Spot pair-list crawl (`lbank_spot_pairs`) and each review
   candidate's CMC Markets crawl (`asset_markets`), with the normalized pairs exactly as used,
-  status, expected vs fetched counts and response hashes.
+  status, expected vs fetched counts and response hashes. Since M012 also LBank's Futures list
+  (`lbank_futures_pairs`: perpetual and dated futures) and Bithumb's Spot list
+  (`bithumb_spot_pairs`): the listing attributes shown with forward-test events
+  ([ADR-0007](adr/0007-exchange-listings.md)); no Tier 1 rule reads them.
 - `VenuePairEvent` records LBank listing transitions (LISTED, ABSENT) found by complete crawls.
 - `VenueMappingTask` holds ambiguous LBank tickers for a reviewer; `VenueDecision` holds the
   reviewer's append-only decisions.

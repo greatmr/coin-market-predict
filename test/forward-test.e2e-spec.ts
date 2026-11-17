@@ -28,7 +28,19 @@ import { IngestionService } from '../src/modules/ingestion/ingestion.service.js'
 import { PipelineService } from '../src/modules/pipeline/pipeline.service.js';
 import { ScanResult } from '../src/modules/scan/entities/scan-result.entity.js';
 import type { DailySourceRow } from '../src/modules/sources/source.types.js';
-import { type PassStatus, rankingScore } from '../src/modules/strategy/index.js';
+import { type PassStatus, type VenuePair, rankingScore } from '../src/modules/strategy/index.js';
+import {
+  VenueCrawl,
+  type VenueCrawlKind,
+} from '../src/modules/venues/entities/venue-crawl.entity.js';
+import {
+  BITHUMB_FILTERS,
+  type BithumbFilter,
+  MARKET_FILTERS,
+  type MarketFilter,
+  matchesBithumb,
+  matchesMarket,
+} from '../src/modules/venues/exchange-lists.js';
 
 import { makeApp, resetDb } from './utils/helpers.js';
 
@@ -898,5 +910,162 @@ describe('High check status, window progress and the event list (dashboard)', ()
       progress: { phase: 'done' },
     });
     expect(run?.checks).toMatchObject({ checked: 0, errors: 0 });
+  });
+});
+
+describe('Average Return per coin and exchange listings (dashboard, ADR-0007)', () => {
+  const read = () => ctx.app.get(ForwardReadService);
+  const base = { view: 'all' as const, limit: 50, offset: 0 };
+
+  it('averages the numeric Returns of every stored event of the coin, by CMC id, and marks a lower bound', async () => {
+    // A: 2★ on 1 Nov, FINAL with a High of 12: +20 % (exact).
+    const a = (await sight(row(790, 2, '10', '2026-11-01T10:00:00.000Z'))).created[0]!.eventId;
+    await store([
+      day(790, '2026-11-01', '12', '2026-11-01T12:00:00.000Z'),
+      ...['02', '03', '04', '05', '06', '07', '08'].map((d) =>
+        day(790, `2026-11-${d}`, '11', `2026-11-${d}T08:00:00.000Z`),
+      ),
+    ]);
+    await update('2026-11-09T00:30:00.000Z');
+    // B: 3★ on 10 Nov at 10:00, post-signal High 13: ≥ +30 % (window open). C: 1★ at 15:00 the
+    // same day; that High came at 12:00, before C, so C has no Return yet — left out, never 0 %.
+    const b = (await sight(row(790, 3, '10', '2026-11-10T10:00:00.000Z'))).created[0]!.eventId;
+    const c = (await sight(row(790, 1, '10', '2026-11-10T15:00:00.000Z'))).created[0]!.eventId;
+    // D: another coin with the same ticker (≥ +50 %), kept apart by its CMC id.
+    const d = (await sight(row(791, 2, '10', '2026-11-10T11:00:00.000Z', { symbol: 'T790' })))
+      .created[0]!.eventId;
+    await store([day(790, '2026-11-10', '13', '2026-11-10T12:00:00.000Z')]);
+    await store([day(791, '2026-11-10', '15', '2026-11-10T12:00:00.000Z')]);
+    await update('2026-11-11T00:30:00.000Z');
+
+    const byId = new Map((await read().events(base)).rows.map((r) => [r.eventId, r]));
+    expect(byId.get(a)!.outcome).toMatchObject({ peakKind: 'EXACT', peakReturnPct: '20' });
+    expect(byId.get(b)!.outcome).toMatchObject({ peakKind: 'LOWER_BOUND', peakReturnPct: '30' });
+    expect(byId.get(c)!.outcome?.peakReturnPct ?? null).toBeNull();
+    const coin790 = { events: 3, withReturn: 2, lowerBounds: 1, averagePct: '25' };
+    for (const id of [a, b, c]) expect(byId.get(id)!.coinAverageReturn).toEqual(coin790);
+    expect(byId.get(d)!.coinAverageReturn).toEqual({
+      events: 1,
+      withReturn: 1,
+      lowerBounds: 1,
+      averagePct: '50',
+    });
+
+    // Views, filters and pages never shrink the coin's set: the active view hides FINAL A.
+    const active = await read().events({ view: 'active', stars: 3, limit: 1, offset: 0 });
+    expect(active.rows.map((r) => [r.eventId, r.coinAverageReturn])).toEqual([[b, coin790]]);
+
+    // The overlapping-events dialog lists only C (A's window ended before B), yet the coin summary
+    // shown with it covers A, B and C.
+    const o = (await read().overlaps(b))!;
+    expect(o.overlaps.map((x) => x.eventId)).toEqual([c]);
+    expect(o.coin).toEqual({ cmcId: 790, ...coin790 });
+  });
+
+  it("shows each coin's LBank Spot / Futures and Bithumb listing by CMC id, Unknown until a list is verified; filters agree", async () => {
+    const ids = [792, 793, 794, 795];
+    for (const [i, id] of ids.entries())
+      await sight(row(id, 2, '10', `2026-11-12T1${i}:00:00.000Z`));
+    const listings = async () =>
+      new Map((await read().events(base)).rows.map((r) => [r.cmcId, r.exchanges]));
+    const kept = async (market?: MarketFilter, bithumb?: BithumbFilter) =>
+      (await read().events({ ...base, market, bithumb })).rows.map((r) => r.cmcId).sort();
+
+    // No list stored yet: every answer is Unknown (never No) and only the Unknown filters keep rows.
+    let l = await listings();
+    expect(
+      [...l.values()].every((x) =>
+        Object.values(x).every((a) => a.status === 'UNKNOWN' && a.reason === 'LIST_NOT_FETCHED'),
+      ),
+    ).toBe(true);
+    expect(await kept('unknown')).toEqual(ids);
+    expect(await kept('neither')).toEqual([]);
+    expect(await kept(undefined, 'not_listed')).toEqual([]);
+
+    // Lists as the crawler stores them (synthetic): Spot 792, 793; Futures 792, 794 plus a Spot row
+    // for 793 in that crawl (not a Futures listing); Bithumb 793, and T794/KRW without a CMC id.
+    const now = new Date();
+    const vp = (exchange: string, category: string, id: number, quote = 'USDT'): VenuePair => ({
+      exchange,
+      exchangeName: exchange,
+      marketPair: `T${id}/${quote}`,
+      category,
+      baseSymbol: `T${id}`,
+      baseCurrencyId: id,
+      quoteSymbol: quote,
+      quoteCurrencyId: null,
+      volumeUsd: '1000',
+      volumePercent: null,
+      priceUsd: null,
+      lastUpdated: null,
+      marketUrl: null,
+      tradingStatus: null,
+      type: 'cex',
+      flags: [],
+    });
+    const save = (kind: VenueCrawlKind, pairs: VenuePair[]) =>
+      ctx.repo(VenueCrawl).save(
+        ctx.repo(VenueCrawl).create({
+          providerId: P,
+          kind,
+          startedAt: now,
+          finishedAt: now,
+          status: 'COMPLETE',
+          expectedCount: pairs.length,
+          fetchedCount: pairs.length,
+          pairs,
+          source: 'test (synthetic)',
+          sourceParams: {},
+        }),
+      );
+    await save('lbank_spot_pairs', [vp('lbank', 'spot', 792), vp('lbank', 'spot', 793)]);
+    await save('lbank_futures_pairs', [
+      vp('lbank', 'perpetual', 792),
+      vp('lbank', 'perpetual', 794),
+      vp('lbank', 'spot', 793),
+    ]);
+    await save('bithumb_spot_pairs', [
+      vp('bithumb', 'spot', 793, 'KRW'),
+      { ...vp('bithumb', 'spot', 794, 'KRW'), baseCurrencyId: null },
+    ]);
+
+    l = await listings();
+    const answers = (id: number) => [
+      l.get(id)!.lbankSpot.status,
+      l.get(id)!.lbankFutures.status,
+      l.get(id)!.bithumb.status,
+    ];
+    expect(ids.map(answers)).toEqual([
+      ['YES', 'YES', 'NO'],
+      ['YES', 'NO', 'YES'],
+      ['NO', 'YES', 'UNKNOWN'],
+      ['NO', 'NO', 'NO'],
+    ]);
+    expect(l.get(793)!.bithumb).toMatchObject({
+      pairs: ['T793/KRW'],
+      listFetchedAt: now.toISOString(),
+    });
+    expect(l.get(794)!.bithumb.reason).toBe('UNMAPPED_PAIR_SAME_TICKER');
+
+    // Each filter, run in SQL, keeps exactly the rows whose shown answers it matches.
+    for (const f of MARKET_FILTERS)
+      expect(await kept(f), f).toEqual(
+        ids.filter((id) =>
+          matchesMarket(f, l.get(id)!.lbankSpot.status, l.get(id)!.lbankFutures.status),
+        ),
+      );
+    for (const f of BITHUMB_FILTERS)
+      expect(await kept(undefined, f), f).toEqual(
+        ids.filter((id) => matchesBithumb(f, l.get(id)!.bithumb.status)),
+      );
+    expect([await kept('both'), await kept('spot_only', 'listed')]).toEqual([[792], [793]]);
+
+    // The report names the lists behind the answers.
+    const sum = await read().summary();
+    expect(sum.exchangeLists.map((x) => [x.key, x.status, x.pairs])).toEqual([
+      ['lbankSpot', 'VERIFIED', 2],
+      ['lbankFutures', 'VERIFIED', 3],
+      ['bithumb', 'VERIFIED', 2],
+    ]);
   });
 });

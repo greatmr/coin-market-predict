@@ -210,6 +210,57 @@ export function overlapMap(events: readonly Span[]): Map<string, string[]> {
   return out;
 }
 
+/** One event's Return as the dashboard shows it: its latest outcome's peak return and peak kind. */
+export interface CoinReturnInput {
+  cmcId: number;
+  peakKind: PeakKind | null;
+  peakReturnPct: DValue | null;
+}
+
+export interface CoinAverageReturn {
+  /** Every stored event of the coin, any status and star count. */
+  events: number;
+  /** Events with a numeric Return. The others are left out, never counted as 0 %. */
+  withReturn: number;
+  /** Of those, Returns that are not EXACT (shown as ≥: window open, final day pending or a gap). */
+  lowerBounds: number;
+  /** Arithmetic mean of those Returns; itself a lower bound when `lowerBounds > 0`. */
+  average: DValue | null;
+}
+
+/**
+ * Average Return per coin, by CMC id (never by symbol), over every stored event of the coin. The
+ * Return is the peak return (maximum price increase after identification), not trading profit.
+ * Every true Return is at least its shown lower bound, so a mean that includes one is a lower bound
+ * of the mean too. Descriptive: one coin's events are correlated observations, not separate trades.
+ */
+export function coinAverageReturns(
+  events: readonly CoinReturnInput[],
+): Map<number, CoinAverageReturn> {
+  const byCoin = new Map<number, { events: number; returns: DValue[]; lowerBounds: number }>();
+  for (const e of events) {
+    let c = byCoin.get(e.cmcId);
+    if (!c) byCoin.set(e.cmcId, (c = { events: 0, returns: [], lowerBounds: 0 }));
+    c.events++;
+    if (e.peakReturnPct === null) continue;
+    c.returns.push(e.peakReturnPct);
+    if (e.peakKind !== 'EXACT') c.lowerBounds++;
+  }
+  return new Map(
+    [...byCoin].map(([cmcId, c]) => [
+      cmcId,
+      {
+        events: c.events,
+        withReturn: c.returns.length,
+        lowerBounds: c.lowerBounds,
+        average: c.returns.length
+          ? c.returns.reduce((sum, r) => sum.plus(r), new D(0)).div(c.returns.length)
+          : null,
+      },
+    ]),
+  );
+}
+
 function group(
   dimension: CohortDimension,
   key: string,

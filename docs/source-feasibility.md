@@ -17,6 +17,7 @@ source that supplies everything Tier 1 of the Two-Tier VMC strategy needs:
 | Completed UTC daily volume and market cap (30 days needed) | `v3.1/cryptocurrency/historical`, `interval=1d`, one request per screen candidate per UTC day |
 | LBank Spot pairs mapped by CMC base-asset id (the Markets section of `coinmarketcap.com/exchanges/lbank/?type=spot`) | `v3/exchange/market-pairs/latest?slug=lbank&category=spot`, pages of 500; fetched once, then every 30 days or on demand |
 | Asset venue rows (Upbit-dominant / single-venue flags) | `v3/cryptocurrency/market-pairs/latest`, top 100 spot pairs, review candidates only |
+| *Not a Tier 1 input:* LBank Futures and Bithumb listings on the forward-test tab ([ADR-0007](adr/0007-exchange-listings.md)) | the same exchange route, `slug=lbank&category=perpetual` + `category=futures` and `slug=bithumb&category=spot` (verified 2026-11-17: 737 perpetuals, 0 dated futures, 497 Bithumb pairs, every pair with its CMC id); every `EXCHANGE_LISTS_REFRESH_HOURS` (24) |
 
 The daily history route also returns, per completed day, the OHLC High with its documented time
 (`timeHigh`, `timeLow`, minute resolution); since M008 they are stored for the
@@ -100,6 +101,7 @@ agreement details, Binance main terms, CoinCap free tier.
 | LBank Spot pairs | 2 requests per fetch (~900 pairs, overlapping pages), once every `LBANK_PAIRS_REFRESH_DAYS` (30) plus manual refreshes |
 | Daily rows | ~1 per screen candidate per UTC day (non-excluded coins, roughly 500–1,100), plus retries after `TIER1_DAILY_RETRY_HOURS` for coins whose latest day was not yet published |
 | Venue rows | ≤ `TIER1_VENUE_MAX_ASSETS_PER_RUN` per run, each candidate at most every `TIER1_VENUE_REFRESH_HOURS` |
+| LBank Futures + Bithumb lists | ~4 per refresh (perpetual: 2 pages, futures: 1, Bithumb: 1), every `EXCHANGE_LISTS_REFRESH_HOURS` (24) plus `exchange-lists:refresh`; a failed attempt is retried after at most 6 h; skipped when the request reserve is reached |
 
 At 30 requests/minute, 1,000 daily-history requests take about 33 minutes, so the first run
 after a cold start spreads its daily refresh over two or three runs

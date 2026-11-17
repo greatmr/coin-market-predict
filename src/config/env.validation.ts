@@ -117,6 +117,13 @@ const schema = z
      * pair also needs a reviewer's "Verified tradable" (the stricter assumption A7).
      */
     LBANK_REQUIRE_MANUAL_VERIFICATION: bool.default(false),
+    /**
+     * LBank Futures and Bithumb Spot markets lists (listing attributes on the forward-test tab,
+     * ADR-0007; never Tier 1 inputs): fetched by the `venues` stage when the stored list is this old.
+     */
+    EXCHANGE_LISTS_REFRESH_HOURS: z.coerce.number().min(1).max(720).default(24),
+    /** Beyond this age such a list verifies nothing: its listing shows Unknown, never No. */
+    EXCHANGE_LISTS_MAX_AGE_HOURS: z.coerce.number().min(1).max(2160).default(72),
     /** CMC Markets venue rows are refreshed at most this often per review candidate. */
     TIER1_VENUE_REFRESH_HOURS: z.coerce.number().min(1).max(168).default(24),
     TIER1_VENUE_MAX_ASSETS_PER_RUN: z.coerce.number().int().min(0).max(2000).default(60),
@@ -228,6 +235,13 @@ const schema = z
         code: 'custom',
         path: ['LBANK_PAIRS_MAX_AGE_DAYS'],
         message: 'must be at least LBANK_PAIRS_REFRESH_DAYS',
+      });
+    }
+    if (c.EXCHANGE_LISTS_MAX_AGE_HOURS < c.EXCHANGE_LISTS_REFRESH_HOURS) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['EXCHANGE_LISTS_MAX_AGE_HOURS'],
+        message: 'must be at least EXCHANGE_LISTS_REFRESH_HOURS',
       });
     }
     if (c.MCP_READ_TOKEN && c.MCP_READ_TOKEN.length < 24) {

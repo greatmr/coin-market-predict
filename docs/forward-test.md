@@ -34,8 +34,8 @@ VMC or star rule changed, so `RULESET_VERSION` is unchanged. Module boundary:
 
 | Surface | What |
 |---|---|
-| Dashboard | **Forward test** tab: results by stars (§ 9), pass-pattern and weighted-points tables, final-return distribution, identification hours, the event list with each event's High check (§ 7a), window progress (§ 5) and expandable notes, filters (status, result, stars), sorting (Return, stars, points, identification time, 3d / 7d / 30d ratio), rejected triggers, downloads, *Update Highs now* with progress and result counts; *How to read the forward test* defines every column. **Overview**: results by stars and the last check, linking to the tab |
-| API | `GET /api/forward` (report), `GET /api/forward/events?view=active\|final\|incomplete\|all&status=&result=&sort=&dir=&stars=&search=`, `GET /api/forward/events/:id`, `GET /api/forward/events/:id/overlaps`, `GET /api/forward/rejections`, `GET /api/forward/export/<sheet>.csv\|workbook.xlsx` (`exports:read`), `POST /api/forward/update` (`scan:operate`; starts the update in the background and returns its run id), `GET /api/forward/update-runs/:id` (progress, then per-event check counts) |
+| Dashboard | **Forward test** tab: results by stars (§ 9), pass-pattern and weighted-points tables, final-return distribution, identification hours, the event list with each event's High check (§ 7a), window progress (§ 5), each coin's *Average Return (coin)* (§ 9a), its *LBank* Spot / Futures and *Bithumb* listings (§ 9b) and expandable notes, filters (status, result, LBank market, Bithumb, stars), sorting (Return, stars, points, identification time, 3d / 7d / 30d ratio), rejected triggers, downloads, *Update Highs now* with progress and result counts; the overlapping-events dialog opens with the coin's Average Return over all its events; *How to read the forward test* defines every column. **Overview**: results by stars and the last check, linking to the tab |
+| API | `GET /api/forward` (report, with `exchangeLists`), `GET /api/forward/events?view=active\|final\|incomplete\|all&status=&result=&market=&bithumb=&sort=&dir=&stars=&search=` (rows with `coinAverageReturn` and `exchanges`), `GET /api/forward/events/:id`, `GET /api/forward/events/:id/overlaps` (with the coin's `coin` summary), `GET /api/forward/rejections`, `GET /api/forward/export/<sheet>.csv\|workbook.xlsx` (`exports:read`), `POST /api/forward/update` (`scan:operate`; starts the update in the background and returns its run id), `GET /api/forward/update-runs/:id` (progress, then per-event check counts) |
 | MCP (read-only) | `get_forward_test_summary`, `get_forward_events`, `get_forward_event` |
 | CLI | `forward:status`, `forward:events`, `forward:update`, `forward:export` (§ 12) |
 | Files | `<TIER1_EXPORT_DIR>/<provider>/<time>Z_forward-test[_SYNTHETIC]/` after each daily update; samples in [examples/](examples/README.md) |
@@ -235,6 +235,32 @@ events; every other value is a provisional lower bound and is shown as `≥ x %`
 High raises it; a lower one leaves it and only advances `checked_through`. The initial price is
 never overwritten.
 
+### 9a. Average Return per coin (dashboard read model, [ADR-0007](adr/0007-exchange-listings.md))
+
+For each coin (CMC id, never the symbol) over **every stored event** of the coin — any status and
+star count, whatever the view, filters or page, and not only the events the overlapping-events
+dialog lists: the number of events, how many have a numeric Return (the Return column's value, the
+latest outcome's `peak_return_pct`), and the arithmetic mean of those Returns (exact decimals,
+`coinAverageReturns` in `cohort.ts`). An event without a Return (not checked yet, no confirmed
+High, an unconfirmed day 0) is left out, never counted as 0 %. If any averaged Return is a lower
+bound (`peak_kind` ≠ EXACT: window open, final day pending or a gap), the mean is a lower bound too
+and is shown as `≥ x %` with "lower bound · n not final"; only when every one is FINAL is it shown
+without ≥ ("all final"). It is labelled *Average Return*, a peak return, never profit or a trading
+result; no sum and no breakdown by stars. Shown in the event list (*Average Return (coin)*) and at
+the top of the overlapping-events dialog. Read-side only: no outcome changes, so
+`FORWARD_RULES_VERSION` is unchanged.
+
+### 9b. Exchange listings (LBank Spot / Futures, Bithumb)
+
+Each event row shows its coin's listing **now** in LBank's Spot markets, LBank's Futures markets
+and Bithumb's Spot markets (`Yes`, `No` or `Unknown`), each from that exchange's own CMC markets
+list matched by CMC id — Futures is never inferred from Spot. `Unknown` means the list is not
+verified (not fetched, failed, incomplete, older than its maximum age) or a pair without a CMC id
+carries the coin's ticker; it is never shown as `No`. Filters *LBank* (Spot and Futures, Spot only,
+Futures only, Spot, Futures, Neither, Unknown) and *Bithumb* (listed, not listed, unknown); the
+line above the table says when each list was fetched. Descriptive attributes: they never change an
+event, a Tier 1 result or the queue. Sources, cadence and the rules: [ADR-0007](adr/0007-exchange-listings.md).
+
 **Results by stars** (dashboard, `Cohort_Summary`): per star group the events, events with a
 confirmed High, events awaiting their first check, events whose only candidate is an unconfirmed
 day-0 High; active events (open / tracking / awaiting) with the median and mean of their
@@ -313,6 +339,8 @@ successful update.
 | An unproven day-0 High is shown apart and never counted; sorting by Return / stars, result filters; active vs completed statistics | e2e › *keeps an unproven signal-day High out of the result…*; `cohort.spec.ts` › *separates active from completed events…* |
 | Overlapping events listed with identification time, stars, price and the shared window | e2e › *lists the overlapping events of one coin…* |
 | *Update Highs now* starts in the background, reports its run and progress; a held lease refuses | e2e › *starts the manual update in the background…* |
+| Average Return per coin: all stored events by CMC id (beyond the view, page and overlap list), Returns missing left out, a lower bound marked; exact decimals | `cohort.spec.ts` › *Average Return per coin*; e2e › *averages the numeric Returns of every stored event of the coin…* |
+| Listings Unknown until a list is verified, then Yes / No by CMC id; every SQL filter keeps exactly the rows its rule matches | `exchange-lists.spec.ts`; e2e › *shows each coin's LBank Spot / Futures and Bithumb listing…* |
 
 ## 12. Runbook
 

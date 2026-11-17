@@ -14,12 +14,20 @@ import { CrawlBatch } from '../../ingestion/entities/crawl-batch.entity.js';
 import { Provider } from '../../sources/entities/provider.entity.js';
 import { type BatchStatus, CRAWL_STATUSES, type VenuePair } from '../../strategy/index.js';
 
-export const VENUE_CRAWL_KINDS = ['lbank_spot_pairs', 'asset_markets'] as const;
+export const VENUE_CRAWL_KINDS = [
+  'lbank_spot_pairs',
+  'asset_markets',
+  'lbank_futures_pairs',
+  'bithumb_spot_pairs',
+] as const;
 export type VenueCrawlKind = (typeof VENUE_CRAWL_KINDS)[number];
 
 /**
- * One venue crawl: all LBank Spot pairs (`lbank_spot_pairs`) or one asset's CMC Markets spot pairs
- * (`asset_markets`). `pairs` keeps the normalized rows exactly as used (PDF p.10, p.15).
+ * One venue crawl: all LBank Spot pairs (`lbank_spot_pairs`), one asset's CMC Markets spot pairs
+ * (`asset_markets`), or since M012 all LBank Futures pairs (`lbank_futures_pairs`: perpetual and
+ * dated futures) or all Bithumb Spot pairs (`bithumb_spot_pairs`), the listing attributes of
+ * ADR-0007 that no Tier 1 rule reads. `pairs` keeps the normalized rows exactly as used (PDF p.10,
+ * p.15).
  */
 @Entity({ name: 'venue_crawl' })
 @Index('ix_venue_crawl_kind', ['providerId', 'kind', 'finishedAt'])

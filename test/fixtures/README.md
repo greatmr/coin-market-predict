@@ -28,6 +28,9 @@ current market feed:
 | `cmc-web-history.json` | `/data-api/v3.1/cryptocurrency/historical` (XRP, id 52) | 2026-11-03 | four completed days |
 | `cmc-web-lbank-pairs.json` | `/data-api/v3/exchange/market-pairs/latest?slug=lbank&category=spot` | 2026-11-05 | 5 of the 900 reported pairs (so a single page is correctly *incomplete*) |
 | `cmc-web-market-pairs.json` | `/data-api/v3/cryptocurrency/market-pairs/latest` (Litecoin, id 2) | 2026-11-05 | 8 of the 500 reported pairs |
+| `cmc-web-lbank-perpetual-pairs.json` | `/data-api/v3/exchange/market-pairs/latest?slug=lbank&category=perpetual` | 2026-11-17 | 5 of the 737 reported pairs (LBank Futures, ADR-0007) |
+| `cmc-web-lbank-futures-pairs.json` | `/data-api/v3/exchange/market-pairs/latest?slug=lbank&category=futures` | 2026-11-17 | complete as served: LBank has no dated futures on CMC (0 pairs) |
+| `cmc-web-bithumb-pairs.json` | `/data-api/v3/exchange/market-pairs/latest?slug=bithumb&category=spot` | 2026-11-17 | 5 of the 497 reported pairs (Bithumb Spot, ADR-0007) |
 
 End-to-end and database tests use the synthetic `FixtureCmcMarket`
 (`src/modules/sources/fixture/fixture-cmc.ts`): ids ≥ 990001, ranks 1–1300 plus one unranked coin, 29

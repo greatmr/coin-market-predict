@@ -22,6 +22,12 @@ and an owner-only Claude agent that, on request, reads one coin's stored data an
 view on a pump within 7 days. That view is kept as history and treated as review material, like
 everything else here.
 
+Added 2026-11-17 (`docs/adr/0007-exchange-listings.md`): on the forward-test tab, each coin's
+Average Return over all its stored events (a peak return, never profit; a lower bound while any
+Return is), and whether the coin is listed now on LBank Spot, LBank Futures and Bithumb, each from
+that exchange's own markets list on CMC by CMC id (Unknown when the list is not verified), with
+filters. Descriptive attributes: no Tier 1 rule, star or point reads them.
+
 ## Requirements
 1. **Sources**: no paid market-data subscriptions. Use the existing, explicitly selected CMC
    website collector (no new API client, PDF p.2); no CAPTCHA bypass or evasive proxies. Free

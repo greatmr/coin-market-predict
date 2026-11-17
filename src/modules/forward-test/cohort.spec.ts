@@ -4,7 +4,7 @@ import { D, type DValue } from '../../common/utils/decimal.js';
 
 import { type PassStatus, rankingScore } from '../strategy/index.js';
 
-import { type CohortEvent, cohortReport, quantile, stats } from './cohort.js';
+import { type CohortEvent, cohortReport, coinAverageReturns, quantile, stats } from './cohort.js';
 import { eventWindow } from './forward-rules.js';
 import type { ForwardEventStatus } from './forward.constants.js';
 
@@ -198,5 +198,55 @@ describe('by pass pattern and weighted-points band (weighted star ranking § 5)'
       ['no score (detected before weighted_star_v1)', 1, 1],
     ]);
     expect(r.groups.find((g) => g.group === 'all')!.events).toBe(6);
+  });
+});
+
+describe('Average Return per coin (all stored events of one CMC id)', () => {
+  const ret = (cmcId: number, kind: 'EXACT' | 'LOWER_BOUND' | null, pct: string | null) => ({
+    cmcId,
+    peakKind: kind,
+    peakReturnPct: pct === null ? null : d(pct),
+  });
+
+  it('averages only numeric Returns: an event without one is left out, never counted as 0 %', () => {
+    const c = coinAverageReturns([
+      ret(990001, 'EXACT', '10'),
+      ret(990001, 'EXACT', '20'),
+      ret(990001, null, null), // not checked yet
+      ret(990001, 'LOWER_BOUND', null), // checked, no confirmed High (e.g. an unproven day 0)
+    ]).get(990001)!;
+    expect([c.events, c.withReturn, c.lowerBounds, str(c.average)]).toEqual([4, 2, 0, '15']);
+  });
+
+  it('marks the average a lower bound as soon as one Return is (window open, final day pending, a gap)', () => {
+    const c = coinAverageReturns([
+      ret(990002, 'EXACT', '30'),
+      ret(990002, 'LOWER_BOUND', '-6'),
+      ret(990002, 'LOWER_BOUND', '0'),
+    ]).get(990002)!;
+    expect([c.withReturn, c.lowerBounds, str(c.average)]).toEqual([3, 2, '8']);
+  });
+
+  it('groups by CMC id, never by symbol, and keeps exact decimals', () => {
+    // Two coins may share a ticker; their ids keep them apart (the input carries no symbol at all).
+    const m = coinAverageReturns([
+      ret(990005, 'EXACT', '0.1'),
+      ret(990006, 'EXACT', '100'),
+      ret(990005, 'EXACT', '0.2'),
+      ret(990007, 'EXACT', '1'),
+      ret(990007, 'EXACT', '2'),
+      ret(990007, 'EXACT', '2'),
+    ]);
+    expect(str(m.get(990005)!.average)).toBe('0.15'); // 0.1 + 0.2 in floats would not be 0.3
+    expect(str(m.get(990006)!.average)).toBe('100');
+    expect(m.get(990007)!.average!.toDecimalPlaces(30).toFixed()).toBe(
+      '1.666666666666666666666666666667',
+    );
+  });
+
+  it('a coin whose events have no Return yet has no average', () => {
+    const c = coinAverageReturns([ret(990008, null, null)]).get(990008)!;
+    expect([c.events, c.withReturn, c.average]).toEqual([1, 0, null]);
+    expect(coinAverageReturns([]).size).toBe(0);
   });
 });

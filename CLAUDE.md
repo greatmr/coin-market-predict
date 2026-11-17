@@ -12,8 +12,9 @@ never real orders. Spec: `docs/strategy-two-tier-vmc.md`. Purpose and open decis
   `src/database/` (`docs/adr/0001-typeorm-modular-layout.md`).
 - Pipeline (`src/modules/pipeline/pipeline.service.ts`): discover → collect (crawl batch, every
   listed coin) → lbank (LBank Spot pairs) → daily (completed UTC daily rows for screen
-  candidates) → scan (Tier 1) → venues → export (CSV + XLSX) → notify (Telegram) → forward
-  (Star Event Forward Test) → retention.
+  candidates) → scan (Tier 1) → venues (review candidates' CMC Markets rows; LBank Futures and
+  Bithumb lists, never Tier 1 inputs: `docs/adr/0007-exchange-listings.md`) → export (CSV + XLSX)
+  → notify (Telegram) → forward (Star Event Forward Test) → retention.
 - **The strategy is its own module** (`src/modules/strategy/`, `docs/adr/0002-strategy-module-boundary.md`):
   `strategy.constants.ts` (`RULESET_VERSION`, thresholds, reason codes, status sets), pure
   `tier1/` (eligibility, vmc, lbank, venue-summary, review-queue), `tier2/review-rules.ts`,

@@ -170,6 +170,13 @@ export interface VenueFetch {
   notes: string[];
 }
 
+/** One exchange's markets list: the CMC exchange slug and the market categories to read. */
+export interface ExchangeMarketsSpec {
+  exchange: string;
+  /** CMC market categories, e.g. `spot`, `perpetual`, `futures`; each is read in full. */
+  categories: readonly string[];
+}
+
 export interface Tier1Source {
   readonly providerId: string;
   /** Completed daily rows for one asset between two UTC dates (inclusive). */
@@ -181,6 +188,11 @@ export interface Tier1Source {
   ): Promise<DailyFetch>;
   /** Every LBank Spot pair the feed publishes, with the CMC id of each base asset. */
   lbankSpotPairs(at: Date): Promise<VenueFetch>;
+  /**
+   * Every pair one exchange lists in the given categories (LBank Futures, Bithumb Spot), with the
+   * CMC id of each base asset. Complete only when every category was read in full.
+   */
+  exchangePairs(spec: ExchangeMarketsSpec, at: Date): Promise<VenueFetch>;
   /** One asset's CMC Markets spot pairs across exchanges. */
   assetMarkets(asset: { cmcId: number; slug: string | null }, at: Date): Promise<VenueFetch>;
 }

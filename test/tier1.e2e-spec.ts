@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { In } from 'typeorm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { D } from '../src/common/utils/decimal.js';
@@ -23,6 +24,7 @@ import { TelegramDelivery } from '../src/modules/telegram/entities/telegram-deli
 import { ReportService } from '../src/modules/telegram/report.service.js';
 import { VenueCrawl } from '../src/modules/venues/entities/venue-crawl.entity.js';
 import { VenueMappingTask } from '../src/modules/venues/entities/venue-mapping-task.entity.js';
+import { availability } from '../src/modules/venues/exchange-lists.js';
 import { VenuesService } from '../src/modules/venues/venues.service.js';
 
 import { makeApp, resetDb } from './utils/helpers.js';
@@ -752,5 +754,148 @@ describe('LBank Spot markets list: fetched once, refreshed every N days or on de
         await ctx.repo(VenueCrawl).update({ id: c.id }, { finishedAt: c.finishedAt });
       await ctx.app.get(PipelineService).reprocess(batchId, { export: false });
     }
+  });
+});
+
+describe('LBank Futures and Bithumb lists: listing attributes, never Tier 1 inputs (ADR-0007)', () => {
+  const KINDS = ['lbank_futures_pairs', 'bithumb_spot_pairs'] as const;
+  const crawlsOf = (kind: (typeof KINDS)[number]) =>
+    ctx.repo(VenueCrawl).find({ where: { kind }, order: { finishedAt: 'ASC' } });
+  const venues = () => ctx.app.get(VenuesService);
+  /** What the scanner decided per coin: everything a listing attribute must never change. */
+  const tier1 = async () =>
+    (
+      await ctx.repo(ScanResult).find({
+        where: { batchId },
+        select: {
+          id: true,
+          cmcId: true,
+          eligibilityStatus: true,
+          eligibilityReasons: true,
+          lbankStatus: true,
+          stars: true,
+          weightedPassPoints: true,
+          inQueue: true,
+          queueOrder: true,
+          inputsHash: true,
+        },
+      })
+    )
+      .map(({ id: _id, ...r }) => r)
+      .sort((a, b) => a.cmcId - b.cmcId);
+
+  it('the hourly venues stage fetched both lists, read by CMC id; later runs reuse them', async () => {
+    for (const kind of KINDS) {
+      const c = await crawlsOf(kind);
+      expect(c.map((x) => [x.status, (x.summary as { trigger: string }).trigger])).toEqual([
+        ['COMPLETE', 'schedule'],
+      ]);
+    }
+    const futures = (await crawlsOf('lbank_futures_pairs'))[0]!;
+    expect(futures.pairs.every((p) => p.exchange === 'lbank' && p.category === 'perpetual')).toBe(
+      true,
+    );
+    const r = await venues().ensureExchangeLists('fixture', batchId, new Date());
+    expect(r.map((l) => [l.key, l.status])).toEqual([
+      ['lbankFutures', 'REUSED'],
+      ['bithumb', 'REUSED'],
+    ]);
+    const views = await venues().exchangeListViews('fixture');
+    const answer = (key: keyof typeof views, id: number, symbol: string) =>
+      availability(views[key], id, symbol).status;
+    // YNY: Spot, Futures and Bithumb. ZERO: Spot only. NOLB: Futures only (no Spot pair at all).
+    expect(
+      (['lbankSpot', 'lbankFutures', 'bithumb'] as const).map((k) => answer(k, S.YNY, 'YNY')),
+    ).toEqual(['YES', 'YES', 'YES']);
+    expect([answer('lbankSpot', S.ZERO, 'ZERO'), answer('lbankFutures', S.ZERO, 'ZERO')]).toEqual([
+      'YES',
+      'NO',
+    ]);
+    expect([answer('lbankSpot', S.NOLB, 'NOLB'), answer('lbankFutures', S.NOLB, 'NOLB')]).toEqual([
+      'NO',
+      'YES',
+    ]);
+    // Bithumb lists TWIN/KRW without a CMC id and two coins use that ticker: Unknown for both.
+    expect([answer('bithumb', S.TWIN_A, 'TWIN'), answer('bithumb', S.TWIN_B, 'TWIN')]).toEqual([
+      'UNKNOWN',
+      'UNKNOWN',
+    ]);
+  });
+
+  it('removing both lists and rescanning leaves every eligibility, LBank status, star and point unchanged', async () => {
+    const before = await tier1();
+    expect(before.some((r) => r.inQueue)).toBe(true);
+    await ctx.repo(VenueCrawl).delete({ kind: In([...KINDS]) });
+    let restored: Awaited<ReturnType<PipelineService['refreshExchangeLists']>>;
+    try {
+      const r = await ctx.app.get(PipelineService).reprocess(batchId, { export: false });
+      expect(r.scan!.queueStatus).toBe('PUBLISHED');
+      expect(await tier1()).toEqual(before);
+      // Without lists every Futures and Bithumb answer is Unknown, never No.
+      const views = await venues().exchangeListViews('fixture');
+      expect([views.lbankFutures.status, views.bithumb.status]).toEqual([
+        'NOT_FETCHED',
+        'NOT_FETCHED',
+      ]);
+      expect(availability(views.bithumb, S.ZERO, 'ZERO').status).toBe('UNKNOWN');
+    } finally {
+      // The manual refresh fetches both lists now and rescans nothing.
+      restored = await ctx.app.get(PipelineService).refreshExchangeLists();
+    }
+    expect(Array.isArray(restored) ? restored.map((l) => [l.key, l.status]) : restored).toEqual([
+      ['lbankFutures', 'COMPLETE'],
+      ['bithumb', 'COMPLETE'],
+    ]);
+    expect(await tier1()).toEqual(before);
+  });
+
+  it('a failed fetch is stored and retried later, not every hour; a stale list stops verifying', async () => {
+    const HOUR = 3_600_000;
+    // A list older than the refresh period whose last attempt failed an hour ago: wait.
+    await ctx
+      .repo(VenueCrawl)
+      .update({ kind: 'bithumb_spot_pairs' }, { finishedAt: new Date(Date.now() - 30 * HOUR) });
+    await ctx.repo(VenueCrawl).save(
+      ctx.repo(VenueCrawl).create({
+        providerId: 'fixture',
+        kind: 'bithumb_spot_pairs',
+        startedAt: new Date(Date.now() - HOUR),
+        finishedAt: new Date(Date.now() - HOUR),
+        status: 'FAILED',
+        fetchedCount: 0,
+        pairs: [],
+        source: 'bithumb_spot_pairs',
+        sourceParams: {},
+        error: 'HTTP 503 (synthetic)',
+      }),
+    );
+    const before = (await crawlsOf('bithumb_spot_pairs')).length;
+    const r = await venues().ensureExchangeLists('fixture', null, new Date());
+    expect(r.find((l) => l.key === 'bithumb')!.status).toBe('RETRY_LATER');
+    expect((await crawlsOf('bithumb_spot_pairs')).length).toBe(before);
+    // The 30-hour-old complete list still counts (72 h); past that it verifies nothing.
+    let views = await venues().exchangeListViews('fixture');
+    expect([views.bithumb.status, views.bithumb.lastAttempt?.error]).toEqual([
+      'VERIFIED',
+      'HTTP 503 (synthetic)',
+    ]);
+    await ctx
+      .repo(VenueCrawl)
+      .update(
+        { kind: 'bithumb_spot_pairs', status: 'COMPLETE' },
+        { finishedAt: new Date(Date.now() - 73 * HOUR) },
+      );
+    views = await venues().exchangeListViews('fixture');
+    expect([views.bithumb.status, availability(views.bithumb, S.YNY, 'YNY').status]).toEqual([
+      'STALE',
+      'UNKNOWN',
+    ]);
+    // Six hours after the failure the next run fetches it again.
+    const later = await venues().ensureExchangeLists(
+      'fixture',
+      null,
+      new Date(Date.now() + 6 * HOUR),
+    );
+    expect(later.find((l) => l.key === 'bithumb')!.status).toBe('COMPLETE');
   });
 });

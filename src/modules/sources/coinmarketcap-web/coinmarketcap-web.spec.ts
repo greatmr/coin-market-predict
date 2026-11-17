@@ -222,6 +222,71 @@ describe('CMC market pairs (gaps G6, G7)', () => {
     expect(c.urls.map((u) => u.searchParams.get('start'))).toEqual(['1', '451', '901']);
   });
 
+  it("reads LBank Futures from LBank's own perpetual and futures lists, by CMC id (ADR-0007)", async () => {
+    const perpetual = JSON.parse(fixture('cmc-web-lbank-perpetual-pairs.json'));
+    const futures = fixture('cmc-web-lbank-futures-pairs.json');
+    const c = client(
+      (u) =>
+        new Response(
+          u.searchParams.get('category') === 'perpetual' ? JSON.stringify(perpetual) : futures,
+        ),
+    );
+    const src = new CmcWebTier1Source(c.web);
+    const r = await src.exchangePairs({ exchange: 'lbank', categories: ['perpetual', 'futures'] });
+    expect(r.pairs.find((p) => p.marketPair === 'BTC/USDT')).toMatchObject({
+      exchange: 'lbank',
+      category: 'perpetual',
+      baseCurrencyId: 1,
+      tradingStatus: null,
+    });
+    expect(r.pairs.every((p) => p.category === 'perpetual' && p.baseCurrencyId !== null)).toBe(
+      true,
+    );
+    // 5 of 737 perpetual pairs (a trimmed page served twice) and the empty dated-futures list.
+    expect([r.complete, r.expectedCount, r.pairs.length]).toEqual([false, 737, 5]);
+    expect(r.notes.join(' ')).toMatch(/partial lbank perpetual pair list: 5\/737/);
+    expect(
+      new Set(c.urls.map((u) => `${u.searchParams.get('slug')}:${u.searchParams.get('category')}`)),
+    ).toEqual(new Set(['lbank:perpetual', 'lbank:futures']));
+    expect(c.urls.every((u) => u.pathname === WEB_EXCHANGE_PAIRS)).toBe(true);
+    perpetual.data.numMarketPairs = 5;
+    const whole = await new CmcWebTier1Source(
+      client(
+        (u) =>
+          new Response(
+            u.searchParams.get('category') === 'perpetual' ? JSON.stringify(perpetual) : futures,
+          ),
+      ).web,
+    ).exchangePairs({ exchange: 'lbank', categories: ['perpetual', 'futures'] });
+    expect([whole.complete, whole.expectedCount, whole.params.category]).toEqual([
+      true,
+      5,
+      'perpetual,futures',
+    ]);
+  });
+
+  it('reads Bithumb Spot pairs (KRW, BTC quotes) with their CMC ids', async () => {
+    const p = parseVenuePairs(json('cmc-web-bithumb-pairs.json'));
+    expect(p.expected).toBe(497);
+    expect(p.pairs.find((x) => x.marketPair === 'XRP/KRW')).toMatchObject({
+      exchange: 'bithumb',
+      category: 'spot',
+      baseSymbol: 'XRP',
+      baseCurrencyId: 52,
+      quoteSymbol: 'KRW',
+    });
+    const c = client(() => new Response(fixture('cmc-web-bithumb-pairs.json')));
+    const r = await new CmcWebTier1Source(c.web).exchangePairs({
+      exchange: 'bithumb',
+      categories: ['spot'],
+    });
+    expect([r.complete, r.pairs.length]).toEqual([false, 5]);
+    expect(c.urls[0]!.searchParams.get('slug')).toBe('bithumb');
+    await expect(
+      new CmcWebTier1Source(c.web).exchangePairs({ exchange: 'bit humb', categories: ['spot'] }),
+    ).rejects.toMatchObject({ kind: 'bad_request' });
+  });
+
   it("requires a usable slug for a coin's Markets table", async () => {
     const c = client(() => new Response(fixture('cmc-web-market-pairs.json')));
     const src = new CmcWebTier1Source(c.web);
