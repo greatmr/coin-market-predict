@@ -28,6 +28,8 @@ services:
       timeout: 5s
       retries: 20
       start_period: 10s
+    ports:
+      - "127.0.0.1:5434:5432"
 
   api:
     build:
