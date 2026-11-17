@@ -14,7 +14,9 @@ Hourly cryptocurrency **screening for human review**, implementing the Two-Tier 
 - **Star Event Forward Test (automatic add-on):** the first 1/2/3-star detection per coin, UTC
   day and star count is recorded at the scan's CMC price and followed once per day to the end of
   the UTC day containing detection + 168 h; the highest later High is compared by star group. A
-  descriptive measurement, not a trade or a signal.
+  descriptive measurement, not a trade or a signal. The event list also shows each coin's Average
+  Return over all its events (a lower bound while any Return is) and whether the coin is listed on
+  LBank Spot, LBank Futures and Bithumb, with filters ([ADR-0007](docs/adr/0007-exchange-listings.md)).
 - **Coin details:** a live TradingView 1D chart (sandboxed widget; a proxy for the LBank Spot
   pair) and, for owners, a **Claude agent** that on request reads the coin's stored data and gives
   its own view on a pump within 7 days. Runs are limited to 5 per 12 hours and every run is kept
@@ -28,7 +30,7 @@ Hourly cryptocurrency **screening for human review**, implementing the Two-Tier 
 - Star Event Forward Test (field mapping, High coverage, statuses, runbook, data gaps): [docs/forward-test.md](docs/forward-test.md)
 - Operating it day to day: [docs/operator-guide.md](docs/operator-guide.md)
 - Production deployment (server, Nginx, Docker, troubleshooting): [docs/deployment.md](docs/deployment.md)
-- Architecture: [docs/architecture.md](docs/architecture.md); decisions: [TypeORM and the module layout](docs/adr/0001-typeorm-modular-layout.md), [the strategy module](docs/adr/0002-strategy-module-boundary.md), [dashboard users](docs/adr/0003-dashboard-users.md), [the forward-test module](docs/adr/0004-forward-test-module.md), [the coin agent and live chart](docs/adr/0005-coin-agent.md)
+- Architecture: [docs/architecture.md](docs/architecture.md); decisions: [TypeORM and the module layout](docs/adr/0001-typeorm-modular-layout.md), [the strategy module](docs/adr/0002-strategy-module-boundary.md), [dashboard users](docs/adr/0003-dashboard-users.md), [the forward-test module](docs/adr/0004-forward-test-module.md), [the coin agent and live chart](docs/adr/0005-coin-agent.md), [exchange listings and the coin's Average Return](docs/adr/0007-exchange-listings.md)
 - Data sources and the website collector: [docs/source-feasibility.md](docs/source-feasibility.md)
 - Field mapping and data gaps: [docs/tier1-input-mapping.md](docs/tier1-input-mapping.md)
 - Implementation plan, database preparation and recovery: [docs/implementation-plan.md](docs/implementation-plan.md)
@@ -39,6 +41,7 @@ Hourly cryptocurrency **screening for human review**, implementing the Two-Tier 
 |---|---|
 | Market data | **Synthetic fixture by default** (labelled SYNTHETIC everywhere). Live: CMC website collector (no key) — the only live source with daily history and LBank pairs |
 | LBank pairs | From the Markets section of CMC's LBank exchange page, fetched once and refreshed every 30 days or on demand (dashboard button / `lbank:refresh`). A listed pair counts as tradable unless a reviewer marks it otherwise; no trading status is available from any source used |
+| LBank Futures, Bithumb | LBank's Futures (perpetual) and Bithumb's Spot markets lists from the same CMC exchange route, by CMC id, refreshed daily (`exchange-lists:refresh` on demand); shown on the forward-test tab, Unknown when a list is not verified. Not Tier 1 inputs |
 | Telegram | Dry-run by default; live with `TELEGRAM_MODE=live` + bot token + chat id |
 | Dashboard / MCP / PostgreSQL | Live (local) |
 

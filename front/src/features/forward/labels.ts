@@ -3,7 +3,15 @@
 import type { StatusMap } from '../../lib/constants';
 import { tz } from '../../lib/format';
 
-import type { CheckStatus, EventSort, ForwardStatus, ResultFilter } from './types';
+import type {
+  BithumbFilter,
+  CheckStatus,
+  EventSort,
+  ForwardStatus,
+  Listed,
+  MarketFilter,
+  ResultFilter,
+} from './types';
 
 export const FWD_STATUS: StatusMap = {
   OPEN: ['', 'Open'],
@@ -84,6 +92,48 @@ export const RESULT_FILTERS: readonly (readonly [ResultFilter | '', string])[] =
   ['RETRIEVAL_ERROR', CHECK.RETRIEVAL_ERROR[1]],
 ];
 
+/** The coin's LBank listing now: exact combinations, or one market whatever the other. */
+export const MARKET_FILTERS: readonly (readonly [MarketFilter | '', string])[] = [
+  ['', 'All'],
+  ['both', 'Spot and Futures'],
+  ['spot_only', 'Spot only'],
+  ['futures_only', 'Futures only'],
+  ['spot', 'Spot (with or without Futures)'],
+  ['futures', 'Futures (with or without Spot)'],
+  ['neither', 'Neither'],
+  ['unknown', 'Unknown (not verified)'],
+];
+
+export const BITHUMB_FILTERS: readonly (readonly [BithumbFilter | '', string])[] = [
+  ['', 'All'],
+  ['listed', 'Listed on Bithumb'],
+  ['not_listed', 'Not listed'],
+  ['unknown', 'Unknown (not verified)'],
+];
+
+/** CSS class and word of a listing answer. Unknown is its own state, never shown as No. */
+export const LISTED: Record<Listed, readonly [cls: string, text: string]> = {
+  YES: ['yes', 'Yes'],
+  NO: ['no', 'No'],
+  UNKNOWN: ['unknown', 'Unknown'],
+};
+export const BITHUMB_TEXT: Record<Listed, string> = {
+  YES: 'Listed',
+  NO: 'Not listed',
+  UNKNOWN: 'Unknown',
+};
+
+/** Why a listing is Unknown (reason codes of the API). */
+export const LISTING_REASON: Record<string, string> = {
+  LIST_NOT_FETCHED: 'the list has not been fetched yet',
+  LIST_FAILED: 'the last fetch of the list failed and no complete list is stored',
+  LIST_INCOMPLETE: 'the last fetch returned an incomplete list',
+  LIST_STALE: 'the stored list is too old to count',
+  LIST_UNSUPPORTED: 'this data source has no exchange markets lists',
+  UNMAPPED_PAIR_SAME_TICKER:
+    'the list has a pair with this ticker but no CMC id, so it may or may not be this coin',
+};
+
 export const SORT_LABEL: Record<EventSort, string> = {
   detected: 'identification time',
   return: 'Return',
@@ -109,3 +159,9 @@ export const DAY0_EXPLAINED =
 
 export const OVERLAP_EXPLAINED =
   'Other events of the same coin (any star count) whose windows share at least one moment with this one. Each is its own event, one per coin, UTC day and star count, but they follow the same price path, so they are correlated rather than independent. The count does not include this row.';
+
+export const AVERAGE_RETURN_EXPLAINED =
+  "The arithmetic mean of the Returns shown for the coin's events, over every stored event of the coin (same CMC id, any status and star count, whatever the filters or page), with the number of events and how many have a Return. An event without a Return is left out, never counted as 0 %. If any of those Returns is still so far or a lower bound (≥), the average is a lower bound too and is marked ≥: not a final result. It is a peak return, not trading profit, and the events of one coin follow one price path.";
+
+export const LISTINGS_EXPLAINED =
+  "Whether the coin is listed now in LBank's Spot markets, LBank's Futures markets (perpetual contracts) and Bithumb's Spot markets. Each comes from that exchange's own markets list on CoinMarketCap, matched by CMC id: Futures is checked in LBank's Futures list, never inferred from a Spot listing. Unknown means that list is not verified (not fetched yet, failed, incomplete or too old), so it is never shown as No. A listing, not a trading-status check; LBank Futures and Bithumb never change Tier 1 eligibility, stars or points.";

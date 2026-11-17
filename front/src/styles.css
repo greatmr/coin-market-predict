@@ -2485,6 +2485,49 @@ select option {
   flex-direction: column;
   gap: 2px;
 }
+/* The coin's Average Return (a numeric column): the value, how many events have a Return, and
+   whether the average is a lower bound (yellow, like other unconfirmed values) or all final. */
+.fwd-avg {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+.fwd-avg-note {
+  color: var(--muted);
+}
+.fwd-avg-note.lower {
+  color: var(--unsure);
+}
+.fwd-coin-avg {
+  font-weight: 600;
+}
+/* Exchange listings: Yes, No, or Unknown (a list that is not verified: never shown as No). */
+.fwd-avail {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 2px 10px;
+  justify-content: start;
+}
+.fwd-avail-row {
+  display: contents;
+}
+.fwd-listed {
+  font-weight: 600;
+}
+.fwd-listed.yes {
+  color: var(--yes);
+}
+.fwd-listed.no {
+  color: var(--muted);
+  font-weight: 500;
+}
+.fwd-listed.unknown {
+  color: var(--unsure);
+}
+.fwd-lists {
+  margin: 0 0 8px;
+}
 /* An identification-day High that is shown but never counted (its time vs identification unknown
    or before it): yellow, with a "?" that opens the explanation. */
 .fwd-day0 {

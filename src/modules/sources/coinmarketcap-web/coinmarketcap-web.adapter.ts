@@ -8,6 +8,7 @@ import type {
   CollectResult,
   DailyFetch,
   DiscoveryResult,
+  ExchangeMarketsSpec,
   MarketDataSource,
   Tier1Source,
   VenueFetch,
@@ -167,7 +168,9 @@ const seconds = (d: Date) => Math.floor(d.getTime() / 1000);
 /**
  * Tier 1 inputs from the same website client (shared queue, budget, circuit breaker): completed
  * daily rows (existing history route), LBank Spot pairs (CMC's LBank markets data) and one coin's
- * CMC Markets spot pairs. Targeted crawler extensions for gaps G4, G6, G7.
+ * CMC Markets spot pairs. Targeted crawler extensions for gaps G4, G6, G7. The same exchange route
+ * also reads other markets lists (LBank Futures, Bithumb Spot) for the listing attributes of
+ * ADR-0007, which no Tier 1 rule reads.
  */
 export class CmcWebTier1Source implements Tier1Source {
   readonly providerId = CMC_WEB_PROVIDER.id;
@@ -200,7 +203,11 @@ export class CmcWebTier1Source implements Tier1Source {
     };
   }
 
-  async lbankSpotPairs(): Promise<VenueFetch> {
+  /**
+   * Every pair of one exchange in one market category, paged by what the server returns. `label`
+   * names the list in notes ("partial LBank pair list: …").
+   */
+  private async sweepExchange(slug: string, category: string, label: string) {
     const seen = new Map<string, VenuePair>();
     const hashes: string[] = [];
     const notes: string[] = [];
@@ -209,13 +216,12 @@ export class CmcWebTier1Source implements Tier1Source {
       requests = 0,
       retrievedAt = new Date(),
       complete = false;
-    const params = { slug: LBANK, category: 'spot', limit: String(EXCHANGE_PAGE_SIZE) };
     for (let page = 0; page < MAX_EXCHANGE_PAGES; page++) {
       let parsed: ReturnType<typeof parseVenuePairs>;
       try {
         const r = await this.client.get(WEB_EXCHANGE_PAIRS, {
-          slug: LBANK,
-          category: 'spot',
+          slug,
+          category,
           start,
           limit: EXCHANGE_PAGE_SIZE,
         });
@@ -225,12 +231,12 @@ export class CmcWebTier1Source implements Tier1Source {
         parsed = parseVenuePairs(r.body);
       } catch (err) {
         if (page === 0) throw err;
-        notes.push(`LBank pairs stopped on page ${page + 1}: ${redact(err).slice(0, 200)}`);
+        notes.push(`${label} pairs stopped on page ${page + 1}: ${redact(err).slice(0, 200)}`);
         break;
       }
       expected = parsed.expected ?? expected;
       const before = seen.size;
-      for (const p of parsed.pairs) if (p.exchange === LBANK) seen.set(pairKey(p), p);
+      for (const p of parsed.pairs) if (p.exchange === slug) seen.set(pairKey(p), p);
       if (parsed.skipped) notes.push(`${parsed.skipped} malformed pair rows skipped`);
       if (expected !== null && seen.size >= expected) {
         complete = true;
@@ -244,14 +250,60 @@ export class CmcWebTier1Source implements Tier1Source {
       // moving across a page boundary is not skipped (repeats are removed by market id).
       start += Math.max(1, parsed.returned - EXCHANGE_PAGE_OVERLAP);
     }
-    if (!complete) notes.push(`partial LBank pair list: ${seen.size}/${expected ?? 'unknown'}`);
+    if (!complete) notes.push(`partial ${label} pair list: ${seen.size}/${expected ?? 'unknown'}`);
+    return { pairs: [...seen.values()], expected, complete, requests, hashes, retrievedAt, notes };
+  }
+
+  async lbankSpotPairs(): Promise<VenueFetch> {
+    const s = await this.sweepExchange(LBANK, 'spot', 'LBank');
     return {
-      pairs: [...seen.values()],
+      pairs: s.pairs,
+      expectedCount: s.expected,
+      complete: s.complete,
+      requests: s.requests,
+      source: `cmc_web:${WEB_EXCHANGE_PAIRS}`,
+      params: { slug: LBANK, category: 'spot', limit: String(EXCHANGE_PAGE_SIZE) },
+      responseSha256: s.hashes,
+      retrievedAt: s.retrievedAt,
+      notes: s.notes,
+    };
+  }
+
+  /**
+   * One exchange's markets list across categories (e.g. LBank `perpetual` + `futures`), each read in
+   * full: complete only when every category is, with the expected count summed.
+   */
+  async exchangePairs(spec: ExchangeMarketsSpec): Promise<VenueFetch> {
+    if (!/^[a-z0-9-]+$/.test(spec.exchange) || !spec.categories.length)
+      throw new CmcApiError('bad_request', `unusable exchange list ${spec.exchange}`, null, null);
+    const pairs = new Map<string, VenuePair>();
+    const hashes: string[] = [];
+    const notes: string[] = [];
+    let expected: number | null = 0,
+      requests = 0,
+      complete = true,
+      retrievedAt = new Date();
+    for (const category of spec.categories) {
+      const s = await this.sweepExchange(spec.exchange, category, `${spec.exchange} ${category}`);
+      for (const p of s.pairs) pairs.set(pairKey(p), p);
+      expected = expected === null || s.expected === null ? null : expected + s.expected;
+      requests += s.requests;
+      complete &&= s.complete;
+      hashes.push(...s.hashes);
+      notes.push(...s.notes);
+      retrievedAt = s.retrievedAt;
+    }
+    return {
+      pairs: [...pairs.values()],
       expectedCount: expected,
       complete,
       requests,
       source: `cmc_web:${WEB_EXCHANGE_PAIRS}`,
-      params,
+      params: {
+        slug: spec.exchange,
+        category: spec.categories.join(','),
+        limit: String(EXCHANGE_PAGE_SIZE),
+      },
       responseSha256: hashes,
       retrievedAt,
       notes,

@@ -1,0 +1,26 @@
+{
+ "data": {
+  "id": 333,
+  "name": "LBank",
+  "slug": "lbank",
+  "numMarketPairs": 0,
+  "marketPairs": [],
+  "sort": "cmc_rank_advanced",
+  "direction": "desc",
+  "quotes": [
+   {
+    "id": "2781",
+    "derivativeVolume": 5178602521.436204,
+    "spotVolume": 1292064541.2286007,
+    "totalVolume24h": 5178602521.436204
+   }
+  ]
+ },
+ "status": {
+  "timestamp": "2026-11-17T12:19:37.721Z",
+  "error_code": "0",
+  "error_message": "SUCCESS",
+  "elapsed": "16",
+  "credit_count": 0
+ }
+}

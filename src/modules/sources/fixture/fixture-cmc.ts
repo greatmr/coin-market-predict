@@ -37,9 +37,15 @@ interface Scenario {
   quote?: 'stale' | 'no_timestamp';
   lbank?: Array<{ base?: string; quote: string; trading: boolean }>;
   venues?: Array<{ exchange: string; name: string; share: number }>;
+  /** Listed in LBank's Futures markets (a USDT perpetual). */
+  lbankFutures?: boolean;
+  /** Quote currencies of its Bithumb Spot pairs. */
+  bithumb?: readonly string[];
 }
 
 const VERIFIED = [{ quote: 'USDT', trading: true }];
+/** CMC ids of quote currencies (USDT, BTC, KRW). */
+const QUOTE_IDS: Readonly<Record<string, number>> = { USDT: 825, BTC: 1, KRW: 2798 };
 const const_ =
   (vmc: string): DailySpec =>
   () => ({ vmc });
@@ -63,6 +69,8 @@ const SCENARIOS: Scenario[] = [
       { quote: 'USDT', trading: true },
       { quote: 'BTC', trading: true },
     ],
+    lbankFutures: true,
+    bithumb: ['KRW'],
   },
   {
     cmcId: 990002,
@@ -90,6 +98,8 @@ const SCENARIOS: Scenario[] = [
       { exchange: 'binance', name: 'Binance', share: 0.17 },
       { exchange: LBANK, name: 'LBank', share: 0.12 },
     ],
+    lbankFutures: true,
+    bithumb: ['KRW', 'BTC'],
   },
   // Symbol mismatch: CMC symbol AMB, LBank base ticker AMBX → ambiguous mapping, held for review.
   {
@@ -137,6 +147,7 @@ const SCENARIOS: Scenario[] = [
     baseVmc: '0.05',
     currentVmc: '0.09',
     lbank: VERIFIED,
+    bithumb: ['KRW'],
   },
   // Invalid day T−8 (cap 0) → 3d and 7d valid; 14d and 30d N/A (p.19 D).
   {
@@ -170,6 +181,8 @@ const SCENARIOS: Scenario[] = [
     daily: const_('0.03'),
     baseVmc: '0.03',
     currentVmc: '0.12',
+    // No LBank Spot pair (Tier 1: not eligible) but an LBank perpetual: Futures only.
+    lbankFutures: true,
   },
   {
     cmcId: 990011,
@@ -435,6 +448,8 @@ function fillers(): Scenario[] {
       baseVmc: fixed(base, 6),
       currentVmc: fixed(base * (0.5 + 2.2 * rand(`cur:${cmcId}`)), 6),
       lbank,
+      lbankFutures: rand(`perp:${cmcId}`) < (rank <= 300 ? 0.6 : 0.3),
+      bithumb: rand(`bithumb:${cmcId}`) < 0.2 ? ['KRW'] : undefined,
     });
   }
   return out;
@@ -590,6 +605,47 @@ export class FixtureCmcMarket {
           flags: [],
         });
       }
+    }
+    return out;
+  }
+
+  /**
+   * Synthetic exchange markets lists: LBank Spot (`spot`), LBank Futures (`perpetual`; no dated
+   * `futures`, as on CMC) and Bithumb Spot. Bithumb also lists one pair without a CMC id under the
+   * ticker TWIN, which two fixture coins share: neither may be called listed or not listed.
+   */
+  exchangePairs(exchange: string, categories: readonly string[], at: Date): VenuePair[] {
+    const pair = (
+      s: Pick<Scenario, 'cmcId' | 'symbol'> | { cmcId: null; symbol: string },
+      category: string,
+      quote: string,
+      name: string,
+    ): VenuePair => ({
+      exchange,
+      exchangeName: name,
+      marketPair: `${s.symbol}/${quote}`,
+      category,
+      baseSymbol: s.symbol,
+      baseCurrencyId: s.cmcId,
+      quoteSymbol: quote,
+      quoteCurrencyId: QUOTE_IDS[quote] ?? null,
+      volumeUsd: fixed(5e4 + 3e6 * rand(`${exchange}:${category}:${s.symbol}:${quote}`), 2),
+      volumePercent: null,
+      priceUsd: null,
+      lastUpdated: new Date(at.getTime() - 60_000).toISOString(),
+      marketUrl: null,
+      tradingStatus: null,
+      type: 'cex',
+      flags: [],
+    });
+    const out: VenuePair[] = [];
+    if (exchange === LBANK && categories.includes('spot')) out.push(...this.lbankPairs(at));
+    if (exchange === LBANK && categories.includes('perpetual'))
+      for (const s of this.all) if (s.lbankFutures) out.push(pair(s, 'perpetual', 'USDT', 'LBank'));
+    if (exchange === 'bithumb' && categories.includes('spot')) {
+      for (const s of this.all)
+        for (const q of s.bithumb ?? []) out.push(pair(s, 'spot', q, 'Bithumb'));
+      out.push(pair({ cmcId: null, symbol: 'TWIN' }, 'spot', 'KRW', 'Bithumb'));
     }
     return out;
   }

@@ -1,7 +1,8 @@
 // Star Event Forward Test: summary tiles, results by stars, the event list with its High-check
-// status, and rejected triggers. A descriptive measurement, not a trade or a signal
+// status, each coin's Average Return and exchange listings (docs/adr/0007-exchange-listings.md),
+// and rejected triggers. A descriptive measurement, not a trade or a signal
 // (docs/forward-test.md). List state lives in the URL:
-//   /forward?view=tracking&stars=3&result=CONFIRMED&sort=return&dir=desc&q=btc&page=2
+//   /forward?view=tracking&stars=3&result=CONFIRMED&market=both&bithumb=listed&sort=return&dir=desc&q=btc&page=2
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { HBars } from '../../components/charts';
@@ -31,18 +32,25 @@ import { useApp } from '../../state/app';
 import StarSummary from './StarSummary';
 import UpdatePanel, { checksLine } from './UpdatePanel';
 import {
+  BithumbCell,
   CheckCell,
+  CoinAverageCell,
   FwdPeak,
   FwdReturn,
   FwdWindows,
+  LbankMarketsCell,
   NotesCell,
   SortHead,
   WindowCell,
 } from './cells';
 import {
+  AVERAGE_RETURN_EXPLAINED,
+  BITHUMB_FILTERS,
   CHECK,
   DAY0_EXPLAINED,
   FWD_STATUS,
+  LISTINGS_EXPLAINED,
+  MARKET_FILTERS,
   OVERLAP_EXPLAINED,
   RESULT_FILTERS,
   STATUS_FILTERS,
@@ -51,6 +59,7 @@ import {
 import type {
   CohortGroup,
   EventSort,
+  ExchangeListStatus,
   ForwardEventRow,
   ForwardEventsPage,
   ForwardRejection,
@@ -84,7 +93,48 @@ const EXPORT_FILES = [
 const isStars = (v: string) => STAR_FILTERS.some(([k]) => k === v);
 const statusFilter = (v: string) => STATUS_FILTERS.find(([k]) => k === v) ?? STATUS_FILTERS[0]!;
 const isResult = (v: string) => RESULT_FILTERS.some(([k]) => k === v);
+const isMarket = (v: string) => MARKET_FILTERS.some(([k]) => k === v);
+const isBithumb = (v: string) => BITHUMB_FILTERS.some(([k]) => k === v);
 const isSort = (v: string): v is EventSort => (SORTS as readonly string[]).includes(v);
+
+const LIST_STATE: Record<Exclude<ExchangeListStatus['status'], 'VERIFIED'>, string> = {
+  STALE: 'list too old, Unknown until it is fetched again',
+  INCOMPLETE: 'last fetch incomplete, Unknown',
+  FAILED: 'last fetch failed, Unknown',
+  NOT_FETCHED: 'not fetched yet, Unknown until the next hourly run',
+  UNSUPPORTED: 'not available from this data source, Unknown',
+};
+
+/** Which exchange lists the LBank and Bithumb columns come from, and how fresh each one is. */
+function ListsLine({ lists }: { lists: ExchangeListStatus[] }) {
+  return (
+    <p className="muted small fwd-lists">
+      {'Listings come from: '}
+      {lists.map((l, i) => {
+        const title = [
+          l.fetchedAt
+            ? `Fetched ${fmtTime(l.fetchedAt)} (${utc(l.fetchedAt)}), ${fmtInt(l.pairs)} pairs.`
+            : '',
+          l.staleAt ? `Counts until ${fmtTime(l.staleAt)}.` : '',
+          l.lastAttempt
+            ? `Last attempt ${fmtTime(l.lastAttempt.at)}: ${l.lastAttempt.status}${l.lastAttempt.error ? ` (${l.lastAttempt.error})` : ''}.`
+            : '',
+        ]
+          .filter(Boolean)
+          .join('\n');
+        return (
+          <span key={l.key} title={title || undefined}>
+            {i ? ' · ' : ''}
+            {l.status === 'VERIFIED'
+              ? `${l.label} list fetched ${fmtAgo(l.fetchedAt)}`
+              : `${l.label}: ${LIST_STATE[l.status]}`}
+          </span>
+        );
+      })}
+      {'.'}
+    </p>
+  );
+}
 
 const GROUP_COLS: Column<CohortGroup>[] = [
   { label: 'Group', render: (g) => <b>{g.group}</b> },
@@ -284,6 +334,12 @@ function HowToRead({ s }: { s: ForwardSummary | undefined }) {
             <b>Overlapping.</b> {OVERLAP_EXPLAINED}
           </li>
           <li>
+            <b>Average Return (coin).</b> {AVERAGE_RETURN_EXPLAINED}
+          </li>
+          <li>
+            <b>LBank Spot / Futures and Bithumb.</b> {LISTINGS_EXPLAINED}
+          </li>
+          <li>
             <b>At identification.</b> Stars, points and the 3d / 7d / 30d ratios are recorded when
             the coin is identified and never change. The coin page shows its current values.
           </li>
@@ -311,6 +367,8 @@ export default function Forward() {
     view: 'active',
     stars: '',
     result: '',
+    market: '',
+    bithumb: '',
     sort: 'detected',
     dir: 'desc',
     q: '',
@@ -319,6 +377,8 @@ export default function Forward() {
   const [statusKey, , statusApi] = statusFilter(query.view);
   const stars = isStars(query.stars) ? query.stars : '';
   const result = isResult(query.result) ? query.result : '';
+  const market = isMarket(query.market) ? query.market : '';
+  const bithumb = isBithumb(query.bithumb) ? query.bithumb : '';
   const sort: EventSort = isSort(query.sort) ? query.sort : 'detected';
   const dir = query.dir === 'asc' ? 'asc' : 'desc';
   const search = query.q.trim();
@@ -349,6 +409,8 @@ export default function Forward() {
     if (statusApi.status) q.set('status', statusApi.status);
     if (stars) q.set('stars', stars);
     if (result) q.set('result', result);
+    if (market) q.set('market', market);
+    if (bithumb) q.set('bithumb', bithumb);
     if (search) q.set('search', search);
     try {
       const [sum, ev, rej] = await Promise.all([
@@ -363,7 +425,7 @@ export default function Forward() {
         ev,
         rej,
         search,
-        filtered: statusKey !== 'active' || !!stars || !!result,
+        filtered: statusKey !== 'active' || !!stars || !!result || !!market || !!bithumb,
       });
       // Follow a check that is already running (the hourly run's, or one started elsewhere).
       if (sum.lastUpdate?.status === 'running') {
@@ -376,7 +438,7 @@ export default function Forward() {
       console.error(e);
       setError(e);
     }
-  }, [statusApi, statusKey, stars, result, sort, dir, search, page, setNavCount]);
+  }, [statusApi, statusKey, stars, result, market, bithumb, sort, dir, search, page, setNavCount]);
 
   useEffect(() => {
     void load();
@@ -455,6 +517,13 @@ export default function Forward() {
       },
       { label: 'Highest High', render: (r) => <FwdPeak r={r} /> },
       { label: head('return', 'Return'), num: true, render: (r) => <FwdReturn r={r} /> },
+      {
+        label: 'Average Return (coin)',
+        num: true,
+        title:
+          'Mean of the Returns of every stored event of this coin (CMC id), whatever the filters; events without a Return left out, ≥ while any is a lower bound. A peak return, not profit.',
+        render: (r) => <CoinAverageCell r={r} />,
+      },
       { label: 'Status', render: (r) => <Lab map={FWD_STATUS} k={r.status} /> },
       {
         label: 'High check',
@@ -475,6 +544,18 @@ export default function Forward() {
           </span>
         ),
         render: (r) => <FwdWindows r={r} />,
+      },
+      {
+        label: 'LBank',
+        title:
+          "Listed now in LBank's Spot and in LBank's Futures markets, each checked in its own list by CMC id; Unknown = that list is not verified",
+        render: (r) => <LbankMarketsCell r={r} />,
+      },
+      {
+        label: 'Bithumb',
+        title:
+          "Listed now in Bithumb's Spot markets (by CMC id); Unknown = the list is not verified",
+        render: (r) => <BithumbCell r={r} />,
       },
       { label: 'Notes', render: (r) => <NotesCell r={r} /> },
     ];
@@ -638,6 +719,35 @@ export default function Forward() {
             ))}
           </select>
         </label>
+        <label
+          className="select-field"
+          title="The coin's listing on LBank now: Spot, Futures or both"
+        >
+          <span>LBank</span>
+          <select
+            value={market}
+            onChange={(e) => setQuery({ market: e.target.value, page: null }, { push: true })}
+          >
+            {MARKET_FILTERS.map(([k, label]) => (
+              <option key={k} value={k}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="select-field" title="The coin's listing on Bithumb now">
+          <span>Bithumb</span>
+          <select
+            value={bithumb}
+            onChange={(e) => setQuery({ bithumb: e.target.value, page: null }, { push: true })}
+          >
+            {BITHUMB_FILTERS.map(([k, label]) => (
+              <option key={k} value={k}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
         <Seg
           label="Stars"
           attr="stars"
@@ -666,6 +776,7 @@ export default function Forward() {
           ) : null}
         </span>
       </div>
+      {s?.exchangeLists?.length ? <ListsLine lists={s.exchangeLists} /> : null}
       <div className="panel flush">
         <div className="table-wrap">
           {error ? (

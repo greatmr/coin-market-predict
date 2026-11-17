@@ -9,15 +9,112 @@ import { infoDialog } from '../../lib/feedback';
 import { fmtAgo, fmtDay, fmtMult, fmtPct, fmtPrice, fmtTime, tz, utc } from '../../lib/format';
 
 import {
+  BITHUMB_TEXT,
   CHECK,
   DAY0_EXPLAINED,
   DAY0_FLAGS,
   FWD_STATUS,
+  LISTED,
+  LISTING_REASON,
   OVERLAP_EXPLAINED,
   SORT_LABEL,
   flagText,
 } from './labels';
-import type { EventSort, ForwardEventRow, ForwardOverlaps, PassStatus } from './types';
+import type {
+  CoinAverageReturn,
+  EventSort,
+  ForwardEventRow,
+  ForwardOverlaps,
+  Listing,
+  PassStatus,
+} from './types';
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/**
+ * The coin's Average Return in words, e.g. "Average Return ≥ +12.3% over the 3 events with a
+ * Return (2 not final: a lower bound, not a final result)".
+ */
+export function coinAverageText(c: CoinAverageReturn): string {
+  if (c.averagePct === null) return 'no event has a Return yet, so there is no Average Return';
+  const lower = c.lowerBounds > 0;
+  return `Average Return ${lower ? '≥ ' : ''}${fmtPct(c.averagePct)} over the ${plural(c.withReturn, 'event')} with a Return${
+    lower ? ` (${c.lowerBounds} not final: a lower bound, not a final result)` : ' (all final)'
+  }`;
+}
+
+/**
+ * Average Return of the row's coin over all its stored events. Marked ≥ (like a so-far Return)
+ * while any Return in it is a lower bound; never called profit.
+ */
+export function CoinAverageCell({ r }: { r: ForwardEventRow }) {
+  const c = r.coinAverageReturn;
+  const lower = c.lowerBounds > 0;
+  const title = [
+    `${r.symbol} (CMC id ${r.cmcId}): ${coinAverageText(c)}, out of ${plural(c.events, 'stored event')} of any status and star count.`,
+    'Events without a Return are left out, never counted as 0 %.',
+    lower
+      ? `${c.lowerBounds} of the averaged Returns are so far or lower bounds (window open, final day pending or a day missing): the average can still rise.`
+      : '',
+    'A peak return (highest High after identification ÷ identification price − 1), not trading profit; the events of one coin follow one price path.',
+  ]
+    .filter(Boolean)
+    .join('\n');
+  return (
+    <div className="fwd-avg" title={title}>
+      {c.averagePct === null ? (
+        <span className="muted">—</span>
+      ) : (
+        <b className={lower ? 'fwd-ret provisional' : 'fwd-ret'}>
+          {`${lower ? '≥ ' : ''}${fmtPct(c.averagePct)}`}
+        </b>
+      )}
+      <span className="muted small">{`${c.withReturn} of ${plural(c.events, 'event')} with a Return`}</span>
+      {c.averagePct === null ? null : (
+        <span className={lower ? 'fwd-avg-note lower small' : 'fwd-avg-note small'}>
+          {lower ? `lower bound · ${c.lowerBounds} not final` : 'all final'}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** Hover text of one listing: the pairs and the list's fetch time, or why it is Unknown. */
+function listingTitle(label: string, l: Listing): string {
+  const when = l.listFetchedAt
+    ? ` (list fetched ${fmtTime(l.listFetchedAt)}, ${utc(l.listFetchedAt)})`
+    : '';
+  if (l.status === 'YES') return `${label}: listed as ${l.pairs.join(', ')}${when}.`;
+  if (l.status === 'NO') return `${label}: not in the list, matched by CMC id${when}.`;
+  return `${label}: Unknown, ${(l.reason && LISTING_REASON[l.reason]) || l.reason || 'not verified'}. Not verified, so not shown as No.`;
+}
+
+/** LBank Spot and Futures listing of the coin now, each from its own list. */
+export function LbankMarketsCell({ r }: { r: ForwardEventRow }) {
+  const rows: [string, Listing][] = [
+    ['Spot', r.exchanges.lbankSpot],
+    ['Futures', r.exchanges.lbankFutures],
+  ];
+  return (
+    <div className="fwd-avail">
+      {rows.map(([label, l]) => (
+        <span key={label} className="fwd-avail-row" title={listingTitle(`LBank ${label}`, l)}>
+          <span className="muted">{label}</span>
+          <b className={`fwd-listed ${LISTED[l.status][0]}`}>{LISTED[l.status][1]}</b>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+export function BithumbCell({ r }: { r: ForwardEventRow }) {
+  const b = r.exchanges.bithumb;
+  return (
+    <b className={`fwd-listed ${LISTED[b.status][0]}`} title={listingTitle('Bithumb', b)}>
+      {BITHUMB_TEXT[b.status]}
+    </b>
+  );
+}
 
 const day0Unconfirmed = (r: ForwardEventRow) => r.qualityFlags.some((f) => DAY0_FLAGS.has(f));
 
@@ -65,10 +162,14 @@ function OverlapList({ eventId }: { eventId: string }) {
       : x.relation === 'earlier'
         ? 'Identified earlier; its window was still open'
         : 'Identified later, inside this window';
+  const c = data.coin;
   return (
     <div className="fwd-explain">
       <p>
         {`This event: ${e.symbol} ${e.starCount}★, identified ${fmtTime(e.detectedAt)} at ${fmtPrice(e.referencePriceUsd)}, window to ${fmtTime(e.evaluationEnd)}.`}
+      </p>
+      <p className="fwd-coin-avg">
+        {`All ${plural(c.events, 'stored event')} of ${e.symbol} (CMC id ${c.cmcId}): ${coinAverageText(c)}. Events without a Return are left out, never counted as 0 %. The table below lists only the ${plural(data.overlaps.length, 'event')} whose windows overlap this one.`}
       </p>
       <p className="muted small">{OVERLAP_EXPLAINED}</p>
       {data.overlaps.length ? (

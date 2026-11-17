@@ -225,6 +225,16 @@ fetched and when it refreshes next.
   withheld until a refresh succeeds.
 - `npm run cli -- lbank:status` prints the stored list's age, next refresh and last attempt.
 
+**LBank Futures and Bithumb lists** ([ADR-0007](adr/0007-exchange-listings.md)). For the
+forward-test tab's *LBank Futures* and *Bithumb* listings, the hourly run also reads LBank's Futures
+markets (`?type=perpetual`, ~740 pairs) and Bithumb's Spot markets (~500 KRW / BTC pairs) from the
+same CMC exchange pages when the stored list is `EXCHANGE_LISTS_REFRESH_HOURS` (24) old, about 4
+requests. A failed fetch is retried after at most 6 hours; a list older than
+`EXCHANGE_LISTS_MAX_AGE_HOURS` (72) no longer counts, and its listings show *Unknown*. They are not
+Tier 1 inputs: refreshing them never rescans and never changes eligibility, stars, points or the
+queue. `npm run cli -- exchange-lists:status` shows all three lists; `exchange-lists:refresh` fetches
+the two new ones now.
+
 ## 5. Exports
 
 Each scanned batch is written to `var/exports/<provider>/<slot>Z_<batch>[_SYNTHETIC]/`:
@@ -248,8 +258,9 @@ the UTC day containing detection + 168 h. Rules, statuses, fields and gaps:
 
 - **Forward test** tab: results by stars (events, confirmed Highs, events awaiting a check, active
   returns so far apart from FINAL statistics), pass-pattern and points tables, the final-return
-  distribution, identification hours, the event list (filters by status, result and stars; sort by
-  Return, stars, points, identification time or a 3d / 7d / 30d ratio), rejected triggers, downloads
+  distribution, identification hours, the event list (filters by status, result, LBank market,
+  Bithumb and stars; sort by Return, stars, points, identification time or a 3d / 7d / 30d ratio),
+  rejected triggers, downloads
   (needs `exports:read`) and *Update Highs now* (needs `scan:operate`). *How to read the forward
   test* on the page defines every column.
 - **Return** is the peak return: the highest High confirmed after identification against the CMC
@@ -269,7 +280,18 @@ the UTC day containing detection + 168 h. Rules, statuses, fields and gaps:
 - A yellow **Day 0 High** is the identification day's High that CMC dates before identification
   (or without a time): it is shown but never counted in Return or any statistic. Click it, or the
   *day 0 unconfirmed* note, for the times. *N overlapping* lists the same coin's other events whose
-  windows overlap this one (this row not included).
+  windows overlap this one (this row not included); the dialog opens with the coin's Average Return.
+- **Average Return (coin)**: the mean of the Returns of *all* stored events of the coin (same CMC
+  id, any status and star count, whatever the filters), with "k of n events with a Return". Events
+  without a Return are left out, never counted as 0 %. `≥ x %` with *lower bound · n not final*
+  means some of those Returns are still so far: the average can rise and is not a final result;
+  *all final* means every one is FINAL. A peak return, not profit.
+- **LBank** (*Spot*, *Futures*) and **Bithumb**: whether the coin is listed now in LBank's Spot
+  markets, LBank's Futures (perpetual) markets and Bithumb's Spot markets, each from its own list on
+  CMC, by CMC id (section 4). *Unknown* means that list is not verified — not fetched yet, failed,
+  incomplete or too old — and is never shown as *No*. The line above the table says when each list
+  was fetched; filter with *LBank* (Spot and Futures, Spot only, Futures only, …, Unknown) and
+  *Bithumb* (listed, not listed, unknown).
 - Warnings: `FRESHNESS` / `UPDATE_FAILED` — the daily update has not run successfully; check the
   run's `forward` stage and the source health. `UPDATE_PARTIAL` — some Highs are not published
   yet; retried automatically. `INCOMPLETE_DAY0` — the signal day's High came before detection and no
@@ -292,6 +314,8 @@ the UTC day containing detection + 168 h. Rules, statuses, fields and gaps:
 | `tier1:batches`                                 | Recent crawl batches and scans                                                     |
 | `lbank:status`                                  | Stored LBank Spot markets list: fetched when, next automatic refresh, last attempt |
 | `lbank:refresh`                                 | Fetch the LBank list now, then recompute and re-export the latest batch            |
+| `exchange-lists:status`                         | LBank Spot, LBank Futures and Bithumb lists behind the forward-test listings       |
+| `exchange-lists:refresh`                        | Fetch the LBank Futures and Bithumb lists now (no rescan; not Tier 1 inputs)       |
 | `daily:import-csv --id CMC_ID --file F`         | Import a CMC "Download CSV" history file as completed daily rows                   |
 | `telegram:preview [--batch ID] [--fake]`        | Print the Telegram summary without sending                                         |
 | `source:reset --provider coinmarketcap_web`     | Clear a suspended source after fixing the cause                                    |

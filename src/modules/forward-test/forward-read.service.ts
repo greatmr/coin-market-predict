@@ -9,8 +9,27 @@ import { APP_CONFIG, type AppConfig } from '../../config/index.js';
 
 import { CrawlBatch } from '../ingestion/entities/crawl-batch.entity.js';
 import { Provider } from '../sources/entities/provider.entity.js';
+import {
+  type Availability,
+  type BithumbFilter,
+  EXCHANGE_LIST_KEYS,
+  type ExchangeListKey,
+  type ListView,
+  type MarketFilter,
+  availability,
+  bithumbFilterSql,
+  marketFilterSql,
+} from '../venues/exchange-lists.js';
+import { VenuesService } from '../venues/venues.service.js';
 
-import { type CohortGroup, type Stats, cohortReport, overlapMap } from './cohort.js';
+import {
+  type CohortGroup,
+  type CoinAverageReturn,
+  type Stats,
+  cohortReport,
+  coinAverageReturns,
+  overlapMap,
+} from './cohort.js';
 import { ForwardEvent } from './entities/forward-event.entity.js';
 import { ForwardHigh } from './entities/forward-high.entity.js';
 import { ForwardOutcome } from './entities/forward-outcome.entity.js';
@@ -31,6 +50,7 @@ import {
   type ForwardEventStatus,
   HORIZON_HOURS,
   type HighEligibility,
+  type PeakKind,
 } from './forward.constants.js';
 
 export type EventView = 'active' | 'final' | 'incomplete' | 'all';
@@ -68,6 +88,60 @@ export const DAY_DEFINITION =
 /** Exact decimal text (30 dp at most, as stored), never a float. */
 const s = (v: DValue | null | undefined) => (v === null || v === undefined ? null : forStorage(v));
 const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
+
+/** A coin's Average Return over all its stored events (cohort.ts `coinAverageReturns`). */
+export interface CoinAverageReturnJson {
+  /** Every stored event of the coin (CMC id), any status and star count. */
+  events: number;
+  /** Events with a numeric Return; the others are left out, never counted as 0 %. */
+  withReturn: number;
+  /** Of those, Returns shown as lower bounds (≥): when > 0 the average is a lower bound too. */
+  lowerBounds: number;
+  /** Arithmetic mean of those Returns in percent (exact decimal text); null when there is none. */
+  averagePct: string | null;
+}
+
+const coinAverageJson = (c: CoinAverageReturn | undefined): CoinAverageReturnJson => ({
+  events: c?.events ?? 0,
+  withReturn: c?.withReturn ?? 0,
+  lowerBounds: c?.lowerBounds ?? 0,
+  averagePct: s(c?.average),
+});
+
+/** Whether one exchange list has the coin now (ADR-0007): YES, NO, or UNKNOWN with the reason. */
+export interface ListingJson {
+  status: Availability['status'];
+  pairs: string[];
+  reason: string | null;
+  /** Fetch time of the list that answered (null when no list could). */
+  listFetchedAt: string | null;
+}
+
+const listingJson = (view: ListView, cmcId: number, symbol: string): ListingJson => {
+  const a = availability(view, cmcId, symbol);
+  return {
+    status: a.status,
+    pairs: [...a.pairs],
+    reason: a.reason,
+    listFetchedAt: view.status === 'VERIFIED' ? iso(view.fetchedAt) : null,
+  };
+};
+
+export const listStatusJson = (v: ListView) => ({
+  key: v.key,
+  label: v.label,
+  status: v.status,
+  fetchedAt: iso(v.fetchedAt),
+  staleAt: iso(v.staleAt),
+  pairs: v.pairs,
+  lastAttempt: v.lastAttempt
+    ? {
+        at: v.lastAttempt.at.toISOString(),
+        status: v.lastAttempt.status,
+        error: v.lastAttempt.error,
+      }
+    : null,
+});
 
 export interface ForwardEventRow {
   eventId: string;
@@ -133,6 +207,13 @@ export interface ForwardEventRow {
   } | null;
   assetEventCount: number;
   overlappingEventIds: string[];
+  /** Average Return of this event's coin over all its stored events (not only this page or view). */
+  coinAverageReturn: CoinAverageReturnJson;
+  /**
+   * The coin's listings now (latest lists, not at identification): LBank Spot, LBank Futures and
+   * Bithumb Spot, each from that exchange's own markets list, by CMC id (ADR-0007).
+   */
+  exchanges: Record<ExchangeListKey, ListingJson>;
   /** The latest High check of this event (NOT_CHECKED before the first one). */
   check: {
     status: ForwardCheckStatus | 'NOT_CHECKED';
@@ -217,6 +298,7 @@ export class ForwardReadService {
   constructor(
     @InjectDataSource() private readonly db: DataSource,
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
+    private readonly venues: VenuesService,
   ) {}
 
   get providerId() {
@@ -231,10 +313,15 @@ export class ForwardReadService {
     sort?: EventSortKey;
     dir?: 'asc' | 'desc';
     stars?: number;
+    /** LBank Spot / Futures listing of the coin now (exchange-lists.ts `matchesMarket`). */
+    market?: MarketFilter;
+    /** Bithumb listing of the coin now. */
+    bithumb?: BithumbFilter;
     search?: string;
     limit: number;
     offset: number;
   }): Promise<{ total: number; offset: number; rows: ForwardEventRow[] }> {
+    const lists = await this.venues.exchangeListViews(this.providerId);
     const qb = this.db
       .getRepository(ForwardEvent)
       .createQueryBuilder('e')
@@ -251,6 +338,14 @@ export class ForwardReadService {
         day0Flags: DAY0_UNCONFIRMED_FLAGS,
       });
     else if (q.result) qb.andWhere('e.last_check_status = :result', { result: q.result });
+    if (q.market) {
+      const m = marketFilterSql(q.market, lists.lbankSpot, lists.lbankFutures);
+      qb.andWhere(m.sql, m.params);
+    }
+    if (q.bithumb) {
+      const b = bithumbFilterSql(q.bithumb, lists.bithumb);
+      qb.andWhere(b.sql, b.params);
+    }
     const search = q.search?.trim();
     if (search) {
       const id = /^\d{1,10}$/.test(search) ? Number(search) : null;
@@ -273,7 +368,7 @@ export class ForwardReadService {
       .offset(q.offset)
       .limit(q.limit)
       .getManyAndCount();
-    return { total, offset: q.offset, rows: await this.rows(events) };
+    return { total, offset: q.offset, rows: await this.rows(events, lists) };
   }
 
   /** Every event of the provider (exports), oldest first. */
@@ -285,8 +380,34 @@ export class ForwardReadService {
     return this.rows(events);
   }
 
-  private async rows(events: ForwardEvent[], now = new Date()): Promise<ForwardEventRow[]> {
+  /** Every stored event of these coins with its latest Return, for overlaps and coin averages. */
+  private async coinEvents(cmcIds: readonly number[]) {
+    const rows = (await this.db.query(
+      `SELECT e.id AS "eventId", e.cmc_id AS "cmcId", e.detected_at AS "detectedAt",
+              e.evaluation_end AS "evaluationEnd", o.peak_kind AS "peakKind",
+              o.peak_return_pct::text AS "ret"
+         FROM forward_event e
+         LEFT JOIN forward_outcome o ON o.event_id = e.id AND o.result_version = e.result_version
+        WHERE e.provider_id = $1 AND e.cmc_id = ANY($2::int[])`,
+      [this.providerId, [...new Set(cmcIds)]],
+    )) as Array<{
+      eventId: string;
+      cmcId: number;
+      detectedAt: Date;
+      evaluationEnd: Date;
+      peakKind: PeakKind | null;
+      ret: string | null;
+    }>;
+    return rows.map((r) => ({ ...r, peakReturnPct: r.ret === null ? null : new D(r.ret) }));
+  }
+
+  private async rows(
+    events: ForwardEvent[],
+    lists?: Record<ExchangeListKey, ListView>,
+    now = new Date(),
+  ): Promise<ForwardEventRow[]> {
     if (!events.length) return [];
+    const views = lists ?? (await this.venues.exchangeListViews(this.providerId, now));
     const day0 = new Map(
       (
         (await this.db.query(
@@ -316,14 +437,10 @@ export class ForwardReadService {
           .getMany()
       ).map((o) => [o.eventId, o]),
     );
-    // Correlation markers need every event of the same assets, not just this page.
-    const siblings = await this.db.getRepository(ForwardEvent).find({
-      where: { providerId: this.providerId, cmcId: In([...new Set(events.map((e) => e.cmcId))]) },
-      select: { id: true, cmcId: true, detectedAt: true, evaluationEnd: true },
-    });
-    const overlaps = overlapMap(siblings.map((e) => ({ ...e, eventId: e.id })));
-    const perAsset = new Map<number, number>();
-    for (const e of siblings) perAsset.set(e.cmcId, (perAsset.get(e.cmcId) ?? 0) + 1);
+    // Correlation markers and coin averages need every event of the same assets, not just this page.
+    const siblings = await this.coinEvents(events.map((e) => e.cmcId));
+    const overlaps = overlapMap(siblings);
+    const coins = coinAverageReturns(siblings);
     return events.map((e) => {
       const o = outcomes.get(e.id);
       const d0 = day0.get(e.id);
@@ -372,8 +489,14 @@ export class ForwardReadService {
         lastUpdateAt: iso(e.lastUpdateAt),
         finalizedAt: iso(e.finalizedAt),
         outcome: o ? outcomeJson(o) : null,
-        assetEventCount: perAsset.get(e.cmcId) ?? 1,
+        assetEventCount: coins.get(e.cmcId)?.events ?? 1,
         overlappingEventIds: overlaps.get(e.id) ?? [],
+        coinAverageReturn: coinAverageJson(coins.get(e.cmcId)),
+        exchanges: {
+          lbankSpot: listingJson(views.lbankSpot, e.cmcId, e.symbol),
+          lbankFutures: listingJson(views.lbankFutures, e.cmcId, e.symbol),
+          bithumb: listingJson(views.bithumb, e.cmcId, e.symbol),
+        },
         check: {
           status: e.lastCheckStatus ?? 'NOT_CHECKED',
           lastCheckAt: iso(e.lastCheckAt),
@@ -447,8 +570,11 @@ export class ForwardReadService {
       evaluationEnd: x.evaluationEnd.toISOString(),
       status: x.status,
     });
+    // The coin's Average Return covers every stored event of the coin, overlapping or not.
+    const coin = coinAverageReturns(await this.coinEvents([e.cmcId])).get(e.cmcId);
     return {
       event: summary(e),
+      coin: { cmcId: e.cmcId, ...coinAverageJson(coin) },
       rule: 'Same CMC id, any star count, and windows from identification to the end of the window that share at least one moment. Each is its own event (one per coin, UTC day and star count), but they follow one price path, so they are correlated, not independent.',
       overlaps: others.map((x) => {
         const o = outcomes.get(x.id);
@@ -576,6 +702,7 @@ export class ForwardReadService {
   /** Operations, coverage, freshness warnings and the star-group comparison (PDF p.9, p.10). */
   async summary(now = new Date()) {
     const providerId = this.providerId;
+    const lists = await this.venues.exchangeListViews(providerId, now);
     const [provider, events, outcomes, watchlist, lastTrigger, triggers, lastUpdate, lastGood] =
       await Promise.all([
         this.db.getRepository(Provider).findOneBy({ id: providerId }),
@@ -724,6 +851,8 @@ export class ForwardReadService {
       /** By detection-time pass pattern and weighted-points band (weighted star ranking). */
       cohortByPattern: cohort.patterns.map(cohortGroupJson),
       cohortByPointsBand: cohort.pointsBands.map(cohortGroupJson),
+      /** The exchange lists behind each event's listings (ADR-0007): state and fetch time. */
+      exchangeLists: EXCHANGE_LIST_KEYS.map((k) => listStatusJson(lists[k])),
     };
   }
 

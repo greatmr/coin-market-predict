@@ -13,6 +13,46 @@ export type EventSort =
   'detected' | 'return' | 'stars' | 'points' | 'multiple3d' | 'multiple7d' | 'multiple30d';
 /** `result` of GET /api/forward/events. */
 export type ResultFilter = CheckStatus | 'CONFIRMED' | 'DAY0_UNCONFIRMED';
+/** `market` of GET /api/forward/events: the coin's LBank Spot / Futures listing now. */
+export type MarketFilter =
+  'both' | 'spot_only' | 'futures_only' | 'spot' | 'futures' | 'neither' | 'unknown';
+/** `bithumb` of GET /api/forward/events. */
+export type BithumbFilter = 'listed' | 'not_listed' | 'unknown';
+
+/** UNKNOWN: the list behind it is not verified (or a pair without a CMC id shares the ticker). */
+export type Listed = 'YES' | 'NO' | 'UNKNOWN';
+export type ExchangeListKey = 'lbankSpot' | 'lbankFutures' | 'bithumb';
+
+/** One exchange list's answer for a coin (docs/adr/0007-exchange-listings.md). */
+export interface Listing {
+  status: Listed;
+  pairs: string[];
+  /** LIST_NOT_FETCHED, LIST_FAILED, LIST_INCOMPLETE, LIST_STALE, LIST_UNSUPPORTED, UNMAPPED_PAIR_SAME_TICKER. */
+  reason: string | null;
+  listFetchedAt: Iso | null;
+}
+
+/** A coin's Average Return over all its stored events (not only the ones on screen). */
+export interface CoinAverageReturn {
+  events: number;
+  /** Events with a numeric Return; the others are left out, never counted as 0 %. */
+  withReturn: number;
+  /** Of those, Returns shown as lower bounds (≥): when > 0 the average is a lower bound too. */
+  lowerBounds: number;
+  /** Exact decimal text in percent; null when no event has a Return yet. */
+  averagePct: string | null;
+}
+
+/** GET /api/forward: the state of each exchange list behind the listings. */
+export interface ExchangeListStatus {
+  key: ExchangeListKey;
+  label: string;
+  status: 'VERIFIED' | 'STALE' | 'INCOMPLETE' | 'FAILED' | 'NOT_FETCHED' | 'UNSUPPORTED';
+  fetchedAt: Iso | null;
+  staleAt: Iso | null;
+  pairs: number;
+  lastAttempt: { at: Iso; status: string; error: string | null } | null;
+}
 
 export interface ForwardOutcome {
   resultVersion: number;
@@ -79,6 +119,10 @@ export interface ForwardEventRow {
   outcome: ForwardOutcome | null;
   assetEventCount: number;
   overlappingEventIds: string[];
+  /** Over every stored event of this coin (CMC id), whatever the filters or page. */
+  coinAverageReturn: CoinAverageReturn;
+  /** The coin's listings now (latest lists, not at identification). */
+  exchanges: Record<ExchangeListKey, Listing>;
   check: {
     status: CheckStatus;
     lastCheckAt: Iso | null;
@@ -108,6 +152,8 @@ export interface ForwardEventRow {
 /** GET /api/forward/events/:id/overlaps */
 export interface ForwardOverlaps {
   event: OverlapEvent;
+  /** Every stored event of the coin, not only the overlapping ones listed below. */
+  coin: CoinAverageReturn & { cmcId: number };
   rule: string;
   overlaps: (OverlapEvent & {
     relation: 'same_utc_day' | 'earlier' | 'later';
@@ -241,6 +287,7 @@ export interface ForwardSummary {
   cohort: CohortGroup[];
   cohortByPattern: CohortGroup[];
   cohortByPointsBand: CohortGroup[];
+  exchangeLists: ExchangeListStatus[];
 }
 
 /** GET /api/forward/rejections */

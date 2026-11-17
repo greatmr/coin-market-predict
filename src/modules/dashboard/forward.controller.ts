@@ -42,6 +42,8 @@ export class ForwardController {
       view: q.view,
       status: q.status,
       result: q.result,
+      market: q.market,
+      bithumb: q.bithumb,
       sort: q.sort,
       dir: q.dir,
       stars: q.stars,

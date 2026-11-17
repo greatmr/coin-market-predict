@@ -5,6 +5,7 @@ import type {
   CollectResult,
   DailyFetch,
   DiscoveryResult,
+  ExchangeMarketsSpec,
   MarketDataSource,
   ProviderInfo,
   Tier1Source,
@@ -103,6 +104,21 @@ export class FixtureTier1Source implements Tier1Source {
       responseSha256: [sha256(JSON.stringify(pairs))],
       retrievedAt: at,
       notes: ['SYNTHETIC LBank pairs (with explicit trading status)'],
+    };
+  }
+
+  async exchangePairs(spec: ExchangeMarketsSpec, at: Date): Promise<VenueFetch> {
+    const pairs = (await this.market()).exchangePairs(spec.exchange, spec.categories, at);
+    return {
+      pairs,
+      expectedCount: pairs.length,
+      complete: true,
+      requests: 0,
+      source: `fixture:exchange_pairs:${spec.exchange}`,
+      params: { exchange: spec.exchange, category: spec.categories.join(',') },
+      responseSha256: [sha256(JSON.stringify(pairs))],
+      retrievedAt: at,
+      notes: [`SYNTHETIC ${spec.exchange} ${spec.categories.join(' + ')} pairs`],
     };
   }
 

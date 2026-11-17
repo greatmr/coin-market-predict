@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { DailyMetricsModule } from '../daily-metrics/daily-metrics.module.js';
 import { StrategyModule } from '../strategy/index.js';
+import { VenuesModule } from '../venues/venues.module.js';
 
 import { ForwardEvent } from './entities/forward-event.entity.js';
 import { ForwardHigh } from './entities/forward-high.entity.js';
@@ -35,6 +36,8 @@ import { ForwardUpdateService } from './forward-update.service.js';
     ]),
     DailyMetricsModule,
     StrategyModule,
+    // Read-only: the exchange listings shown with events (ADR-0007).
+    VenuesModule,
   ],
   providers: [
     ForwardCaptureService,
