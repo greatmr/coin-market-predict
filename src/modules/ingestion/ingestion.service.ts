@@ -580,7 +580,7 @@ export class IngestionService {
     const drafts: SnapshotDraft[] = result.observations.map((o) =>
       validateObservation(o, {
         slotTime: slot,
-        collectedAt: now,
+        collectedAt: result.fetchedAt ?? now,
         staleAfterMinutes: this.cfg.MAX_QUOTE_AGE_MINUTES,
       }),
     );

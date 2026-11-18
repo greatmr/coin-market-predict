@@ -97,7 +97,7 @@ agreement details, Binance main terms, CoinCap free tier.
 ## Request volume (website collector)
 | Activity | Requests |
 |---|---|
-| Hourly listing | 1 per hour (~720/month) |
+| Hourly listing | 1 per hour (~720/month), plus up to 3 re-reads in an hour whose listing gives one rank to two coins (CMC's rank cache read mid-refresh: 4 of the first 191 live hours, 2026-11-10 to 2026-11-18) |
 | LBank Spot pairs | 2 requests per fetch (~900 pairs, overlapping pages), once every `LBANK_PAIRS_REFRESH_DAYS` (30) plus manual refreshes |
 | Daily rows | ~1 per screen candidate per UTC day (non-excluded coins, roughly 500–1,100), plus retries after `TIER1_DAILY_RETRY_HOURS` for coins whose latest day was not yet published |
 | Venue rows | ≤ `TIER1_VENUE_MAX_ASSETS_PER_RUN` per run, each candidate at most every `TIER1_VENUE_REFRESH_HOURS` |

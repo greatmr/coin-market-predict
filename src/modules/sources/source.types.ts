@@ -101,6 +101,11 @@ export interface CollectResult {
   universeSize: number | null;
   notes: string[];
   quoteCurrency: 'USD';
+  /**
+   * When the returned listing was received, if it is a re-read made later in the collection: the
+   * observations' crawl time, so the batch's as-of time never precedes its data.
+   */
+  fetchedAt?: Date;
 }
 
 export interface CollectOptions {

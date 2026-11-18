@@ -1,5 +1,6 @@
 import { redact } from '../../../common/security/redact.js';
 import { DAY_MS, parseIsoDate } from '../../../common/utils/dates.js';
+import { HOUR_MS, sleep as realSleep } from '../../../common/utils/time.js';
 
 import { LBANK } from '../../strategy/index.js';
 import type { VenuePair } from '../../strategy/index.js';
@@ -39,6 +40,39 @@ const EXCHANGE_PAGE_OVERLAP = 50;
 const COIN_PAIRS_LIMIT = 100;
 const MAX_EXCHANGE_PAGES = 10;
 
+/**
+ * CMC's listing sometimes carries ranks from two refreshes of its rank cache at once: two coins
+ * share a rank and another rank goes unused (2026-11-11 06:07 and 12:07, 2026-11-18 07:07 and
+ * 15:07 UTC), so the batch is INCOMPLETE (A12) and the Review Queue withheld. Such a read is
+ * repeated after a pause, before anything is stored: snapshots are first-write-wins, so a later run
+ * for the slot could not replace it.
+ */
+export const RANK_REREAD_ATTEMPTS = 3;
+export const RANK_REREAD_DELAY_MS = 60_000;
+
+export interface RankRereadOptions {
+  attempts?: number;
+  delayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => Date;
+}
+
+/** Rank values given to more than one coin in one listing read; CMC ranks are unique when consistent. */
+export function sharedRanks(observations: ReadonlyArray<{ rank?: number | null }>): number[] {
+  const counts = new Map<number, number>();
+  for (const o of observations)
+    if (o.rank != null) counts.set(o.rank, (counts.get(o.rank) ?? 0) + 1);
+  return [...counts]
+    .filter(([, n]) => n > 1)
+    .map(([rank]) => rank)
+    .sort((a, b) => a - b);
+}
+
+function rankList(ranks: number[], max = 8): string {
+  const shown = ranks.slice(0, max).join(', ');
+  return ranks.length > max ? `${shown} … +${ranks.length - max} more` : shown;
+}
+
 /** One exchange market: CMC's market id when present, never the pair name alone (tickers can repeat). */
 function pairKey(p: VenuePair): string {
   return p.marketId
@@ -56,10 +90,13 @@ export class CoinMarketCapWebSource implements MarketDataSource {
     private readonly client: CmcWebClient,
     private readonly discoveryMaxPages = 50,
     private readonly pageSize = WEB_LISTING_PAGE_SIZE,
+    private readonly reread: RankRereadOptions = {},
   ) {}
 
-  private async sweep(maxPages: number) {
+  /** `fresh` bypasses the client's response cache, which would return the same read again. */
+  private async sweep(maxPages: number, fresh = false) {
     const before = this.client.requestsMade;
+    let fetchedAt: Date | null = null;
     const assets = new Map<string, ReturnType<typeof parseWebListing>['assets'][number]>();
     const observations = new Map<
       string,
@@ -77,16 +114,21 @@ export class CoinMarketCapWebSource implements MarketDataSource {
     while (pages < maxPages) {
       let page: ReturnType<typeof parseWebListing>;
       try {
-        const r = await this.client.get(WEB_LISTING, {
-          start,
-          limit: this.pageSize,
-          convertId: 2781,
-          sortBy: 'market_cap',
-          sortType: 'desc',
-          cryptoType: 'all',
-          tagType: 'all',
-          audited: 'false',
-        });
+        const r = await this.client.get(
+          WEB_LISTING,
+          {
+            start,
+            limit: this.pageSize,
+            convertId: 2781,
+            sortBy: 'market_cap',
+            sortType: 'desc',
+            cryptoType: 'all',
+            tagType: 'all',
+            audited: 'false',
+          },
+          { fresh },
+        );
+        fetchedAt ??= r.retrievedAt;
         page = parseWebListing(r.body);
       } catch (err) {
         if (pages === 0) throw err;
@@ -128,6 +170,7 @@ export class CoinMarketCapWebSource implements MarketDataSource {
       complete,
       notes,
       requests: this.client.requestsMade - before,
+      fetchedAt,
     };
   }
 
@@ -146,19 +189,62 @@ export class CoinMarketCapWebSource implements MarketDataSource {
   }
 
   async collect(opts: CollectOptions): Promise<CollectResult> {
+    const before = this.client.requestsMade;
     const cached = this.discoveryPage;
     this.discoveryPage = null;
     const reuse =
       cached && Date.now() - cached.at < 60_000 && opts.maxPages === this.discoveryMaxPages;
-    const s = reuse ? { ...cached.data, requests: 0 } : await this.sweep(opts.maxPages);
+    let s = reuse ? { ...cached.data, requests: 0 } : await this.sweep(opts.maxPages);
+    let pages = s.pages;
+    let reread = false;
+    const notes: string[] = [];
+    const attempts = this.reread.attempts ?? RANK_REREAD_ATTEMPTS;
+    const delayMs = this.reread.delayMs ?? RANK_REREAD_DELAY_MS;
+    const now = this.reread.now ?? (() => new Date());
+    const sleep = this.reread.sleep ?? realSleep;
+    const slotEnd = opts.slot.getTime() + HOUR_MS;
+    for (let read = 1; ; read++) {
+      const shared = sharedRanks(s.observations);
+      if (!shared.length) {
+        if (reread) notes.push(`listing read ${read}: ranks unique, this read is stored`);
+        break;
+      }
+      const torn = `listing read ${read}: CMC gave ${shared.length} rank(s) to more than one coin (${rankList(shared)})`;
+      if (read > attempts) {
+        notes.push(`${torn}; no re-read left, this read is stored`);
+        break;
+      }
+      if (now().getTime() + delayMs >= slotEnd) {
+        notes.push(`${torn}; no time left in the slot to read again`);
+        break;
+      }
+      notes.push(`${torn}; reading again in ${delayMs / 1000}s`);
+      await sleep(delayMs);
+      try {
+        const next = await this.sweep(opts.maxPages, true);
+        if (s.complete && !next.complete) {
+          notes.push(`listing read ${read + 1} was partial; read ${read} is stored`);
+          break;
+        }
+        s = next;
+        pages += next.pages;
+        reread = true;
+      } catch (err) {
+        notes.push(
+          `listing read ${read + 1} failed (${redact(err).slice(0, 200)}); read ${read} is stored`,
+        );
+        break;
+      }
+    }
     return {
       observations: s.observations,
       complete: s.complete,
       universeSize: s.total,
-      pagesFetched: s.pages,
-      requestsUsed: s.requests,
-      notes: s.notes,
+      pagesFetched: pages,
+      requestsUsed: this.client.requestsMade - before,
+      notes: [...notes, ...s.notes],
       quoteCurrency: 'USD',
+      ...(reread && s.fetchedAt ? { fetchedAt: s.fetchedAt } : {}),
     };
   }
 }

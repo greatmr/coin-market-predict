@@ -25,7 +25,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-PROD_SSH="${PROD_SSH:-jahantalab}"
+PROD_SSH="${PROD_SSH:-root@65.109.178.236}"
 PROD_DIR="${PROD_DIR:-/root/jahan/market-predict}"
 YES=0
 DOWNLOAD_ONLY=0

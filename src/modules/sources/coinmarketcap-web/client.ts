@@ -83,8 +83,13 @@ export class CmcWebClient {
     return this.http.requestsMade;
   }
 
-  get(endpoint: string, rawParams: Record<string, string | number> = {}): Promise<CmcWebResponse> {
-    const run = this.queue.then(() => this.request(endpoint, rawParams));
+  /** `fresh` skips the response cache (a deliberate re-read); the new response is still cached. */
+  get(
+    endpoint: string,
+    rawParams: Record<string, string | number> = {},
+    opts: { fresh?: boolean } = {},
+  ): Promise<CmcWebResponse> {
+    const run = this.queue.then(() => this.request(endpoint, rawParams, opts.fresh ?? false));
     this.queue = run.catch(() => undefined);
     return run;
   }
@@ -92,6 +97,7 @@ export class CmcWebClient {
   private async request(
     endpoint: string,
     rawParams: Record<string, string | number>,
+    fresh: boolean,
   ): Promise<CmcWebResponse> {
     if (!ROUTES.has(endpoint)) throw new Error('Unsupported CMC website endpoint');
     const params = Object.fromEntries(Object.entries(rawParams).map(([k, v]) => [k, String(v)]));
@@ -100,7 +106,7 @@ export class CmcWebClient {
     const cached = this.cache.get(url);
     let text: string;
     let retrievedAt = this.now();
-    if (cached && this.now().getTime() - cached.at.getTime() < this.cacheMs) {
+    if (!fresh && cached && this.now().getTime() - cached.at.getTime() < this.cacheMs) {
       text = cached.text;
       retrievedAt = cached.at;
     } else {

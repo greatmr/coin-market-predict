@@ -14,7 +14,14 @@ import {
   WEB_LISTING,
   webResponseStatus,
 } from './client.js';
-import { CmcWebTier1Source, CoinMarketCapWebSource } from './coinmarketcap-web.adapter.js';
+import {
+  CmcWebTier1Source,
+  CoinMarketCapWebSource,
+  RANK_REREAD_ATTEMPTS,
+  RANK_REREAD_DELAY_MS,
+  WEB_LISTING_PAGE_SIZE,
+  sharedRanks,
+} from './coinmarketcap-web.adapter.js';
 import { stopsCrawl } from './errors.js';
 import { parseVenuePairs, parseWebDaily, parseWebListing, websiteData } from './parse.js';
 
@@ -395,5 +402,104 @@ describe('website transport and coverage', () => {
     expect(r.observations).toHaveLength(3);
     expect(r.complete).toBe(false);
     expect(r.notes.join(' ')).toMatch(/stopped on page 2/);
+  });
+});
+
+describe('CMC website listing with ranks from two rank-cache refreshes (A12)', () => {
+  /** The 3-coin listing fixture (CMC20, BTC, ETH) with the given `cmcRank`s, fully listed. */
+  const listing = (ranks: Array<number | null>) => {
+    const b = JSON.parse(fixture('cmc-web-listing.json'));
+    b.data.totalCount = '3';
+    (b.data.cryptoCurrencyList as Array<{ cmcRank: number | null }>).forEach((c, i) => {
+      c.cmcRank = ranks[i] ?? null;
+    });
+    return JSON.stringify(b);
+  };
+  const TORN = listing([2, 1, 2]);
+  const CLEAN = listing([3, 1, 2]);
+
+  function source(
+    reads: string[],
+    opts: { now?: Date; fail?: number; cacheMs?: number } = {},
+  ): { c: ReturnType<typeof client>; src: CoinMarketCapWebSource; slept: number[] } {
+    const c = client(
+      (_url, call) =>
+        call >= (opts.fail ?? Number.POSITIVE_INFINITY)
+          ? new Response('upstream error', { status: 500 })
+          : new Response(reads[Math.min(call, reads.length - 1)]),
+      opts.cacheMs ?? 0,
+    );
+    const slept: number[] = [];
+    const src = new CoinMarketCapWebSource(c.web, 50, WEB_LISTING_PAGE_SIZE, {
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+      now: () => opts.now ?? NOW,
+    });
+    return { c, src, slept };
+  }
+
+  it('finds rank values given to more than one coin, ignoring missing ranks', () => {
+    expect(sharedRanks([{ rank: 306 }, { rank: 304 }, { rank: 306 }, { rank: null }, {}])).toEqual([
+      306,
+    ]);
+    expect(sharedRanks([{ rank: 1 }, { rank: 3 }])).toEqual([]);
+  });
+
+  it('reads again, bypassing the response cache, and stores the first read with unique ranks', async () => {
+    const { c, src, slept } = source([TORN, CLEAN], { cacheMs: 60_000 });
+    const r = await src.collect({ slot: NOW, maxPages: 3 });
+    expect(slept).toEqual([RANK_REREAD_DELAY_MS]);
+    expect(c.urls).toHaveLength(2);
+    expect(r.observations.map((o) => o.rank).sort()).toEqual([1, 2, 3]);
+    expect(r.complete).toBe(true);
+    expect(r.requestsUsed).toBe(2);
+    expect(r.pagesFetched).toBe(2);
+    // Crawl time of the stored read, not of the first request: no look-ahead from the batch as-of.
+    expect(r.fetchedAt?.getTime()).toBe(c.times[1]);
+    expect(r.fetchedAt!.getTime()).toBeGreaterThan(c.times[0]!);
+    expect(r.notes.join(' | ')).toMatch(
+      /read 1: CMC gave 1 rank\(s\) to more than one coin \(2\); reading again in 60s \| listing read 2: ranks unique/,
+    );
+  });
+
+  it('makes no extra request and keeps the run clock when the ranks are unique', async () => {
+    const { c, src, slept } = source([CLEAN]);
+    const r = await src.collect({ slot: NOW, maxPages: 3 });
+    expect(slept).toEqual([]);
+    expect(c.urls).toHaveLength(1);
+    expect(r.fetchedAt).toBeUndefined();
+    expect(r.notes).toEqual([]);
+  });
+
+  it('is bounded: after every re-read still shares a rank, the last read is stored and flagged', async () => {
+    const { c, src, slept } = source([TORN]);
+    const r = await src.collect({ slot: NOW, maxPages: 3 });
+    expect(slept).toHaveLength(RANK_REREAD_ATTEMPTS);
+    expect(c.urls).toHaveLength(RANK_REREAD_ATTEMPTS + 1);
+    expect(sharedRanks(r.observations)).toEqual([2]);
+    expect(r.fetchedAt?.getTime()).toBe(c.times[RANK_REREAD_ATTEMPTS]);
+    expect(r.notes.join(' ')).toMatch(
+      new RegExp(`read ${RANK_REREAD_ATTEMPTS + 1}: .*no re-read left, this read is stored`),
+    );
+  });
+
+  it('keeps the first read when the re-read fails, so a re-read never loses the hour', async () => {
+    const { src } = source([TORN], { fail: 1 });
+    const r = await src.collect({ slot: NOW, maxPages: 3 });
+    expect(r.observations).toHaveLength(3);
+    expect(r.complete).toBe(true);
+    expect(sharedRanks(r.observations)).toEqual([2]);
+    expect(r.fetchedAt).toBeUndefined();
+    expect(r.notes.join(' ')).toMatch(/listing read 2 failed .*read 1 is stored/);
+  });
+
+  it('never reads again past the end of the slot', async () => {
+    const lateInSlot = new Date(NOW.getTime() + 3_600_000 - RANK_REREAD_DELAY_MS / 2);
+    const { c, src, slept } = source([TORN, CLEAN], { now: lateInSlot });
+    const r = await src.collect({ slot: NOW, maxPages: 3 });
+    expect(slept).toEqual([]);
+    expect(c.urls).toHaveLength(1);
+    expect(r.notes.join(' ')).toMatch(/no time left in the slot/);
   });
 });
