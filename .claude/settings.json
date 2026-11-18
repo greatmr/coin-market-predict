@@ -5,7 +5,11 @@
       "Bash(npx tsc *)",
       "Bash(npx vitest *)",
       "Bash(npx prettier *)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "mcp__coins-predicts__list_batches",
+      "mcp__coins-predicts__get_run_status",
+      "mcp__coins-predicts__get_coverage",
+      "Bash(docker compose *)"
     ],
     "deny": [
       "Read(./.env)",
