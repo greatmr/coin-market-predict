@@ -27,7 +27,11 @@ import { CrawlBatch } from '../src/modules/ingestion/entities/crawl-batch.entity
 import { IngestionService } from '../src/modules/ingestion/ingestion.service.js';
 import { PipelineService } from '../src/modules/pipeline/pipeline.service.js';
 import { ScanResult } from '../src/modules/scan/entities/scan-result.entity.js';
-import type { DailySourceRow } from '../src/modules/sources/source.types.js';
+import type {
+  DailySourceRow,
+  HourlyFetch,
+  Tier1Source,
+} from '../src/modules/sources/source.types.js';
 import { type PassStatus, type VenuePair, rankingScore } from '../src/modules/strategy/index.js';
 import {
   VenueCrawl,
@@ -593,6 +597,146 @@ describe('daily High update — PDF p.5–7, p.11', () => {
     await ctx.db.query(`UPDATE forward_event SET status = 'TRACKING' WHERE id = $1`, [eventId]);
     const e = await ctx.repo(ForwardEvent).findOneByOrFail({ id: eventId });
     expect([e.status, e.snapshotPriceUsd.toFixed()]).toEqual(['TRACKING', '4']);
+  });
+});
+
+describe('signal day from CMC hourly Highs (gap U1, rules star-forward-2)', () => {
+  /** 24 synthetic hourly candles of 10 Nov: High 12 at hh:30 unless overridden ([high, time_high]). */
+  function hours(over: Record<number, [string, string]>): HourlyFetch {
+    const candles = Array.from({ length: 24 }, (_, h) => {
+      const hh = String(h).padStart(2, '0');
+      const start = t(`2026-11-10T${hh}:00:00.000Z`);
+      const [high, time] = over[h] ?? ['12', `2026-11-10T${hh}:30:00.000Z`];
+      return {
+        periodStart: start,
+        periodEnd: new Date(start.getTime() + 3_600_000 - 1),
+        high,
+        timeHigh: t(time),
+        invalidReasons: [],
+      };
+    });
+    return {
+      candles,
+      source: 'fixture:hourly',
+      params: { synthetic: 'true' },
+      responseSha256: null,
+      retrievedAt: t('2026-11-11T00:20:00.000Z'),
+    };
+  }
+  /** The day's High 20 at 09:00 (before detection 14:07); the detection hour's 15.5 at 14:03, too. */
+  const SIGNAL_DAY = hours({
+    9: ['20', '2026-11-10T09:00:00.000Z'],
+    14: ['15.5', '2026-11-10T14:03:00.000Z'],
+    18: ['16', '2026-11-10T18:41:00.000Z'],
+  });
+  const week = (id: number) => [
+    day(id, '2026-11-10', '20', '2026-11-10T09:00:00.000Z'),
+    ...['11', '12', '13', '14', '15', '16', '17'].map((dd) =>
+      day(id, `2026-11-${dd}`, '13', `2026-11-${dd}T03:00:00.000Z`),
+    ),
+  ];
+
+  it('fetches one capture per coin and signal date, settles day 0 with it, and asks no more once it matches', async () => {
+    const id = 781;
+    const eventId = (await sight(row(id, 2, '10', '2026-11-10T14:07:00.000Z'))).created[0]!.eventId;
+    await sight(row(id, 3, '10.5', '2026-11-10T15:07:00.000Z')); // same coin and date, 3★
+    await store(week(id));
+    const svc = updater() as unknown as { tier1: Tier1Source | null };
+    const real = svc.tier1;
+    const hourlyHistory = vi.fn(async () => SIGNAL_DAY);
+    svc.tier1 = { ...real!, providerId: P, hourlyHistory };
+    try {
+      const r = await updater().update(P, {
+        now: t('2026-11-18T00:30:00.000Z'),
+        trigger: 'manual',
+      });
+      expect(hourlyHistory).toHaveBeenCalledTimes(1);
+      expect(hourlyHistory.mock.calls[0]).toEqual([{ cmcId: id }, '2026-11-10', expect.any(Date)]);
+      expect(r.day0Hourly).toMatchObject({ needed: 1, requested: 1, stored: 1, failed: 0 });
+      // Hours 15–23 are observed (16 at 18:41); the detection hour's 15.5 came at 14:03, before
+      // detection, but 16 ≥ 15.5 settles those minutes: exact, FINAL.
+      const o = await latestOutcome(eventId);
+      expect([o.status, o.peakKind, o.peakHighUsd?.toFixed(), o.peakAt?.toISOString()]).toEqual([
+        'FINAL',
+        'EXACT',
+        '16',
+        '2026-11-10T18:41:00.000Z',
+      ]);
+      expect([o.peakReturnPct?.toFixed(), o.day0State, o.reasons, o.revisionReason]).toEqual([
+        '60',
+        'SHORTCUT',
+        ['DAY0_HOURLY'],
+        'first',
+      ]);
+      const rows = await ctx.repo(ForwardHigh).find({
+        where: { eventId, dateUtc: '2026-11-10' },
+        order: { id: 'ASC' },
+      });
+      expect(
+        rows.map((h) => [
+          h.eligibility,
+          h.highUsd?.toFixed(),
+          h.sourceRevisionId === null,
+          h.day0CaptureId === null,
+          h.reason,
+        ]),
+      ).toEqual([
+        ['DAY0_UNPROVEN', '20', false, true, 'time_high_before_detection'],
+        ['DAY0_HOURLY', '16', true, false, null],
+        ['DAY0_UNPROVEN', '15.5', true, false, 'detection_hour_high_before_detection'],
+      ]);
+      expect(rows[2]!.periodEnd.toISOString()).toBe('2026-11-10T14:59:59.999Z');
+      // The dashboard shows the tighter bound: the detection hour's High, not the whole day's.
+      const shown = (await ctx.app.get(ForwardReadService).event(eventId))!;
+      expect([shown.event.day0?.highUsd, shown.event.day0?.reason]).toEqual([
+        '15.5',
+        'detection_hour_high_before_detection',
+      ]);
+
+      // A matching capture is not asked for again; a rerun changes nothing.
+      const again = await updater().update(P, {
+        now: t('2026-11-18T06:00:00.000Z'),
+        trigger: 'manual',
+      });
+      expect(hourlyHistory).toHaveBeenCalledTimes(1);
+      expect([again.day0Hourly, again.outcomes.versions, again.highs.inserted]).toEqual([
+        null,
+        0,
+        0,
+      ]);
+    } finally {
+      svc.tier1 = real;
+    }
+  });
+
+  it('a revised daily High that the capture no longer matches drops the hourly rows (bound again)', async () => {
+    const id = 782;
+    const eventId = (await sight(row(id, 2, '10', '2026-11-10T14:07:00.000Z'))).created[0]!.eventId;
+    await store(week(id));
+    expect(await updater().storeDay0Capture(P, id, '2026-11-10', SIGNAL_DAY)).toBe(true);
+    expect(await updater().storeDay0Capture(P, id, '2026-11-10', SIGNAL_DAY)).toBe(false); // same response
+    await update('2026-11-18T00:30:00.000Z');
+    expect((await latestOutcome(eventId)).status).toBe('FINAL');
+
+    // CMC revises 10 Nov to a High of 21: the stored hours top out at 20, so they are not used.
+    await store([day(id, '2026-11-10', '21', '2026-11-10T09:30:00.000Z')]);
+    await update('2026-11-18T06:00:00.000Z');
+    const e = await ctx.repo(ForwardEvent).findOneByOrFail({ id: eventId });
+    const o = await latestOutcome(eventId);
+    expect([
+      e.status,
+      e.qualityFlags,
+      o.peakKind,
+      o.peakHighUsd?.toFixed(),
+      o.revisionReason,
+    ]).toEqual(['INCOMPLETE', ['INCOMPLETE_DAY0'], 'LOWER_BOUND', '13', 'source_revision']);
+    const hourly = await ctx
+      .repo(ForwardHigh)
+      .find({ where: { eventId, source: 'fixture:hourly' } });
+    expect(hourly.map((h) => [h.isCurrent, !!h.supersededAt])).toEqual([
+      [false, true],
+      [false, true],
+    ]);
   });
 });
 

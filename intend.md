@@ -110,6 +110,9 @@ filters. Descriptive attributes: no Tier 1 rule, star or point reads them.
 5. **Storage retention.** Default `RETENTION_DETAIL_DAYS=30`: afterwards, coins outside the Tier 1
    band keep one snapshot per UTC day and scan rows excluded only by rank/cap keep one batch per
    UTC day. Set `0` to keep all hourly detail.
-6. **Intraday High for the signal day.** No verified source gives a post-detection intraday High;
-   such events stay `INCOMPLETE_DAY0` (lower bound) unless CMC's `timeHigh` or a later High settles
-   them. Adding a source needs a source assessment (`docs/forward-test.md` § 14).
+6. **Intraday High for the signal day.** Decided 2026-11-18 (rules `star-forward-2`): the signal
+   day after detection is measured with the same CMC history route's hourly OHLC (`interval=1h`,
+   assessed in `docs/source-feasibility.md`; used only when its hours match the daily High). Still
+   open: the minutes between detection and the end of its hour when that hour's High came first —
+   no sub-hourly source with true Highs is verified (`15m` is coarser, `5m` not served), so such
+   events stay `INCOMPLETE_DAY0` (lower bound) unless a later High settles them.

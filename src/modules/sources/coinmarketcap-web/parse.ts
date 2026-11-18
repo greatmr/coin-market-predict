@@ -2,7 +2,12 @@ import { isoDate } from '../../../common/utils/dates.js';
 
 import type { VenuePair } from '../../strategy/index.js';
 import { cmcCategories } from '../coinmarketcap/coinmarketcap.adapter.js';
-import type { DailySourceRow, RawObservation, SourceAsset } from '../source.types.js';
+import type {
+  DailySourceRow,
+  HourlySourceCandle,
+  RawObservation,
+  SourceAsset,
+} from '../source.types.js';
 
 import { CmcApiError } from './errors.js';
 
@@ -212,6 +217,55 @@ export function parseWebDaily(
   return {
     rows: [...rows.values()].sort((a, b) => a.dateUtc.localeCompare(b.dateUtc)),
     incompleteSkipped,
+    duplicates,
+  };
+}
+
+const HOUR_MS = 3_600_000;
+
+/**
+ * Website hourly history (`interval=1h`) for one UTC date: closed hours only, USD quote only, exact
+ * source digits. The route returns up to 400 hours ending at `timeEnd`, so hours of other dates are
+ * dropped; an hour that is not one whole clock hour is kept but marked invalid.
+ */
+export function parseWebHourly(
+  body: unknown,
+  expectedId: number,
+  dateUtc: string,
+  now: Date,
+): { candles: HourlySourceCandle[]; duplicates: number } {
+  const d = websiteData(body);
+  if (posInt(d.id) !== expectedId || !Array.isArray(d.quotes))
+    return invalid('historical response id or quotes missing');
+  const dayStart = Date.parse(`${dateUtc}T00:00:00.000Z`);
+  if (!Number.isFinite(dayStart)) return invalid(`invalid date ${dateUtc}`);
+  const hours = new Map<number, HourlySourceCandle>();
+  let duplicates = 0;
+  for (const q of d.quotes) {
+    if (!object(q)) continue;
+    const open = date(q.timeOpen);
+    const close = date(q.timeClose);
+    if (!open || open.getTime() < dayStart || open.getTime() >= dayStart + 86_400_000) continue;
+    if (!close || close >= now) continue;
+    const usd = object(q.quote) && ['2781', 'USD'].includes(String(q.quote.name)) ? q.quote : null;
+    const reasons: string[] = [];
+    if (!usd) reasons.push('quote_not_usd');
+    if (open.getTime() % HOUR_MS !== 0 || close.getTime() !== open.getTime() + HOUR_MS - 1)
+      reasons.push('period_not_one_hour');
+    if (hours.has(open.getTime())) {
+      duplicates++;
+      continue;
+    }
+    hours.set(open.getTime(), {
+      periodStart: open,
+      periodEnd: close,
+      high: usd ? exact(usd.high) : null,
+      timeHigh: date(q.timeHigh),
+      invalidReasons: reasons,
+    });
+  }
+  return {
+    candles: [...hours.values()].sort((a, b) => a.periodStart.getTime() - b.periodStart.getTime()),
     duplicates,
   };
 }

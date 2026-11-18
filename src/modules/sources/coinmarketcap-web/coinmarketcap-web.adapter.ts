@@ -10,6 +10,7 @@ import type {
   DailyFetch,
   DiscoveryResult,
   ExchangeMarketsSpec,
+  HourlyFetch,
   MarketDataSource,
   Tier1Source,
   VenueFetch,
@@ -24,7 +25,7 @@ import {
   WEB_LISTING,
 } from './client.js';
 import { CmcApiError } from './errors.js';
-import { parseVenuePairs, parseWebDaily, parseWebListing } from './parse.js';
+import { parseVenuePairs, parseWebDaily, parseWebHourly, parseWebListing } from './parse.js';
 
 /**
  * Default page size. Verified 2026-11-03: limit=10000 returned all 8,041 listed coins in one
@@ -283,6 +284,31 @@ export class CmcWebTier1Source implements Tier1Source {
       incompleteSkipped: parsed.incompleteSkipped,
       outOfRange: parsed.rows.length - rows.length,
       source: `cmc_web:${WEB_HISTORY}`,
+      params: r.params,
+      responseSha256: r.sha256,
+      retrievedAt: r.retrievedAt,
+    };
+  }
+
+  /**
+   * One UTC date of hourly OHLC from the same history route (`interval=1h`, assessed 2026-11-18:
+   * every hour carries CMC's `timeHigh`, and the largest hourly High of a day equals that day's
+   * daily High). One request per coin and date; the route returns up to 400 hours ending at
+   * `timeEnd`, the other dates are dropped.
+   */
+  async hourlyHistory(asset: { cmcId: number }, dateUtc: string, now: Date): Promise<HourlyFetch> {
+    const start = parseIsoDate(dateUtc);
+    const params = {
+      id: asset.cmcId,
+      convertId: 2781,
+      timeStart: seconds(start),
+      timeEnd: seconds(new Date(start.getTime() + DAY_MS)) - 1,
+      interval: '1h',
+    };
+    const r = await this.client.get(WEB_HISTORY, params);
+    return {
+      candles: parseWebHourly(r.body, asset.cmcId, dateUtc, now).candles,
+      source: `cmc_web:${WEB_HISTORY}?interval=1h`,
       params: r.params,
       responseSha256: r.sha256,
       retrievedAt: r.retrievedAt,

@@ -185,7 +185,7 @@ describe('MCP server', () => {
 
     // Forward test: the run's published queue became OPEN events (read-only views of them).
     const fwd = await reader.callTool({ name: 'get_forward_test_summary', arguments: {} });
-    expect(JSON.stringify(fwd.structuredContent)).toMatch(/"rulesVersion":"star-forward-1"/);
+    expect(JSON.stringify(fwd.structuredContent)).toMatch(/"rulesVersion":"star-forward-2"/);
     const events = await reader.callTool({
       name: 'get_forward_events',
       arguments: { view: 'active', limit: 3 },

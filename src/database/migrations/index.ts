@@ -10,6 +10,7 @@ import { M009WeightedStarRanking1793923200009 } from './1793923200009-M009Weight
 import { M010AgentAnalysis1793923200010 } from './1793923200010-M010AgentAnalysis.js';
 import { M011ForwardCheckStatus1793923200011 } from './1793923200011-M011ForwardCheckStatus.js';
 import { M012ExchangeListings1793923200012 } from './1793923200012-M012ExchangeListings.js';
+import { M013ForwardDay0Hourly1793923200013 } from './1793923200013-M013ForwardDay0Hourly.js';
 
 /**
  * Every migration, in order, listed explicitly (no glob, so TypeScript tests and compiled ESM load
@@ -29,4 +30,5 @@ export const MIGRATIONS = [
   M010AgentAnalysis1793923200010,
   M011ForwardCheckStatus1793923200011,
   M012ExchangeListings1793923200012,
+  M013ForwardDay0Hourly1793923200013,
 ];

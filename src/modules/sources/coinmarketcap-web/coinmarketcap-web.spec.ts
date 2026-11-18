@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { readFixture } from '../../../common/testing/fixtures.js';
-import { parseExactJson } from '../../../common/utils/decimal.js';
+import { D, parseExactJson } from '../../../common/utils/decimal.js';
 
 import { PoliteHttpClient, SourceUnavailableError } from '../http/polite-client.js';
 import { InMemorySourceHealthStore } from '../http/source-health.js';
@@ -23,7 +23,13 @@ import {
   sharedRanks,
 } from './coinmarketcap-web.adapter.js';
 import { stopsCrawl } from './errors.js';
-import { parseVenuePairs, parseWebDaily, parseWebListing, websiteData } from './parse.js';
+import {
+  parseVenuePairs,
+  parseWebDaily,
+  parseWebHourly,
+  parseWebListing,
+  websiteData,
+} from './parse.js';
 
 /** Trimmed real public CMC responses (listing/history 2026-11-03, market pairs 2026-11-05). */
 const fixture = readFixture;
@@ -501,5 +507,60 @@ describe('CMC website listing with ranks from two rank-cache refreshes (A12)', (
     expect(slept).toEqual([]);
     expect(c.urls).toHaveLength(1);
     expect(r.notes.join(' ')).toMatch(/no time left in the slot/);
+  });
+});
+
+describe('CMC website hourly history (forward-test signal day, gap U1)', () => {
+  const AFTER_DAY = new Date('2026-11-18T00:00:00Z');
+
+  it("keeps the requested UTC date's 24 closed hours with exact digits and CMC's time of each High", () => {
+    // Trimmed real response (JCT, CMC 38909, 9–10 Nov 2026); the route returns other dates too.
+    const r = parseWebHourly(json('cmc-web-history-1h.json'), 38909, '2026-11-10', AFTER_DAY);
+    expect(r.candles).toHaveLength(24);
+    expect([
+      r.candles[0]!.periodStart.toISOString(),
+      r.candles[23]!.periodEnd.toISOString(),
+    ]).toEqual(['2026-11-10T00:00:00.000Z', '2026-11-10T23:59:59.999Z']);
+    expect(r.candles.every((c) => c.invalidReasons.length === 0 && c.timeHigh && c.high)).toBe(
+      true,
+    );
+    // Its largest hourly High is the stored daily High of that day (0.0108326663 at 01:02 UTC).
+    const top = r.candles.reduce((m, c) => (new D(c.high!).gt(new D(m.high!)) ? c : m));
+    expect([top.high, top.timeHigh?.toISOString()]).toEqual([
+      '0.0108326663',
+      '2026-11-10T01:02:00.000Z',
+    ]);
+  });
+
+  it('drops hours not yet closed and rejects a response for another id', () => {
+    const open = parseWebHourly(
+      json('cmc-web-history-1h.json'),
+      38909,
+      '2026-11-10',
+      new Date('2026-11-10T12:30:00Z'),
+    );
+    expect(open.candles.map((c) => c.periodStart.toISOString().slice(11, 16)).at(-1)).toBe('11:00');
+    expect(() =>
+      parseWebHourly(json('cmc-web-history-1h.json'), 1, '2026-11-10', AFTER_DAY),
+    ).toThrow(/id or quotes missing/);
+  });
+
+  it('asks the existing history route for interval=1h over one UTC date', async () => {
+    const c = client(() => new Response(fixture('cmc-web-history-1h.json')));
+    const r = await new CmcWebTier1Source(c.web).hourlyHistory(
+      { cmcId: 38909 },
+      '2026-11-10',
+      AFTER_DAY,
+    );
+    const u = c.urls[0]!;
+    expect(u.pathname).toBe(WEB_HISTORY);
+    expect(Object.fromEntries(u.searchParams)).toMatchObject({
+      id: '38909',
+      convertId: '2781',
+      interval: '1h',
+      timeStart: String(Date.parse('2026-11-10T00:00:00Z') / 1000),
+      timeEnd: String(Date.parse('2026-11-11T00:00:00Z') / 1000 - 1),
+    });
+    expect([r.candles.length, r.source]).toEqual([24, `cmc_web:${WEB_HISTORY}?interval=1h`]);
   });
 });

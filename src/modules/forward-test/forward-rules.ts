@@ -210,11 +210,126 @@ export function classifyHigh(w: EventWindow, r: DailyHighInput): ClassifiedHigh 
   );
 }
 
+// ── Signal day from hourly Highs (gap U1, docs/forward-test.md § 6) ──────────────────────────
+
+const HOUR_MS = 3_600_000;
+
+/** One clock hour of the same asset's CMC USD hourly OHLC, from a stored signal-day capture. */
+export interface HourlyHighInput {
+  periodStart: Date;
+  periodEnd: Date;
+  high: DValue | null;
+  timeHigh: Date | null;
+  invalidReasons: readonly string[];
+}
+
+/** A signal-day High measured from hourly data, with the clock hour it came from. */
+export interface HourlyHigh {
+  high: DValue;
+  /** CMC's time of the High when it lies inside its hour, else null. */
+  timeHigh: Date | null;
+  hourStart: Date;
+  hourEnd: Date;
+}
+
+export type Day0Hourly =
+  | {
+      usable: true;
+      /**
+       * The largest High proven after detection: every hour that starts at or after detected_at,
+       * and the detection hour when CMC dates its High at or after detected_at. Null only when the
+       * detection hour is the date's last hour and its High came first.
+       */
+      post: HourlyHigh | null;
+      /**
+       * The detection hour when its High came before detection: that High bounds the minutes from
+       * detected_at to the end of the hour, which no captured data observes. Null when every
+       * post-detection minute is covered.
+       */
+      unobserved: HourlyHigh | null;
+    }
+  | { usable: false; reason: string };
+
+/**
+ * Why a capture cannot stand for the signal date's hours, or null when it can: all 24 clock hours
+ * present and valid, and their largest High equal to the daily row's High — the same CMC series at
+ * a finer grain (a coarser or revised series would disagree and is not used).
+ */
+export function hourlyCaptureProblem(
+  dateUtc: IsoDate,
+  candles: readonly HourlyHighInput[],
+  dailyHigh: DValue | null,
+): string | null {
+  const dayStart = parseIsoDate(dateUtc).getTime();
+  const byStart = new Map(candles.map((c) => [c.periodStart.getTime(), c]));
+  let max: DValue | null = null;
+  for (let t = dayStart; t < dayStart + DAY_MS; t += HOUR_MS) {
+    const c = byStart.get(t);
+    const hour = new Date(t).toISOString().slice(11, 16);
+    if (!c) return `hour_missing:${hour}`;
+    if (c.invalidReasons.length) return `hour_invalid:${hour}:${c.invalidReasons[0]}`;
+    if (c.periodEnd.getTime() !== t + HOUR_MS - 1)
+      return `hour_invalid:${hour}:period_not_one_hour`;
+    if (!c.high || !c.high.isFinite() || c.high.lte(0)) return `hour_invalid:${hour}:high`;
+    if (!max || c.high.gt(max)) max = c.high;
+  }
+  if (!dailyHigh || !max!.eq(dailyHigh)) return 'hourly_max_differs_from_daily_high';
+  return null;
+}
+
+/**
+ * The signal day's post-detection High from the same asset's CMC hourly OHLC. Hours wholly after
+ * detection count as they are; the detection hour counts when CMC dates its High at or after
+ * detection (F4), otherwise its High only bounds the minutes after detection. Ties go to the
+ * earliest hour. Usable only when `hourlyCaptureProblem` finds nothing.
+ */
+export function day0FromHourly(
+  w: EventWindow,
+  candles: readonly HourlyHighInput[],
+  dailyHigh: DValue | null,
+): Day0Hourly {
+  const problem = hourlyCaptureProblem(w.detectedUtcDate, candles, dailyHigh);
+  if (problem) return { usable: false, reason: problem };
+  const det = w.detectedAt.getTime();
+  let post: HourlyHigh | null = null;
+  let unobserved: HourlyHigh | null = null;
+  const dayStart = parseIsoDate(w.detectedUtcDate).getTime();
+  const hours = [...candles]
+    .filter(
+      (c) => c.periodStart.getTime() >= dayStart && c.periodStart.getTime() < dayStart + DAY_MS,
+    )
+    .sort((a, b) => a.periodStart.getTime() - b.periodStart.getTime());
+  for (const c of hours) {
+    if (c.periodEnd.getTime() < det) continue;
+    const timeHigh =
+      c.timeHigh && c.timeHigh >= c.periodStart && c.timeHigh <= c.periodEnd ? c.timeHigh : null;
+    const h: HourlyHigh = {
+      high: c.high!,
+      timeHigh,
+      hourStart: c.periodStart,
+      hourEnd: c.periodEnd,
+    };
+    if (c.periodStart.getTime() >= det || (timeHigh && timeHigh.getTime() >= det)) {
+      if (!post || h.high.gt(post.high)) post = h;
+    } else unobserved = h;
+  }
+  return { usable: true, post, unobserved };
+}
+
 // ── Outcome and status (p.6–8) ───────────────────────────────────────────────────────────────
 
 export interface OutcomeHigh extends ClassifiedHigh {
   /** forward_high row id (lineage), when stored. */
   id?: number | null;
+}
+
+/**
+ * The signal day measured from a usable hourly capture (see `day0FromHourly`), as stored High rows:
+ * `post` counts like any eligible High; `unobserved` replaces the daily High as day 0's bound.
+ */
+export interface Day0HourlyHighs {
+  post: OutcomeHigh | null;
+  unobserved: OutcomeHigh | null;
 }
 
 /** PENDING: the signal day is not complete yet; SHORTCUT: resolved by a later High ≥ its full-day High. */
@@ -252,14 +367,17 @@ export interface ForwardOutcome {
 }
 
 /**
- * The outcome of one event at `now` from its current High rows (at most one per date). The maximum
- * counts only eligible Highs; ties go to the earliest. FINAL needs the whole window to have passed
- * and every included day covered, the final day included — never just elapsed dates (p.7).
+ * The outcome of one event at `now` from its current daily High rows (at most one per date) and,
+ * when the signal day's daily High is unproven, its hourly measurement. The maximum counts only
+ * eligible Highs; ties go to the earliest. FINAL needs the whole window to have passed and every
+ * included day covered, the final day included — never just elapsed dates (p.7).
  */
 export function evaluateOutcome(input: {
   window: EventWindow;
   price: DValue;
   highs: readonly OutcomeHigh[];
+  /** The signal day from a usable hourly capture; used only while the daily day-0 High is unproven. */
+  day0Hourly?: Day0HourlyHighs | null;
   now: Date;
 }): ForwardOutcome {
   const { window: w, price, now } = input;
@@ -274,11 +392,17 @@ export function evaluateOutcome(input: {
   const missingDates: IsoDate[] = [];
   const invalidDates: string[] = [];
   let day0Bound: DValue | null = null;
+  let hourlyUsed = false;
   for (const d of completed) {
     const h = byDate.get(d);
     if (!h) missingDates.push(d);
     else if (h.eligibility === 'INVALID') invalidDates.push(`${d}:${h.reason ?? 'invalid'}`);
-    else if (h.eligibility === 'DAY0_UNPROVEN') day0Bound = h.high;
+    else if (h.eligibility === 'DAY0_UNPROVEN' && input.day0Hourly) {
+      // Hours after detection are observed; only the detection hour's High can still bound day 0.
+      hourlyUsed = true;
+      if (input.day0Hourly.post) exact.push(input.day0Hourly.post);
+      day0Bound = input.day0Hourly.unobserved?.high ?? null;
+    } else if (h.eligibility === 'DAY0_UNPROVEN') day0Bound = h.high;
     else exact.push(h);
   }
   let checkedThrough: IsoDate | null = null;
@@ -293,8 +417,9 @@ export function evaluateOutcome(input: {
     null,
   );
 
-  // The unknown post-signal part of day 0 is at most its full-day High, so a later High at least as
-  // large settles the maximum exactly (p.6). On equality the earliest time cannot be known.
+  // The unknown post-signal part of day 0 is at most its full-day High (or, measured hourly, the
+  // detection hour's High), so a later High at least as large settles the maximum exactly (p.6).
+  // On equality the earliest time cannot be known.
   let day0: Day0State;
   let tie = false;
   const day0Row = byDate.get(w.detectedUtcDate);
@@ -328,6 +453,7 @@ export function evaluateOutcome(input: {
   if (day0Gap) reasons.push(windowClosed ? R.incompleteDay0 : R.day0Unresolved);
   if (onlyFinalDayLate) reasons.push(R.finalDayPending);
   if (tie) reasons.push(R.peakTieUnobservedDay0);
+  if (hourlyUsed) reasons.push(R.day0Hourly);
 
   let extensionPeakFlag: ExtensionFlag | null = null;
   if (best) {
@@ -362,7 +488,9 @@ export function evaluateOutcome(input: {
     day0,
     expectedDays: w.dates.length,
     completedDays: completed.length,
-    coveredDays: exact.length + (day0 === 'SHORTCUT' ? 1 : 0),
+    coveredDays:
+      new Set(exact.map((h) => h.dateUtc)).size +
+      (day0 === 'SHORTCUT' && !exact.some((h) => h.dateUtc === w.detectedUtcDate) ? 1 : 0),
     checkedThrough,
     missingDates,
     invalidDates,

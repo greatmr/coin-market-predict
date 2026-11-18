@@ -18,15 +18,29 @@ source that supplies everything Tier 1 of the Two-Tier VMC strategy needs:
 | LBank Spot pairs mapped by CMC base-asset id (the Markets section of `coinmarketcap.com/exchanges/lbank/?type=spot`) | `v3/exchange/market-pairs/latest?slug=lbank&category=spot`, pages of 500; fetched once, then every 30 days or on demand |
 | Asset venue rows (Upbit-dominant / single-venue flags) | `v3/cryptocurrency/market-pairs/latest`, top 100 spot pairs, review candidates only |
 | *Not a Tier 1 input:* LBank Futures and Bithumb listings on the forward-test tab ([ADR-0007](adr/0007-exchange-listings.md)) | the same exchange route, `slug=lbank&category=perpetual` + `category=futures` and `slug=bithumb&category=spot` (verified 2026-11-17: 737 perpetuals, 0 dated futures, 497 Bithumb pairs, every pair with its CMC id); every `EXCHANGE_LISTS_REFRESH_HOURS` (24) |
+| *Not a Tier 1 input:* the forward test's signal-day hourly Highs ([forward-test.md § 6](forward-test.md)) | the same history route, `interval=1h`, one request per coin and signal date whose daily High came before detection and was not reached later |
 
 The daily history route also returns, per completed day, the OHLC High with its documented time
 (`timeHigh`, `timeLow`, minute resolution); since M008 they are stored for the
-[Star Event Forward Test](forward-test.md), which uses no other route (tracked coins that left the
-screen get the same daily-history request).
+[Star Event Forward Test](forward-test.md) (tracked coins that left the screen get the same
+daily-history request).
+
+**Hourly history (assessed 2026-11-18 for gap U1).** The same route and parameters with
+`interval=1h` return hourly candles (`timeOpen` hh:00, `timeClose` hh:59:59.999, OHLC in USD with
+`timeHigh` / `timeLow` at minute resolution). One request returns up to 400 hours ending at
+`timeEnd` (10 Nov was still served on 18 Nov; history reaches back at least to 25 Oct). On the 32
+coins of the first 37 `INCOMPLETE_DAY0` events, the largest of each date's 24 hourly Highs equalled
+the stored daily High exactly, and its `timeHigh` the daily one to the minute: the same series at a
+finer grain. `interval=15m` is also served (400 quarters, about 4 days per request), but its Highs
+are *lower* than the hourly High in most hours (by up to 0.85 %), never higher — a coarser series,
+not used. `interval=5m` answers `error_code 500` ("The system is busy"). Cost: about one request per
+affected coin and signal date (the first update after deployment: about 290 for the open events),
+within the shared rate limit, budget reserve and circuit breaker. Same access posture as the daily
+route (operator-selected website collector, no supported API contract; Requirement 1).
 
 What none of these routes supply: an LBank **trading status** (open / suspended / delisted), the
-date a pair was listed, or **intraday OHLC** (a true High after a given time of day) — so a
-forward-test event whose signal-day High came before detection can stay `INCOMPLETE_DAY0`
+date a pair was listed, or a **sub-hourly** High with its time — so a forward-test event whose
+detection hour's High came before detection, and was not reached later, can stay `INCOMPLETE_DAY0`
 (forward-test.md § 14, U1). By operator decision D1 a pair in CMC's LBank Spot markets list counts
 as tradable (a reviewer can mark it not tradable); `LBANK_REQUIRE_MANUAL_VERIFICATION=true`
 instead requires a human check of every listed pair (strategy document, A7, D1, D2).
@@ -100,6 +114,7 @@ agreement details, Binance main terms, CoinCap free tier.
 | Hourly listing | 1 per hour (~720/month), plus up to 3 re-reads in an hour whose listing gives one rank to two coins (CMC's rank cache read mid-refresh: 4 of the first 191 live hours, 2026-11-10 to 2026-11-18) |
 | LBank Spot pairs | 2 requests per fetch (~900 pairs, overlapping pages), once every `LBANK_PAIRS_REFRESH_DAYS` (30) plus manual refreshes |
 | Daily rows | ~1 per screen candidate per UTC day (non-excluded coins, roughly 500–1,100), plus retries after `TIER1_DAILY_RETRY_HOURS` for coins whose latest day was not yet published |
+| Signal-day hourly Highs (forward test) | ~1 per coin and signal date whose daily High came before detection and was not reached later (a share of each day's new events), retried within `MISSING_DATA_RETRY_DAYS` only while no capture matches |
 | Venue rows | ≤ `TIER1_VENUE_MAX_ASSETS_PER_RUN` per run, each candidate at most every `TIER1_VENUE_REFRESH_HOURS` |
 | LBank Futures + Bithumb lists | ~4 per refresh (perpetual: 2 pages, futures: 1, Bithumb: 1), every `EXCHANGE_LISTS_REFRESH_HOURS` (24) plus `exchange-lists:refresh`; a failed attempt is retried after at most 6 h; skipped when the request reserve is reached |
 

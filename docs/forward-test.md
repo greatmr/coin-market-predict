@@ -116,8 +116,8 @@ boundary.
 (`/data-api/v3.1/cryptocurrency/historical?interval=1d`, USD), already stored per completed UTC
 day as `daily_metric_revision.high_usd` with every revision. It is requested by CMC id and the
 parser rejects a response for another id, so a High always belongs to the event's own asset.
-Every `forward_high` row keeps its source, source revision id, quote currency (USD) and
-retrieval time.
+Every `forward_high` row keeps its source, source revision id (or, for the signal day's hourly
+rows, its hourly capture), quote currency (USD) and retrieval time.
 
 **Targeted capture added (the smallest that the rules need):**
 1. CMC publishes the documented time of each day's High and Low (`timeHigh`, `timeLow`, minute
@@ -128,13 +128,20 @@ retrieval time.
    daily update (same budget, rate limit, retry and circuit rules, at most 10 minutes per update;
    the rest continues at the retry). Screen candidates already get their rows from the `daily`
    stage, so in practice few extra requests are made.
+3. **Signal-day hourly Highs** (rules `star-forward-2`, 2026-11-18; gap U1). When a signal day's
+   daily High came before detection (or has no time) and no later daily High has reached it, the
+   update requests the same history route with `interval=1h` for that coin and date, once per coin
+   and signal date (`forward_day0_capture`, immutable, the hours as received). See "Signal day from
+   hourly Highs" below.
 
 **Never used as a High:** Close, the hourly listing price (a sampled last price), chart points,
-or an LBank Spot High (a different series without a captured LBank reference price).
+15-minute candles (their Highs top out below the hourly and daily Highs: a coarser series, see
+[source feasibility](source-feasibility.md)), or an LBank Spot High (a different series without a
+captured LBank reference price).
 
 | Included period | Covered by | Counts when | Otherwise |
 |---|---|---|---|
-| Signal day (day 0) | that UTC day's High | its `time_high` ≥ `detected_at` (DAY0_POST_SIGNAL), or detection exactly at 00:00:00.000 (a full day) | `DAY0_UNPROVEN`: the full-day High is only an upper bound of the unknown post-signal part. If a later day's High is ≥ it, the peak is exact (shortcut); else `INCOMPLETE_DAY0` with the later maximum as a lower bound |
+| Signal day (day 0) | that UTC day's High | its `time_high` ≥ `detected_at` (DAY0_POST_SIGNAL), or detection exactly at 00:00:00.000 (a full day) | `DAY0_UNPROVEN`: the full-day High is only an upper bound of the unknown post-signal part. With a usable hourly capture, the hours after detection count (`DAY0_HOURLY`) and only the detection hour's earlier High stays a bound. If a later High is ≥ the bound, the peak is exact (shortcut); else `INCOMPLETE_DAY0` with the later maximum as a lower bound |
 | Days 1–6 | that day's High | finite > 0, USD, exactly one UTC day | `HIGH_MISSING:<date>` / `HIGH_INVALID:<date>:<reason>`, never filled |
 | Final day (date of `deadline_168h`) | that day's High | same; includes the end-of-day extension | still missing after the window: `AWAITING_FINAL_DAY` (late final day) |
 | After `evaluation_end`, before `detected_at` | — | never | excluded |
@@ -148,6 +155,29 @@ the live data (BERA, CMC 24647, 14 Nov): `time_high` 05:07 UTC is after both ide
 05:05 UTC (0.13638 USD, 99.6 % of the 0.13699 High) is consistent with it. The 10 Nov 2★ event
 (19:48 UTC) had a day-0 High at 15:04 UTC, before identification: `DAY0_UNPROVEN`, later settled
 by the higher 14 Nov High (`SHORTCUT`).
+
+### Signal day from hourly Highs (`star-forward-2`)
+
+A detection usually follows the move that caused it, so the signal day's High often comes before
+detection (on 10 Nov, 37 of the first 58 closed events). Daily data cannot say what happened after
+detection on that day; CMC's hourly OHLC of the same series can:
+
+- **Usable capture.** All 24 clock hours of the date present and valid (USD, one whole hour each),
+  and their largest High *equal* to the stored daily High: the same series at a finer grain. A
+  capture that no longer matches (e.g. after a daily revision) is not used; the next update asks
+  again, within the same retry horizon as missing daily rows.
+- **Hours that start at or after `detected_at`** count as they are (`forward_high` row
+  `DAY0_HOURLY`, period `detected_at` … end of the day, `time_high` = CMC's time of that hour's
+  High). The **detection hour** counts when CMC dates its High at or after `detected_at` (F4).
+- Otherwise the detection hour's High is the only bound left: a `DAY0_UNPROVEN` row for the
+  minutes from `detected_at` to the end of that hour (reason `detection_hour_high_before_detection`).
+  A later High ≥ it settles the peak exactly (shortcut, `PEAK_TIE_UNOBSERVED_DAY0` on equality);
+  else the event stays `INCOMPLETE_DAY0`, with a much tighter bound than the whole day's High.
+- The outcome carries the informational reason `DAY0_HOURLY`; the daily row stays stored as it was.
+
+Measured on the first 37 `INCOMPLETE_DAY0` events (10 Nov): the hourly series matched the daily High
+on all 32 coins, to the minute of `timeHigh`; 32 events became exact (FINAL), 5 keep a bound inside
+their detection hour.
 
 The peak is the largest eligible High; ties go to the earliest. Its time is the source's
 `time_high` (`SOURCE_TIME`) or, if unknown, only its UTC day (`UTC_DAY`); with `UTC_DAY` on the final
@@ -371,9 +401,19 @@ before the deployment are not backfilled (p.12).
 
 **Daily check**: `forward:status` (or the tab). `FRESHNESS` / `UPDATE_FAILED`: look at the run's
 `forward` stage and the source health (*Runs & health*); outcomes stay as they were until it runs.
-`UPDATE_PARTIAL`: Highs not published yet are retried automatically. `INCOMPLETE_DAY0`: expected
-without an intraday source (U1); those peaks are lower bounds and stay out of the primary
-aggregates.
+`UPDATE_PARTIAL`: Highs not published yet (or signal-day hourly captures still due) are retried
+automatically. `INCOMPLETE_DAY0`: the detection hour's High came before detection and no later
+High reached it (or no usable hourly capture could be had, U1); those peaks are lower bounds and
+stay out of the primary aggregates.
+
+**Rules `star-forward-2`** (M013, 2026-11-18): the first update after deployment requests the
+hourly captures that open and recently closed events need (one per coin and signal date, within the
+10-minute fetch bound and the request reserve; the rest at the retry) and writes a new outcome
+version for every event it evaluates (`revision_reason` `day0_hourly`, or `rules_version` when only
+the rules label changed). Rollback: M013 adds a table, a nullable column and an enum value, which
+older code tolerates once the hourly rows are no longer current — run
+`UPDATE forward_high SET is_current = false, superseded_at = now() WHERE day0_capture_id IS NOT NULL AND is_current`
+before starting the previous image; never `db:revert` on real data.
 
 **Rollback**: M008 only adds tables and two nullable columns, which older code ignores; check out
 the previous commit and rebuild. M011 adds four nullable tracking columns to `forward_event`
@@ -398,12 +438,14 @@ columns; older code ignores them. Do not run `db:revert` on real data.
 | F12 | Statuses change at each daily update, not hourly; the tab shows when it last ran | "Check future highs once per day" (p.2) |
 | F13 | The ranking fields are copied from the published scan row like every other scanner field; events detected before `weighted_star_v1` keep NULL (never back-filled) | Ranking addendum § 5: features known at detection, never rewritten |
 | F14 | Weighted-points bands are equal-width and fixed in advance (75–100, 50–74, 25–49, 0–24); only complete scores are banded | The addendum names "weighted score bands" without boundaries; fixed bands keep the later evaluation of the weights out of sample |
+| F15 | The signal day after detection may be measured from the same coin's CMC USD hourly OHLC, used only when its 24 hours' largest High equals the daily High; hours starting at or after `detected_at` count, the detection hour by `time_high` (F4) | Operator decision 2026-11-18 (U1); same series and same time rule as the daily High, so no new kind of evidence |
+| F16 | One hourly capture per coin and signal date, requested only while the daily High is unproven and not yet reached by a later daily High, within `MISSING_DATA_RETRY_DAYS` | The smallest capture that settles day 0; bounded requests |
 
 ## 14. Unresolved upstream data gaps
 
 | Id | Gap | Effect | What would close it |
 |---|---|---|---|
-| U1 | No verified CMC route returns intraday OHLC (a true post-detection High) for the signal day | Day 0 is settled only by CMC's `timeHigh` or the shortcut; otherwise `INCOMPLETE_DAY0` with a lower bound. How often depends on how often a coin's daily High comes before the detection hour and is never exceeded later (synthetic demo: 10 of 1,047 events; not a live estimate) | An intraday High source, after a [source assessment](../.claude/skills/source-assessment/SKILL.md) and an operator decision; it would add `forward_high` rows for the partial day |
+| U1 | *Narrowed 2026-11-18 (`star-forward-2`).* The history route's `interval=1h` gives hourly OHLC with CMC's `timeHigh`, consistent with the daily High ([assessment](source-feasibility.md)); the signal day is now settled hourly (§ 6). What remains: the minutes between detection and the end of its hour when that hour's High came first, and dates whose hourly capture is unavailable or does not match the daily High | `INCOMPLETE_DAY0` only for that remainder (first live measurement: 5 of 37 events, against 37 of 37 before); `5m` is not served and `15m` Highs are coarser, so no finer source closes it | A source with true sub-hourly Highs and times, after a source assessment |
 | U2 | `time_high` exists only for daily rows stored after M008 | None for events (no backfill); a source change of `timeHigh` alone is not stored as a revision (F11) | — |
 | U3 | No LBank reference price or LBank High is captured | The metric is CMC-only by design (p.5) | A separately captured LBank reference with its own label |
 | U4 | The existing listing parser carries the price as a JavaScript number before storage | CMC publishes it as a JSON number, so its shortest representation is stored; source text beyond that is not kept | Keep the exact listing text in the crawler (not needed for this metric) |

@@ -5,6 +5,7 @@ import { UserSession } from '../modules/auth/entities/user-session.entity.js';
 import { DailyFetchState } from '../modules/daily-metrics/entities/daily-fetch-state.entity.js';
 import { DailyMetricRevision } from '../modules/daily-metrics/entities/daily-metric-revision.entity.js';
 import { DailyMetric } from '../modules/daily-metrics/entities/daily-metric.entity.js';
+import { ForwardDay0Capture } from '../modules/forward-test/entities/forward-day0-capture.entity.js';
 import { ForwardEvent } from '../modules/forward-test/entities/forward-event.entity.js';
 import { ForwardHigh } from '../modules/forward-test/entities/forward-high.entity.js';
 import { ForwardOutcome } from '../modules/forward-test/entities/forward-outcome.entity.js';
@@ -78,6 +79,7 @@ export const ENTITIES = [
   ForwardTriggerRejection,
   ForwardEvent,
   ForwardUpdateRun,
+  ForwardDay0Capture,
   ForwardHigh,
   ForwardOutcome,
   // Claude coin agent (docs/adr/0005-coin-agent.md)

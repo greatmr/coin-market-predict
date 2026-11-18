@@ -235,7 +235,9 @@ export interface ForwardEventRow {
   window: WindowProgress & { checkedDays: number };
   /**
    * The signal-day (day 0) daily High as stored: it counts only when its source time is at or after
-   * identification (DAY0_POST_SIGNAL); DAY0_UNPROVEN is shown apart and never enters a result.
+   * identification (DAY0_POST_SIGNAL); DAY0_UNPROVEN is shown apart and never enters a result. When
+   * CMC hourly Highs cover the rest of the day, this is the detection hour's earlier High instead
+   * (reason `detection_hour_high_before_detection`).
    */
   day0: {
     highUsd: string | null;
@@ -414,14 +416,17 @@ export class ForwardReadService {
   ): Promise<ForwardEventRow[]> {
     if (!events.length) return [];
     const views = lists ?? (await this.venues.exchangeListViews(this.providerId, now));
+    // The signal day's unconfirmed High as precisely as it is known: the detection hour's High when
+    // hourly data covers the rest of the day, otherwise the daily row.
     const day0 = new Map(
       (
         (await this.db.query(
-          `SELECT h.event_id AS "eventId", h.high_usd::text AS "high", h.time_high AS "timeHigh",
-                  h.eligibility, h.reason
+          `SELECT DISTINCT ON (h.event_id) h.event_id AS "eventId", h.high_usd::text AS "high",
+                  h.time_high AS "timeHigh", h.eligibility, h.reason
              FROM forward_high h
              JOIN forward_event e ON e.id = h.event_id AND h.date_utc = e.detected_utc_date
-            WHERE h.is_current AND h.event_id = ANY($1::uuid[])`,
+            WHERE h.is_current AND h.event_id = ANY($1::uuid[]) AND h.eligibility <> 'DAY0_HOURLY'
+            ORDER BY h.event_id, (h.day0_capture_id IS NULL), h.id DESC`,
           [events.map((e) => e.id)],
         )) as Array<{
           eventId: string;
@@ -656,6 +661,7 @@ export class ForwardReadService {
         periodEnd: h.periodEnd.toISOString(),
         source: h.source,
         sourceRevisionId: h.sourceRevisionId,
+        day0CaptureId: h.day0CaptureId,
         revision: h.revision,
         highUsd: h.highUsd?.toFixed() ?? null,
         timeHigh: iso(h.timeHigh),
@@ -817,7 +823,7 @@ export class ForwardReadService {
     const day0 = events.filter((e) => e.qualityFlags.includes(FORWARD_REASON.incompleteDay0));
     if (day0.length)
       warnings.push(
-        `INCOMPLETE_DAY0: ${day0.length} events cannot be finalized — the signal day's High came before detection (or its time is unknown), no later High reached it, and no intraday High source is configured. Their peaks are lower bounds.`,
+        `INCOMPLETE_DAY0: ${day0.length} events cannot be finalized — the signal day's High came before detection (or its time is unknown), no later High reached it, and CMC's hourly Highs either leave the minutes between detection and the end of that hour unobserved or were not available. Their peaks are lower bounds.`,
       );
     return {
       providerId,

@@ -162,6 +162,29 @@ export interface DailyFetch {
   retrievedAt: Date;
 }
 
+/** One clock hour of an asset's CMC USD OHLC: only what the forward test reads (High and its time). */
+export interface HourlySourceCandle {
+  /** hh:00:00.000 UTC. */
+  periodStart: Date;
+  /** hh:59:59.999 UTC. */
+  periodEnd: Date;
+  /** Exact source digits. */
+  high: string | null;
+  /** The source's documented time of the hour's High (CMC `timeHigh`, minute resolution). */
+  timeHigh: Date | null;
+  /** e.g. `quote_not_usd`, `period_not_one_hour`. */
+  invalidReasons: string[];
+}
+
+export interface HourlyFetch {
+  /** The closed hours of the requested UTC date, in order (at most 24). */
+  candles: HourlySourceCandle[];
+  source: string;
+  params: Record<string, string>;
+  responseSha256: string | null;
+  retrievedAt: Date;
+}
+
 export interface VenueFetch {
   pairs: VenuePair[];
   /** Pair count the source reports for the request (null = unknown). */
@@ -191,6 +214,11 @@ export interface Tier1Source {
     to: string,
     now: Date,
   ): Promise<DailyFetch>;
+  /**
+   * One UTC date of an asset's hourly OHLC (the forward test's signal day, docs/forward-test.md § 6).
+   * Optional: without it a signal-day High that came before detection stays a bound.
+   */
+  hourlyHistory?(asset: { cmcId: number }, dateUtc: string, now: Date): Promise<HourlyFetch>;
   /** Every LBank Spot pair the feed publishes, with the CMC id of each base asset. */
   lbankSpotPairs(at: Date): Promise<VenueFetch>;
   /**

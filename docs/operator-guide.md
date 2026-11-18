@@ -295,8 +295,9 @@ the UTC day containing detection + 168 h. Rules, statuses, fields and gaps:
 - Warnings: `FRESHNESS` / `UPDATE_FAILED` — the daily update has not run successfully; check the
   run's `forward` stage and the source health. `UPDATE_PARTIAL` — some Highs are not published
   yet; retried automatically. `INCOMPLETE_DAY0` — the signal day's High came before detection and no
-  later High reached it; without an intraday source this cannot be settled, so the peak stays a
-  lower bound.
+  later High reached it. CMC's hourly Highs settle the rest of that day automatically (rules
+  `star-forward-2`); what stays open is the detection hour when its High came before detection (or
+  a day whose hourly data was not available), so the peak stays a lower bound.
 - Outcomes are also compared by the pass pattern and the weighted points the coin had at detection
   (both stored with the event, never recalculated): use them to judge the 60 / 25 / 15 weights on
   later data, not as a forecast.

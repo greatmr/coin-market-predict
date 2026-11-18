@@ -5,14 +5,17 @@ import { D, type DValue } from '../../common/utils/decimal.js';
 import {
   type DailyHighInput,
   type EventWindow,
+  type HourlyHighInput,
   type OutcomeHigh,
   type TriggerCandidate,
   type TriggerContext,
   checkStatus,
   classifyHigh,
+  day0FromHourly,
   dayComplete,
   evaluateOutcome,
   eventWindow,
+  hourlyCaptureProblem,
   peakReturnPct,
   validateTrigger,
   windowProgress,
@@ -548,5 +551,191 @@ describe('check status', () => {
     expect(checkStatus({ outcome: invalid, previousPeak: null, fetchFailed: true })).toBe(
       'DATA_UNAVAILABLE',
     );
+  });
+});
+
+describe('signal day from CMC hourly Highs (gap U1, rules star-forward-2)', () => {
+  const HOUR = 3_600_000;
+  const hh = (h: number) => String(h).padStart(2, '0');
+  /** 24 hourly candles of 10 Nov: High 15 at hh:30 unless overridden ([high, time_high]). */
+  function hours(over: Record<number, [string, string | null]> = {}): HourlyHighInput[] {
+    return Array.from({ length: 24 }, (_, h) => {
+      const start = t(`2026-11-10T${hh(h)}:00:00.000Z`);
+      const [value, time] = over[h] ?? ['15', `2026-11-10T${hh(h)}:30:00.000Z`];
+      return {
+        periodStart: start,
+        periodEnd: new Date(start.getTime() + HOUR - 1),
+        high: d(value),
+        timeHigh: time ? t(time) : null,
+        invalidReasons: [],
+      };
+    });
+  }
+  /** Detection seven minutes into the hour, as the hourly pipeline sees it. */
+  const W7 = eventWindow(t('2026-11-10T14:07:00.000Z'));
+  /** The day's High 20 came at 09:00, before detection; the rest of the day is flat unless set. */
+  const DAY = { 9: ['20', '2026-11-10T09:00:00.000Z'] } as Record<number, [string, string]>;
+
+  it('uses a capture only when all 24 hours are valid and their largest High is the daily High', () => {
+    expect(hourlyCaptureProblem('2026-11-10', hours(DAY), d('20'))).toBeNull();
+    expect(hourlyCaptureProblem('2026-11-10', hours(DAY).slice(1), d('20'))).toBe(
+      'hour_missing:00:00',
+    );
+    const bad = hours(DAY);
+    bad[5] = { ...bad[5]!, invalidReasons: ['quote_not_usd'] };
+    expect(hourlyCaptureProblem('2026-11-10', bad, d('20'))).toBe(
+      'hour_invalid:05:00:quote_not_usd',
+    );
+    // A coarser series (e.g. 15-minute candles built from sampled prices) tops out lower.
+    expect(hourlyCaptureProblem('2026-11-10', hours({ 9: ['19.9', null] }), d('20'))).toBe(
+      'hourly_max_differs_from_daily_high',
+    );
+    expect(day0FromHourly(W7, hours(DAY), d('21'))).toEqual({
+      usable: false,
+      reason: 'hourly_max_differs_from_daily_high',
+    });
+  });
+
+  it('counts every hour after detection and the detection hour when CMC dates its High after it', () => {
+    const r = day0FromHourly(
+      W7,
+      hours({
+        ...DAY,
+        14: ['15.5', '2026-11-10T14:30:00.000Z'],
+        18: ['16', '2026-11-10T18:41:00.000Z'],
+      }),
+      d('20'),
+    );
+    expect(r.usable).toBe(true);
+    if (!r.usable) return;
+    expect([
+      str(r.post!.high),
+      r.post!.timeHigh!.toISOString(),
+      r.post!.hourStart.toISOString(),
+    ]).toEqual(['16', '2026-11-10T18:41:00.000Z', '2026-11-10T18:00:00.000Z']);
+    expect(r.unobserved).toBeNull();
+  });
+
+  it('a detection-hour High before detection only bounds the minutes after it; ties go to the earliest hour', () => {
+    const r = day0FromHourly(
+      W7,
+      hours({
+        ...DAY,
+        14: ['17', '2026-11-10T14:03:00.000Z'],
+        16: ['16', '2026-11-10T16:10:00.000Z'],
+        20: ['16', '2026-11-10T20:10:00.000Z'],
+      }),
+      d('20'),
+    );
+    if (!r.usable) throw new Error(r.reason);
+    expect([str(r.unobserved!.high), r.unobserved!.hourEnd.toISOString()]).toEqual([
+      '17',
+      '2026-11-10T14:59:59.999Z',
+    ]);
+    expect([str(r.post!.high), r.post!.hourStart.toISOString()]).toEqual([
+      '16',
+      '2026-11-10T16:00:00.000Z',
+    ]);
+  });
+
+  /** Stored rows of an hourly measurement of W's day 0 (W: detection at 14:00 on 10 Nov). */
+  const hourlyRow = (
+    eligibility: 'DAY0_HOURLY' | 'DAY0_UNPROVEN',
+    value: string,
+    timeHigh: string,
+  ): OutcomeHigh => ({
+    id: eligibility === 'DAY0_HOURLY' ? 901 : 902,
+    dateUtc: '2026-11-10',
+    periodStart: W.detectedAt,
+    periodEnd: t('2026-11-10T23:59:59.999Z'),
+    high: d(value),
+    timeHigh: t(timeHigh),
+    eligibility,
+    reason: eligibility === 'DAY0_UNPROVEN' ? 'detection_hour_high_before_detection' : null,
+  });
+  const preSignalDay0 = high(W, '2026-11-10', '20', '2026-11-10T09:00:00.000Z');
+
+  it('settles the signal day exactly: FINAL with the post-detection High as the peak', () => {
+    const o = evaluateOutcome({
+      window: W,
+      price: PRICE,
+      highs: week(preSignalDay0),
+      day0Hourly: {
+        post: hourlyRow('DAY0_HOURLY', '16', '2026-11-10T18:41:00.000Z'),
+        unobserved: null,
+      },
+      now: AFTER,
+    });
+    expect([
+      o.status,
+      o.peakKind,
+      str(o.peakHigh),
+      o.peakHighId,
+      o.peakDate,
+      o.peakAt?.toISOString(),
+    ]).toEqual(['FINAL', 'EXACT', '16', 901, '2026-11-10', '2026-11-10T18:41:00.000Z']);
+    expect([str(o.peakReturnPct), o.day0, o.coveredDays, o.reasons]).toEqual([
+      '60',
+      'EXACT',
+      8,
+      [R.day0Hourly],
+    ]);
+  });
+
+  it('an earlier detection-hour High above every later High still leaves a (much tighter) lower bound', () => {
+    const o = evaluateOutcome({
+      window: W,
+      price: PRICE,
+      highs: week(preSignalDay0),
+      day0Hourly: {
+        post: hourlyRow('DAY0_HOURLY', '12', '2026-11-10T18:41:00.000Z'),
+        unobserved: hourlyRow('DAY0_UNPROVEN', '17', '2026-11-10T14:03:00.000Z'),
+      },
+      now: AFTER,
+    });
+    expect([o.status, o.peakKind, str(o.peakHigh), o.day0, o.reasons]).toEqual([
+      'INCOMPLETE',
+      'LOWER_BOUND',
+      '12',
+      'UNRESOLVED',
+      [R.incompleteDay0, R.day0Hourly],
+    ]);
+  });
+
+  it('a later High at least the detection-hour High settles it (shortcut); day 0 is covered once', () => {
+    const o = evaluateOutcome({
+      window: W,
+      price: PRICE,
+      highs: week(preSignalDay0, {
+        '2026-11-13': high(W, '2026-11-13', '18', '2026-11-13T05:00:00.000Z'),
+      }),
+      day0Hourly: {
+        post: hourlyRow('DAY0_HOURLY', '12', '2026-11-10T18:41:00.000Z'),
+        unobserved: hourlyRow('DAY0_UNPROVEN', '17', '2026-11-10T14:03:00.000Z'),
+      },
+      now: AFTER,
+    });
+    expect([o.status, str(o.peakHigh), o.peakDate, o.day0, o.coveredDays, o.reasons]).toEqual([
+      'FINAL',
+      '18',
+      '2026-11-13',
+      'SHORTCUT',
+      8,
+      [R.day0Hourly],
+    ]);
+  });
+
+  it('is not used when the daily signal-day High is already proven post-signal', () => {
+    const o = evaluateOutcome({
+      window: W,
+      price: PRICE,
+      highs: week(high(W, '2026-11-10', '13', '2026-11-10T15:00:00.000Z')),
+      day0Hourly: {
+        post: hourlyRow('DAY0_HOURLY', '12', '2026-11-10T18:41:00.000Z'),
+        unobserved: null,
+      },
+      now: AFTER,
+    });
+    expect([o.status, str(o.peakHigh), o.day0, o.reasons]).toEqual(['FINAL', '13', 'EXACT', []]);
   });
 });

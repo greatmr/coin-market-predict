@@ -8,7 +8,7 @@
  * FORWARD_RULES_VERSION and update docs/forward-test.md. The value sets are PostgreSQL enum types
  * (migration M008): adding a value needs a migration as well.
  */
-export const FORWARD_RULES_VERSION = 'star-forward-1';
+export const FORWARD_RULES_VERSION = 'star-forward-2';
 
 /** Nominal horizon: detected_at + 168 hours (owner decision, PDF p.2, p.6). */
 export const HORIZON_HOURS = 168;
@@ -22,6 +22,16 @@ export const MISSING_DATA_RETRY_DAYS = 3;
  * update never runs into the next hour; what is left is fetched at the retry.
  */
 export const FETCH_MAX_MINUTES = 10;
+
+/**
+ * Source label of the signal day's hourly Highs: the existing CMC website history route with
+ * `interval=1h` (docs/source-feasibility.md). Its hours carry CMC's own `timeHigh`, and their largest
+ * High equals the daily row's High (checked on every capture before it is used).
+ */
+export const DAY0_HOURLY_SOURCE_SUFFIX = '?interval=1h';
+
+/** `forward_high.reason` of the detection hour when its High came before detection. */
+export const DETECTION_HOUR_BEFORE_SIGNAL = 'detection_hour_high_before_detection';
 
 /** OPEN → TRACKING → AWAITING_FINAL_DAY → FINAL, or INCOMPLETE (PDF p.7). */
 export const FORWARD_EVENT_STATUSES = [
@@ -45,14 +55,17 @@ export const ACTIVE_EVENT_STATUSES: readonly ForwardEventStatus[] = [
  *  - FULL_DAY: a completed UTC day entirely inside [detected_at, evaluation_end];
  *  - DAY0_POST_SIGNAL: the signal day's High, proven post-signal by its documented time_high;
  *  - DAY0_UNPROVEN: the signal day's High without that proof — an upper bound of the unknown
- *    post-signal part, never a forward result;
- *  - INVALID: unusable (missing / non-positive High, non-USD quote, not one UTC day).
+ *    post-signal part, never a forward result (also the detection hour's High when it came first);
+ *  - INVALID: unusable (missing / non-positive High, non-USD quote, not one UTC day);
+ *  - DAY0_HOURLY: the largest of the signal day's hourly Highs proven after detection (hours that
+ *    start at or after it, and the detection hour when its time_high is at or after it).
  */
 export const HIGH_ELIGIBILITIES = [
   'FULL_DAY',
   'DAY0_POST_SIGNAL',
   'DAY0_UNPROVEN',
   'INVALID',
+  'DAY0_HOURLY',
 ] as const;
 export type HighEligibility = (typeof HIGH_ELIGIBILITIES)[number];
 
@@ -141,6 +154,8 @@ export const FORWARD_REASON = {
   highInvalid: 'HIGH_INVALID',
   day0Unresolved: 'DAY0_UNRESOLVED',
   incompleteDay0: 'INCOMPLETE_DAY0',
+  /** The signal day was measured with CMC hourly Highs (informational). */
+  day0Hourly: 'DAY0_HOURLY',
   finalDayPending: 'FINAL_DAY_PENDING',
   peakTieUnobservedDay0: 'PEAK_TIE_UNOBSERVED_DAY0',
   contractEvidenceChanged: 'CONTRACT_EVIDENCE_CHANGED',

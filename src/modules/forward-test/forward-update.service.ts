@@ -4,7 +4,7 @@ import { type DataSource, type EntityManager, In, MoreThanOrEqual, Not } from 't
 
 import { safeBigintToNumber } from '../../common/entities/bigint.js';
 import { redact } from '../../common/security/redact.js';
-import { DAY_MS, addDays, eachDay, isoDate } from '../../common/utils/dates.js';
+import { DAY_MS, addDays, eachDay, isoDate, parseIsoDate } from '../../common/utils/dates.js';
 import { type DValue, dec, forStorage, sha256 } from '../../common/utils/decimal.js';
 
 import { APP_CONFIG, type AppConfig } from '../../config/index.js';
@@ -15,22 +15,34 @@ import {
 } from '../daily-metrics/daily-metrics.service.js';
 import { DailyFetchState } from '../daily-metrics/entities/daily-fetch-state.entity.js';
 import { CmcAsset } from '../ingestion/entities/cmc-asset.entity.js';
+import { stopsCrawl } from '../sources/coinmarketcap-web/errors.js';
+import { SourceHealthService } from '../sources/source-health.service.js';
+import { type HourlyFetch, TIER1_SOURCE, type Tier1Source } from '../sources/source.types.js';
 
+import {
+  ForwardDay0Capture,
+  type StoredHourlyCandle,
+} from './entities/forward-day0-capture.entity.js';
 import { ForwardEvent } from './entities/forward-event.entity.js';
 import { ForwardHigh } from './entities/forward-high.entity.js';
 import { ForwardOutcome } from './entities/forward-outcome.entity.js';
 import { ForwardUpdateRun } from './entities/forward-update-run.entity.js';
 import {
+  type Day0HourlyHighs,
   type EventWindow,
+  type HourlyHighInput,
   type ForwardOutcome as Outcome,
   type OutcomeHigh,
   checkStatus,
   classifyHigh,
+  day0FromHourly,
   dayComplete,
   evaluateOutcome,
+  hourlyCaptureProblem,
 } from './forward-rules.js';
 import {
   ACTIVE_EVENT_STATUSES,
+  DETECTION_HOUR_BEFORE_SIGNAL,
   FETCH_MAX_MINUTES,
   FORWARD_EVENT_STATUSES,
   FORWARD_REASON,
@@ -38,6 +50,7 @@ import {
   type ForwardCheckStatus,
   type ForwardEventStatus,
   type ForwardUpdateStatus,
+  type HighEligibility,
   MISSING_DATA_RETRY_DAYS,
 } from './forward.constants.js';
 
@@ -60,6 +73,8 @@ export interface UpdateReport {
   };
   /** Targeted daily-row fetch for tracked assets the daily stage does not cover. */
   fetch: DailyRefreshReport | null;
+  /** Hourly captures of signal days whose daily High came before detection (gap U1). */
+  day0Hourly: Day0CaptureReport | null;
   failedEvents: number;
   /** Per-event result of this run's High check (the dashboard's "Update Highs now" summary). */
   checks: UpdateChecks;
@@ -75,6 +90,24 @@ export interface UpdateChecks {
   errors: number;
   /** Events whose signal day has not closed yet (nothing to check). */
   notDue: number;
+}
+
+export interface Day0CaptureReport {
+  /** Coin signal dates whose daily High is unproven, not yet exceeded, and without a usable capture. */
+  needed: number;
+  requested: number;
+  stored: number;
+  failed: number;
+  stoppedBy: 'time_budget' | 'request_budget_reserve' | 'source_unavailable' | null;
+  notes: string[];
+}
+
+/** One stored hourly capture of a coin's signal date, ready for the rules. */
+interface Day0CaptureRow {
+  id: number;
+  source: string;
+  retrievedAt: Date;
+  candles: HourlyHighInput[];
 }
 
 /** Progress of a running update, stored in `forward_update_run.counts.progress`. */
@@ -149,6 +182,8 @@ export class ForwardUpdateService {
     @InjectDataSource() private readonly db: DataSource,
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
     private readonly daily: DailyMetricsService,
+    private readonly health: SourceHealthService,
+    @Inject(TIER1_SOURCE) private readonly tier1: Tier1Source | null,
   ) {}
 
   /** Due after each UTC day closes, after a failed run, and to retry missing Highs. */
@@ -234,6 +269,7 @@ export class ForwardUpdateService {
         day0Unresolved: 0,
       },
       fetch: null,
+      day0Hourly: null,
       failedEvents: 0,
       checks: {
         checked: 0,
@@ -263,6 +299,18 @@ export class ForwardUpdateService {
         report.notes.push(
           `daily rows: fetch stopped (${report.fetch.stoppedBy.replace(/_/g, ' ')}); outcomes keep their previous data`,
         );
+      if (opts.fetch !== false && report.fetch?.stoppedBy !== 'source_unavailable')
+        report.day0Hourly = await this.captureDay0Hourly(providerId, events, now);
+      if (report.day0Hourly?.needed)
+        report.notes.push(
+          `signal-day hourly Highs: ${report.day0Hourly.stored} of ${report.day0Hourly.needed} coin dates captured` +
+            (report.day0Hourly.failed ? `, ${report.day0Hourly.failed} failed` : '') +
+            (report.day0Hourly.stoppedBy
+              ? `; stopped (${report.day0Hourly.stoppedBy.replace(/_/g, ' ')}), the rest at the retry`
+              : ''),
+          ...report.day0Hourly.notes.slice(0, 3),
+        );
+      const captures = await this.loadDay0Captures(providerId, events, now);
       const assets = new Map(
         events.length
           ? (
@@ -304,7 +352,15 @@ export class ForwardUpdateService {
               : null;
         try {
           const r = await this.db.transaction((m) =>
-            this.evaluateEvent(m, e, now, run.id, assets.get(e.cmcId) ?? null, fetchError),
+            this.evaluateEvent(
+              m,
+              e,
+              now,
+              run.id,
+              assets.get(e.cmcId) ?? null,
+              fetchError,
+              captures.get(`${e.cmcId}|${e.detectedUtcDate}`) ?? [],
+            ),
           );
           if (r.check === null) report.checks.notDue++;
           else {
@@ -342,8 +398,12 @@ export class ForwardUpdateService {
           await this.markCheckFailed([e.id], now, `the evaluation failed: ${message}`);
         }
       }
+      const hourlyPending =
+        !!report.day0Hourly && (report.day0Hourly.failed > 0 || !!report.day0Hourly.stoppedBy);
       report.status =
-        report.failedEvents || waiting.length || report.fetch?.stoppedBy ? 'partial' : 'succeeded';
+        report.failedEvents || waiting.length || report.fetch?.stoppedBy || hourlyPending
+          ? 'partial'
+          : 'succeeded';
       if (waiting.length)
         report.notes.unshift(
           `${waiting.length} events lack a High for a completed day, retried after ${this.cfg.TIER1_DAILY_RETRY_HOURS} h: ${waiting.slice(0, 3).join('; ')}${waiting.length > 3 ? '; …' : ''}`,
@@ -438,6 +498,219 @@ export class ForwardUpdateService {
     });
   }
 
+  /**
+   * Signal-day hourly Highs (gap U1, docs/forward-test.md § 6): one hourly-history request per coin
+   * and signal date whose daily High is not proven post-signal, not yet reached by a later daily
+   * High (that already settles day 0), and without a stored capture that matches it — within the
+   * same retry horizon, time budget, request reserve and stop rules as the daily rows.
+   */
+  private async captureDay0Hourly(
+    providerId: string,
+    events: ForwardEvent[],
+    now: Date,
+  ): Promise<Day0CaptureReport | null> {
+    const source = this.tier1;
+    if (!source?.hourlyHistory) return null;
+    const horizon = now.getTime() - MISSING_DATA_RETRY_DAYS * DAY_MS;
+    const candidates = events.filter(
+      (e) =>
+        e.status !== 'FINAL' &&
+        e.evaluationEnd.getTime() >= horizon &&
+        dayComplete(e.detectedUtcDate, now) &&
+        e.detectedAt.getTime() !== parseIsoDate(e.detectedUtcDate).getTime(),
+    );
+    if (!candidates.length) return null;
+    const rows = (await this.db.query(
+      `SELECT e.id, r0.high_usd::text AS "day0High", r0.time_high AS "day0TimeHigh",
+              (SELECT max(r.high_usd) FROM daily_metric dm JOIN daily_metric_revision r ON r.id = dm.revision_id
+                WHERE dm.provider_id = e.provider_id AND dm.cmc_id = e.cmc_id
+                  AND dm.date_utc > e.detected_utc_date
+                  AND dm.date_utc <= (e.evaluation_end AT TIME ZONE 'UTC')::date)::text AS "laterMax"
+         FROM forward_event e
+         JOIN daily_metric d0 ON d0.provider_id = e.provider_id AND d0.cmc_id = e.cmc_id AND d0.date_utc = e.detected_utc_date
+         JOIN daily_metric_revision r0 ON r0.id = d0.revision_id
+        WHERE e.id = ANY($1::uuid[])`,
+      [candidates.map((e) => e.id)],
+    )) as Array<{
+      id: string;
+      day0High: string | null;
+      day0TimeHigh: Date | null;
+      laterMax: string | null;
+    }>;
+    const day0 = new Map(rows.map((r) => [r.id, r]));
+    const wanted = new Map<
+      string,
+      { cmcId: number; dateUtc: string; day0High: DValue; end: number }
+    >();
+    for (const e of candidates) {
+      const r = day0.get(e.id);
+      const high = dec(r?.day0High ?? null);
+      if (!r || !high || !high.isFinite() || high.lte(0)) continue;
+      if (r.day0TimeHigh && r.day0TimeHigh.getTime() >= e.detectedAt.getTime()) continue;
+      const later = dec(r.laterMax);
+      if (later && later.gte(high)) continue;
+      const key = `${e.cmcId}|${e.detectedUtcDate}`;
+      const w = wanted.get(key);
+      if (w) w.end = Math.min(w.end, e.evaluationEnd.getTime());
+      else
+        wanted.set(key, {
+          cmcId: e.cmcId,
+          dateUtc: e.detectedUtcDate,
+          day0High: high,
+          end: e.evaluationEnd.getTime(),
+        });
+    }
+    if (!wanted.size) return null;
+    const stored = await this.loadCaptureRows(
+      providerId,
+      [...new Set([...wanted.values()].map((w) => w.cmcId))],
+      [...new Set([...wanted.values()].map((w) => w.dateUtc))],
+    );
+    const todo = [...wanted.entries()]
+      .filter(
+        ([key, w]) =>
+          !(stored.get(key) ?? []).some(
+            (c) => hourlyCaptureProblem(w.dateUtc, c.candles, w.day0High) === null,
+          ),
+      )
+      .sort((a, b) => a[1].end - b[1].end || a[1].cmcId - b[1].cmcId)
+      .map(([, w]) => w);
+    const report: Day0CaptureReport = {
+      needed: todo.length,
+      requested: 0,
+      stored: 0,
+      failed: 0,
+      stoppedBy: null,
+      notes: [],
+    };
+    const deadline = Date.now() + FETCH_MAX_MINUTES * 60_000;
+    let allowance = await this.health.spendableRequests(providerId, now);
+    let consecutiveFailures = 0;
+    for (const w of todo) {
+      if (Date.now() >= deadline) {
+        report.stoppedBy = 'time_budget';
+        break;
+      }
+      if (report.requested > 0 && report.requested % 25 === 0)
+        allowance = await this.health.spendableRequests(providerId);
+      if (allowance <= 0) {
+        report.stoppedBy = 'request_budget_reserve';
+        break;
+      }
+      report.requested++;
+      allowance--;
+      try {
+        const f = await source.hourlyHistory({ cmcId: w.cmcId }, w.dateUtc, now);
+        if (await this.storeDay0Capture(providerId, w.cmcId, w.dateUtc, f)) report.stored++;
+        const problem = hourlyCaptureProblem(
+          w.dateUtc,
+          f.candles.map((c) => ({ ...c, high: dec(c.high) })),
+          w.day0High,
+        );
+        if (problem && report.notes.length < 5)
+          report.notes.push(`CMC ${w.cmcId} ${w.dateUtc}: hourly data not usable (${problem})`);
+        consecutiveFailures = 0;
+      } catch (err) {
+        report.failed++;
+        const message = redact(err).slice(0, 300);
+        if (report.notes.length < 5) report.notes.push(`CMC ${w.cmcId} ${w.dateUtc}: ${message}`);
+        if (stopsCrawl(err) || ++consecutiveFailures >= 5) {
+          report.stoppedBy = 'source_unavailable';
+          break;
+        }
+      }
+    }
+    this.log.log(
+      `signal-day hourly Highs: ${report.stored}/${report.needed} coin dates captured (${report.requested} requests)`,
+    );
+    return report;
+  }
+
+  /**
+   * Store one hourly retrieval as an immutable capture; identical responses are kept once.
+   * Returns whether a new capture was stored.
+   */
+  async storeDay0Capture(
+    providerId: string,
+    cmcId: number,
+    dateUtc: string,
+    f: HourlyFetch,
+  ): Promise<boolean> {
+    const candles: StoredHourlyCandle[] = f.candles.map((c) => ({
+      periodStart: c.periodStart.toISOString(),
+      periodEnd: c.periodEnd.toISOString(),
+      high: c.high,
+      timeHigh: c.timeHigh?.toISOString() ?? null,
+      invalidReasons: c.invalidReasons,
+    }));
+    const complete =
+      candles.length === 24 && candles.every((c) => !c.invalidReasons.length && c.high !== null);
+    const saved = (await this.db.query(
+      `INSERT INTO forward_day0_capture (provider_id, cmc_id, date_utc, source, params, response_sha256, retrieved_at, candles, complete)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT ON CONSTRAINT ux_forward_day0_capture DO NOTHING
+       RETURNING id`,
+      [
+        providerId,
+        cmcId,
+        dateUtc,
+        f.source,
+        JSON.stringify(f.params),
+        f.responseSha256 ?? sha256(JSON.stringify(candles)),
+        f.retrievedAt,
+        JSON.stringify(candles),
+        complete,
+      ],
+    )) as Array<{ id: string }>;
+    return saved.length > 0;
+  }
+
+  /** Stored captures of the given coins and dates, newest first, keyed `cmcId|date`. */
+  private async loadCaptureRows(
+    providerId: string,
+    cmcIds: number[],
+    dates: string[],
+  ): Promise<Map<string, Day0CaptureRow[]>> {
+    const out = new Map<string, Day0CaptureRow[]>();
+    if (!cmcIds.length || !dates.length) return out;
+    const rows = await this.db.getRepository(ForwardDay0Capture).find({
+      where: { providerId, cmcId: In(cmcIds), dateUtc: In(dates) },
+      order: { retrievedAt: 'DESC', id: 'DESC' },
+    });
+    for (const r of rows) {
+      const key = `${r.cmcId}|${r.dateUtc}`;
+      const list = out.get(key) ?? [];
+      list.push({
+        id: r.id,
+        source: r.source,
+        retrievedAt: r.retrievedAt,
+        candles: r.candles.map((c) => ({
+          periodStart: new Date(c.periodStart),
+          periodEnd: new Date(c.periodEnd),
+          high: dec(c.high),
+          timeHigh: c.timeHigh ? new Date(c.timeHigh) : null,
+          invalidReasons: c.invalidReasons,
+        })),
+      });
+      out.set(key, list);
+    }
+    return out;
+  }
+
+  /** The stored captures of every event whose signal day has closed. */
+  private loadDay0Captures(
+    providerId: string,
+    events: ForwardEvent[],
+    now: Date,
+  ): Promise<Map<string, Day0CaptureRow[]>> {
+    const closed = events.filter((e) => dayComplete(e.detectedUtcDate, now));
+    return this.loadCaptureRows(
+      providerId,
+      [...new Set(closed.map((e) => e.cmcId))],
+      [...new Set(closed.map((e) => e.detectedUtcDate))],
+    );
+  }
+
   /** Upsert one event's High observations, recompute its outcome and version it when it changed. */
   private async evaluateEvent(
     m: EntityManager,
@@ -446,6 +719,7 @@ export class ForwardUpdateService {
     updateRunId: string,
     asset: Pick<CmcAsset, 'platformChain' | 'platformAddress'> | null,
     fetchError: string | null,
+    captures: readonly Day0CaptureRow[],
   ): Promise<{
     outcome: Outcome;
     inserted: number;
@@ -467,22 +741,27 @@ export class ForwardUpdateService {
         )) as DailyHighRow[])
       : [];
     const highs = m.getRepository(ForwardHigh);
+    const currentRows = await highs.findBy({ eventId: e.id, isCurrent: true });
+    // Daily rows: one per date. Rows measured from an hourly capture are handled apart below.
     const current = new Map<string, CurrentHigh>(
-      (await highs.findBy({ eventId: e.id, isCurrent: true })).map((h) => [
-        h.dateUtc,
-        {
-          id: h.id,
-          dateUtc: h.dateUtc,
-          periodStart: h.periodStart,
-          periodEnd: h.periodEnd,
-          high: dec(h.highUsd),
-          timeHigh: h.timeHigh,
-          eligibility: h.eligibility,
-          reason: h.reason,
-          sourceRevisionId: h.sourceRevisionId,
-        },
-      ]),
+      currentRows
+        .filter((h) => h.day0CaptureId === null)
+        .map((h) => [
+          h.dateUtc,
+          {
+            id: h.id,
+            dateUtc: h.dateUtc,
+            periodStart: h.periodStart,
+            periodEnd: h.periodEnd,
+            high: dec(h.highUsd),
+            timeHigh: h.timeHigh,
+            eligibility: h.eligibility,
+            reason: h.reason,
+            sourceRevisionId: h.sourceRevisionId!,
+          },
+        ]),
     );
+    const hourlyCurrent = currentRows.filter((h) => h.day0CaptureId !== null);
     let inserted = 0,
       superseded = 0,
       unchanged = 0;
@@ -542,8 +821,114 @@ export class ForwardUpdateService {
       inserted++;
     }
 
+    // Signal day measured hourly while its daily High is unproven: the newest capture that matches
+    // the current daily High; rows of any other capture (or no longer needed) are superseded.
+    let day0Hourly: Day0HourlyHighs | null = null;
+    let hourlyInserted = false;
+    const keep = new Set<number>();
+    const day0Daily = current.get(e.detectedUtcDate);
+    if (day0Daily?.eligibility === 'DAY0_UNPROVEN') {
+      for (const cap of captures) {
+        const r = day0FromHourly(w, cap.candles, day0Daily.high);
+        if (!r.usable) continue;
+        const dayEnd = new Date(parseIsoDate(e.detectedUtcDate).getTime() + DAY_MS - 1);
+        const wanted: Array<{
+          eligibility: HighEligibility;
+          high: DValue;
+          timeHigh: Date | null;
+          periodEnd: Date;
+          reason: string | null;
+        }> = [];
+        if (r.post)
+          wanted.push({
+            eligibility: 'DAY0_HOURLY',
+            high: r.post.high,
+            timeHigh: r.post.timeHigh,
+            periodEnd: dayEnd,
+            reason: null,
+          });
+        if (r.unobserved)
+          wanted.push({
+            eligibility: 'DAY0_UNPROVEN',
+            high: r.unobserved.high,
+            timeHigh: r.unobserved.timeHigh,
+            periodEnd: r.unobserved.hourEnd,
+            reason: DETECTION_HOUR_BEFORE_SIGNAL,
+          });
+        const rows = new Map<HighEligibility, OutcomeHigh>();
+        for (const want of wanted) {
+          const same = hourlyCurrent.find(
+            (h) =>
+              h.day0CaptureId === cap.id &&
+              h.eligibility === want.eligibility &&
+              !!h.highUsd?.eq(want.high) &&
+              (h.timeHigh?.getTime() ?? null) === (want.timeHigh?.getTime() ?? null),
+          );
+          let id: number;
+          if (same) {
+            id = same.id;
+            unchanged++;
+          } else {
+            const saved = (await m.query(
+              `INSERT INTO forward_high (event_id, date_utc, period_start, period_end, source, source_revision_id, day0_capture_id, revision,
+                                         high_usd, time_high, quote_currency, observed_at, eligibility, reason, is_current, update_run_id)
+               VALUES ($1, $2, $3, $4, $5, NULL, $6, 1, $7, $8, 'USD', $9, $10, $11, true, $12)
+               ON CONFLICT ON CONSTRAINT ux_forward_high_day0_capture DO UPDATE
+                 SET is_current = true, superseded_at = NULL, period_end = EXCLUDED.period_end,
+                     high_usd = EXCLUDED.high_usd, time_high = EXCLUDED.time_high, reason = EXCLUDED.reason
+               RETURNING id`,
+              [
+                e.id,
+                e.detectedUtcDate,
+                e.detectedAt,
+                want.periodEnd,
+                cap.source,
+                cap.id,
+                want.high.toFixed(),
+                want.timeHigh,
+                cap.retrievedAt,
+                want.eligibility,
+                want.reason,
+                updateRunId,
+              ],
+            )) as Array<{ id: string }>;
+            id = safeBigintToNumber(saved[0]!.id);
+            inserted++;
+            hourlyInserted = true;
+          }
+          keep.add(id);
+          rows.set(want.eligibility, {
+            id,
+            dateUtc: e.detectedUtcDate,
+            periodStart: e.detectedAt,
+            periodEnd: want.periodEnd,
+            high: want.high,
+            timeHigh: want.timeHigh,
+            eligibility: want.eligibility,
+            reason: want.reason,
+          });
+        }
+        day0Hourly = {
+          post: rows.get('DAY0_HOURLY') ?? null,
+          unobserved: rows.get('DAY0_UNPROVEN') ?? null,
+        };
+        break;
+      }
+    }
+    for (const h of hourlyCurrent)
+      if (!keep.has(h.id)) {
+        await highs.update({ id: h.id }, { isCurrent: false, supersededAt: now });
+        superseded++;
+      }
+
     const used = [...current.values()];
-    const outcome = evaluateOutcome({ window: w, price: e.snapshotPriceUsd, highs: used, now });
+    const outcome = evaluateOutcome({
+      window: w,
+      price: e.snapshotPriceUsd,
+      highs: used,
+      day0Hourly,
+      now,
+    });
     // Followed by CMC id; a changed contract / network is flagged for a human, never auto-resolved.
     const lower = (s: string | null) => s?.toLowerCase() ?? null;
     const contractChanged =
@@ -551,7 +936,8 @@ export class ForwardUpdateService {
       ((asset.platformChain ?? null) !== (e.platformChain ?? null) ||
         lower(asset.platformAddress) !== lower(e.platformAddress));
     const identity = contractChanged ? [FORWARD_REASON.contractEvidenceChanged] : [];
-    const highIds = used
+    const highIds = [...used, ...(day0Hourly ? [day0Hourly.post, day0Hourly.unobserved] : [])]
+      .filter((h): h is OutcomeHigh => h !== null)
       .map((h) => h.id!)
       .filter((x) => Number.isSafeInteger(x))
       .sort((a, b) => a - b);
@@ -584,6 +970,7 @@ export class ForwardUpdateService {
         contentHash: true,
         finalizedAt: true,
         peakHighUsd: true,
+        rulesVersion: true,
       },
     });
     let versioned = false;
@@ -599,7 +986,15 @@ export class ForwardUpdateService {
       await outcomes.insert({
         eventId: e.id,
         resultVersion,
-        revisionReason: !latest ? 'first' : superseded ? 'source_revision' : 'daily_update',
+        revisionReason: !latest
+          ? 'first'
+          : superseded
+            ? 'source_revision'
+            : hourlyInserted
+              ? 'day0_hourly'
+              : latest.rulesVersion !== FORWARD_RULES_VERSION
+                ? 'rules_version'
+                : 'daily_update',
         rulesVersion: FORWARD_RULES_VERSION,
         status: outcome.status,
         coverageStatus: outcome.coverageStatus,

@@ -57,6 +57,7 @@ export const FLAG_TEXT: Record<string, string> = {
   HIGH_MISSING: 'High missing',
   HIGH_INVALID: 'High invalid',
   PEAK_TIE_UNOBSERVED_DAY0: 'tie with day 0',
+  DAY0_HOURLY: 'day 0 from hourly Highs',
   CONTRACT_EVIDENCE_CHANGED: 'contract changed',
 };
 export const DAY0_FLAGS = new Set(['DAY0_UNRESOLVED', 'INCOMPLETE_DAY0']);

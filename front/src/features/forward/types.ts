@@ -150,7 +150,7 @@ export interface ForwardEventRow {
   day0: {
     highUsd: string | null;
     timeHigh: Iso | null;
-    eligibility: 'FULL_DAY' | 'DAY0_POST_SIGNAL' | 'DAY0_UNPROVEN' | 'INVALID';
+    eligibility: 'FULL_DAY' | 'DAY0_POST_SIGNAL' | 'DAY0_UNPROVEN' | 'INVALID' | 'DAY0_HOURLY';
     reason: string | null;
     changePct: string | null;
   } | null;

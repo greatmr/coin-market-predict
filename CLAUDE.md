@@ -27,7 +27,9 @@ never real orders. Spec: `docs/strategy-two-tier-vmc.md`. Purpose and open decis
   `docs/adr/0004-forward-test-module.md`): an add-on that reads published Tier 1 results and never
   changes them. One event per (CMC id, UTC date, stars), first insert wins; the detection snapshot
   is immutable (DB trigger); Highs only from the same coin's CMC USD daily OHLC — never Close,
-  sampled prices or LBank — and a signal-day High counts only with `time_high` ≥ detection.
+  sampled prices or LBank — and a signal-day High counts only with `time_high` ≥ detection; the
+  signal day after detection may come from the same series' hourly OHLC when its hours match the
+  daily High (`forward_day0_capture`, rules `star-forward-2`).
   Pure rules in `forward-rules.ts` / `cohort.ts`; a rule change bumps `FORWARD_RULES_VERSION`
   (not `RULESET_VERSION`) and the doc. Reprocessing never creates events.
 - **Deterministic code owns all numbers**: exact decimals (`common/utils/decimal.ts`), no rounding

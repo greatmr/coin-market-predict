@@ -123,6 +123,8 @@ function day0Reason(r: ForwardEventRow): string {
   const d = r.day0;
   if (!d?.timeHigh)
     return 'It is unknown whether this high occurred before or after identification.';
+  if (d.reason === 'detection_hour_high_before_detection')
+    return `CMC's hourly data dates the identification hour's High at ${fmtTime(d.timeHigh)}, before identification at ${fmtTime(r.detectedAt)} (${tz()}). The rest of that day is known from hourly Highs; only the minutes from identification to the end of that hour are unobserved.`;
   return `CMC dates this High at ${fmtTime(d.timeHigh)}, before identification at ${fmtTime(r.detectedAt)} (${tz()}). The highest price after identification on that day is unknown from daily data.`;
 }
 

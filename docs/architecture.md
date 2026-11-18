@@ -66,7 +66,7 @@ Layout and database conventions follow the operator's standard NestJS + TypeORM 
 | `venues` | CMC Markets venue rows for review candidates (≤ `TIER1_VENUE_MAX_ASSETS_PER_RUN`, refreshed every `TIER1_VENUE_REFRESH_HOURS`); then the LBank Futures and Bithumb Spot markets lists when `EXCHANGE_LISTS_REFRESH_HOURS` (24) old — listing attributes for the forward-test tab, never read by the scan ([ADR-0007](adr/0007-exchange-listings.md)) | non-fatal: rows show `VENUE_DATA_PENDING`; an unverified exchange list shows its listings as Unknown |
 | `export` | CSV per sheet + XLSX workbook + manifest into `TIER1_EXPORT_DIR`; written to a temp directory and renamed only on success | non-fatal: the previous export remains the latest valid file |
 | `notify` | Telegram summary of the batch (dry run by default) | Telegram retries on its own 5-minute schedule |
-| `forward` | Forward test: one event per new (coin, UTC date, stars) of the published queue; the daily High update when a UTC day has closed (or missing Highs are due for a retry), then its export; retention runs afterwards | non-fatal: outcomes keep their previous version; the next run tries again |
+| `forward` | Forward test: one event per new (coin, UTC date, stars) of the published queue; the daily High update when a UTC day has closed (or missing Highs are due for a retry), with one hourly-history request per coin and signal date whose daily High came before detection (rules `star-forward-2`), then its export; retention runs afterwards | non-fatal: outcomes keep their previous version; the next run tries again |
 
 A run whose non-fatal stages degraded finishes `partial` with the reasons in
 `pipeline_run.metrics.degraded`. Each stage logs `[███░░░░░] n/9 stage · done in Xs`;
@@ -97,7 +97,7 @@ when entities and migrations disagree. Conventions and their reasons:
 | `scan_run`, `scan_result` | scan | One scan per batch (queue status, counts, warnings, export state) and one row per coin with every value, status, reason, the daily window used, inputs hash, ruleset and config versions, and the weighted star ranking (points, completeness, strength, `ranking_ruleset_version`) behind `queue_order` |
 | `review` | reviews | Append-only Tier 1 / Tier 2 review revisions with the Tier 1 snapshot they were made against |
 | `forward_test_watchlist`, `forward_event` | forward-test | One row per coin with events (automatic, no approval); one event per (coin, UTC date, star count) with its immutable detection snapshot (a database trigger refuses changes), window and tracking status |
-| `forward_high`, `forward_outcome` | forward-test | Each included day's High per event and source revision (superseded rows kept); versioned outcomes (peak, return, coverage, extension flag) |
+| `forward_high`, `forward_outcome`, `forward_day0_capture` | forward-test | Each included day's High per event and source revision, plus the signal day's hourly-measured rows with their capture (superseded rows kept); versioned outcomes (peak, return, coverage, extension flag); immutable hourly captures of signal dates |
 | `forward_trigger_run`, `forward_trigger_rejection`, `forward_update_run` | forward-test | Each reading of a published queue (created / ignored / rejected), rejected rows with reasons, each daily High update |
 | `pipeline_run`, `pipeline_stage`, `job_lease` | pipeline | Runs per slot with stage status and metrics; the lease that prevents overlapping runs |
 | `telegram_delivery` | telegram | Every report part per recipient with status and attempts |
