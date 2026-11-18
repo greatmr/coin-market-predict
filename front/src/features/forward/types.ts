@@ -10,7 +10,14 @@ export type CheckStatus =
   'NOT_CHECKED' | 'NEW_RECORD' | 'UNCHANGED' | 'DATA_UNAVAILABLE' | 'RETRIEVAL_ERROR';
 /** `sort` of GET /api/forward/events. */
 export type EventSort =
-  'detected' | 'return' | 'stars' | 'points' | 'multiple3d' | 'multiple7d' | 'multiple30d';
+  | 'detected'
+  | 'return'
+  | 'coinAverage'
+  | 'stars'
+  | 'points'
+  | 'multiple3d'
+  | 'multiple7d'
+  | 'multiple30d';
 /** `result` of GET /api/forward/events. */
 export type ResultFilter = CheckStatus | 'CONFIRMED' | 'DAY0_UNCONFIRMED';
 /** `market` of GET /api/forward/events: the coin's LBank Spot / Futures listing now. */

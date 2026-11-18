@@ -92,10 +92,14 @@ export type ForwardCheckStatus = (typeof FORWARD_CHECK_STATUSES)[number];
 /** Days of the window after the signal day: day 0 (detection date) … day 7 (date of deadline_168h). */
 export const WINDOW_LAST_DAY = 7;
 
-/** Sort keys of the event list (API `sort`); values are the detection snapshot or latest outcome. */
+/**
+ * Sort keys of the event list (API `sort`); values are the detection snapshot or latest outcome,
+ * and `coinAverage` the coin's Average Return over all its stored events (cohort.ts).
+ */
 export const EVENT_SORT_KEYS = [
   'detected',
   'return',
+  'coinAverage',
   'stars',
   'points',
   'multiple3d',

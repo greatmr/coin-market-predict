@@ -430,7 +430,8 @@ export function SortHead({
     <button
       type="button"
       className={`sort-btn${on ? ' on' : ''}`}
-      aria-label={`Sort by ${SORT_LABEL[k]}${on ? (dir === 'desc' ? ', now highest first' : ', now lowest first') : ''}`}
+      aria-label={`Sort by ${SORT_LABEL[k]}${on ? (dir === 'desc' ? ', now highest first' : ', now lowest first; click again to clear the sort') : ''}`}
+      title={on && dir === 'asc' ? 'Click again to clear the sort' : undefined}
       onClick={() => onSort(k)}
     >
       {label}

@@ -857,6 +857,9 @@ describe('High check status, window progress and the event list (dashboard)', ()
     const base = { view: 'all' as const, limit: 50, offset: 0 };
     expect(await list({ ...base, sort: 'return', dir: 'desc' })).toEqual([b, a, c]);
     expect(await list({ ...base, sort: 'return', dir: 'asc' })).toEqual([c, a, b]);
+    // One event per coin here, so each coin's Average Return is its event's Return.
+    expect(await list({ ...base, sort: 'coinAverage', dir: 'desc' })).toEqual([b, a, c]);
+    expect(await list({ ...base, sort: 'coinAverage', dir: 'asc' })).toEqual([c, a, b]);
     expect(await list({ ...base, sort: 'stars', dir: 'asc' })).toEqual([c, a, b]);
     expect(await list({ ...base, result: 'DAY0_UNCONFIRMED' })).toEqual([a]);
     expect(await list({ ...base, result: 'CONFIRMED', stars: 3 })).toEqual([b]);

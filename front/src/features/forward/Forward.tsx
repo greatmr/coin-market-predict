@@ -2,7 +2,7 @@
 // status, each coin's Average Return and exchange listings (docs/adr/0007-exchange-listings.md),
 // and rejected triggers. A descriptive measurement, not a trade or a signal
 // (docs/forward-test.md). List state lives in the URL:
-//   /forward?view=tracking&stars=3&result=CONFIRMED&market=both&bithumb=listed&sort=return&dir=desc&q=btc&page=2
+//   /forward?view=tracking&stars=3&result=CONFIRMED&market=both&bithumb=listed&sort=coinAverage&dir=desc&q=btc&page=2
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { HBars } from '../../components/charts';
@@ -77,6 +77,7 @@ const STAR_FILTERS: readonly (readonly [string, string])[] = [
 const SORTS: readonly EventSort[] = [
   'detected',
   'return',
+  'coinAverage',
   'stars',
   'points',
   'multiple3d',
@@ -453,10 +454,15 @@ export default function Forward() {
     debounce.current = setTimeout(() => setQuery({ q: v.trim(), page: null }), 250);
   };
 
+  // Each header cycles highest first → lowest first → off (the default: newest identification first).
   const onSort = useCallback(
     (k: EventSort) =>
       setQuery(
-        { sort: k, dir: k === sort && dir === 'desc' ? 'asc' : 'desc', page: null },
+        k !== sort
+          ? { sort: k, dir: 'desc', page: null }
+          : dir === 'desc'
+            ? { dir: 'asc', page: null }
+            : { sort: null, dir: null, page: null },
         { push: true },
       ),
     [sort, dir, setQuery],
@@ -518,7 +524,7 @@ export default function Forward() {
       { label: 'Highest High', render: (r) => <FwdPeak r={r} /> },
       { label: head('return', 'Return'), num: true, render: (r) => <FwdReturn r={r} /> },
       {
-        label: 'Average Return (coin)',
+        label: head('coinAverage', 'Average Return (coin)'),
         num: true,
         title:
           'Mean of the Returns of every stored event of this coin (CMC id), whatever the filters; events without a Return left out, ≥ while any is a lower bound. A peak return, not profit.',

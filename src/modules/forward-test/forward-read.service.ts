@@ -69,6 +69,12 @@ export const FORWARD_NOTICE =
 const SORT_SQL: Record<EventSortKey, string> = {
   detected: 'e.detected_at',
   return: 'o.peak_return_pct',
+  // Same rule as cohort.ts `coinAverageReturns`: every stored event of the coin (CMC id), events
+  // without a Return left out (AVG skips NULL); NULL when none has one, so it sorts last.
+  coinAverage: `(SELECT AVG(ca_o.peak_return_pct)
+      FROM forward_event ca_e
+      JOIN forward_outcome ca_o ON ca_o.event_id = ca_e.id AND ca_o.result_version = ca_e.result_version
+     WHERE ca_e.provider_id = e.provider_id AND ca_e.cmc_id = e.cmc_id)`,
   stars: 'e.star_count',
   points: 'e.weighted_pass_points',
   multiple3d: 'e.multiple_3d',

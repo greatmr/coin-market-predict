@@ -137,6 +137,7 @@ export const LISTING_REASON: Record<string, string> = {
 export const SORT_LABEL: Record<EventSort, string> = {
   detected: 'identification time',
   return: 'Return',
+  coinAverage: 'Average Return (coin)',
   stars: 'stars',
   points: 'points',
   multiple3d: '3d ratio',
