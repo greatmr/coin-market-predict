@@ -3,7 +3,9 @@
     "allow": [
       "Bash(sed -i '' 's/          } as never,/          },/' src/modules/agent/agent.service.ts)",
       "Bash(npx tsc *)",
-      "Bash(npx vitest *)"
+      "Bash(npx vitest *)",
+      "Bash(npx prettier *)",
+      "Bash(npm run *)"
     ],
     "deny": [
       "Read(./.env)",

@@ -3294,6 +3294,8 @@ body.signed-out .shell {
 .palette.dialog {
   align-items: center;
   padding: 16px;
+  /* Last resort: if the box still outgrows the screen, the overlay scrolls rather than hiding it. */
+  overflow-y: auto;
 }
 .dialog-box {
   width: min(440px, 100%);
@@ -3301,17 +3303,41 @@ body.signed-out .shell {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  /* Never taller than the overlay's padded area: the content scrolls, the title and buttons stay in view. */
-  max-height: 100%;
+  /* Never taller than the visible viewport (dvh follows mobile browser toolbars): the body scrolls,
+     the title, close button and actions stay in view. */
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
   min-height: 0;
+  /* A wide table scrolls inside .table-wrap instead of widening the box past the screen. */
+  min-width: 0;
+  margin: auto 0;
   animation: dialogIn 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
+/* The fieldset only disables the controls while saving; it stays out of the layout (display:
+   contents, as everywhere). A fieldset as a flex box does not shrink below its content in some
+   browsers, which pushed the buttons off screen. */
 .dialog-box > fieldset.plain {
+  display: contents;
+}
+.dialog-head {
   display: flex;
-  flex-direction: column;
-  gap: 14px;
-  flex: 1 1 auto;
-  min-height: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex: none;
+}
+.dialog-head > h2 {
+  margin: 0;
+  padding-top: 6px;
+}
+.dialog-close {
+  width: 32px;
+  height: 32px;
+  margin: -6px -8px 0 0;
+}
+.dialog-close svg {
+  width: 16px;
+  height: 16px;
 }
 .recover-cell {
   display: inline-flex;
@@ -3325,7 +3351,6 @@ body.signed-out .shell {
   overflow: auto;
   overscroll-behavior: contain;
 }
-.dialog-box > h2,
 .dialog-box .row-actions,
 .dialog-box .form-error {
   flex: none;

@@ -9,6 +9,8 @@ import {
 
 import { useDialog, useTip, useToasts } from '../lib/feedback';
 
+import { Icon } from './icons';
+
 export function Toasts() {
   const list = useToasts();
   return (
@@ -108,7 +110,19 @@ export function DialogHost() {
         autoComplete="off"
         onSubmit={submit}
       >
-        <h2 id="dialog-title">{d.title}</h2>
+        <div className="dialog-head">
+          <h2 id="dialog-title">{d.title}</h2>
+          <button
+            type="button"
+            className="icon-btn dialog-close"
+            aria-label="Close"
+            title="Close"
+            disabled={busy}
+            onClick={() => d.close(false)}
+          >
+            <Icon name="close" />
+          </button>
+        </div>
         <fieldset className="plain" disabled={busy}>
           <div className="dialog-body">{d.body}</div>
           <div className="form-error" role="alert">
