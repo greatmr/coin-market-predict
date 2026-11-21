@@ -52,7 +52,10 @@ run bookkeeping       ─► PipelineRun, PipelineStage, JobLease, SourceHealth,
 - Values: price, circulating market cap (never FDV; FDV has its own column), circulating supply,
   rolling-24h volume, CMC rank, `dateAdded` and raw tags, all as exact decimals.
 - Missing values are NULL with a reason in `nullReasons`; `qualityFlags` and `completeness`
-  describe each row.
+  describe each row. A source value too large for its column (e.g. CMC reporting a
+  4.8 × 10¹⁵ % change for a broken quote, beyond `numeric(20,8)`) is NULL with an
+  "outside the storable range" reason and the `value_out_of_range` flag, so one coin can never fail
+  the batch insert (`SNAPSHOT_NUMERIC_RANGE` in `ingestion/validate.ts`).
 - Indexes: the unique key, `(assetId, slotTime)` and `(slotTime)`.
 
 ### Batch record — `CrawlBatch`

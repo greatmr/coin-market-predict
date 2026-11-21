@@ -1,3 +1,5 @@
+import { D } from '../../common/utils/decimal.js';
+
 import type { RawObservation } from '../sources/source.types.js';
 
 export const MARKET_CAP_PROVENANCES = [
@@ -71,6 +73,34 @@ export function sanitizeText(input: string, maxLen: number): string {
   return input.replace(UNSAFE_TEXT_CHARS, '').trim().slice(0, maxLen);
 }
 
+/**
+ * Storage range of each numeric snapshot field as [integer digits, scale]: market_snapshot's
+ * numeric(precision, scale) columns (M003), and for market cap and 24h volume the tighter
+ * numeric(38,8) of scan_result's cap_usd / volume_24h_usd, which copy them. One value outside
+ * its range used to fail the whole batch insert (numeric field overflow, 22003); it is now NULL
+ * with a reason instead. validate.spec.ts checks these against the entity columns.
+ */
+export const SNAPSHOT_NUMERIC_RANGE = {
+  price: [20, 18],
+  marketCap: [30, 4],
+  fullyDilutedValuation: [34, 4],
+  circulatingSupply: [30, 8],
+  volumeRolling24h: [30, 4],
+  volumeHourly: [34, 4],
+  providerChangePct1h: [12, 8],
+  providerChangePct24h: [12, 8],
+  providerChangePct7d: [12, 8],
+  bidAskSpreadPct: [12, 8],
+  depthPlus2PctUsd: [34, 4],
+  depthMinus2PctUsd: [34, 4],
+} as const satisfies Record<string, readonly [number, number]>;
+export type SnapshotNumericField = keyof typeof SNAPSHOT_NUMERIC_RANGE;
+
+/** True when PostgreSQL stores `n` in a column with these integer digits and scale (it rounds half away from zero). */
+export function fitsNumeric(n: number, integerDigits: number, scale: number): boolean {
+  return new D(n).toDecimalPlaces(scale, D.ROUND_HALF_UP).abs().lt(new D(10).pow(integerDigits));
+}
+
 function finitePositive(n: number | null | undefined): number | null {
   return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : null;
 }
@@ -83,9 +113,20 @@ export function validateObservation(raw: RawObservation, opts: ValidateOptions):
   const flags: string[] = [];
   const nullReasons: Record<string, string> = {};
 
-  const price = finitePositive(raw.price);
+  // A value the column cannot hold is NULL with its own reason, never a failed batch.
+  const inRange = (field: SnapshotNumericField, n: number | null): number | null => {
+    if (n === null) return null;
+    const [digits, scale] = SNAPSHOT_NUMERIC_RANGE[field];
+    if (fitsNumeric(n, digits, scale)) return n;
+    nullReasons[field] =
+      `source value ${n} is outside the storable range (|x| < 1e${digits}); not stored`;
+    if (!flags.includes('value_out_of_range')) flags.push('value_out_of_range');
+    return null;
+  };
+
+  const price = inRange('price', finitePositive(raw.price));
   if (price === null) {
-    nullReasons.price =
+    nullReasons.price ??=
       raw.price === null || raw.price === undefined
         ? 'not reported by source'
         : `invalid value (${raw.price})`;
@@ -93,23 +134,28 @@ export function validateObservation(raw: RawObservation, opts: ValidateOptions):
   }
 
   // Circulating supply
-  const supply = finitePositive(raw.circulatingSupply);
+  const supply = inRange('circulatingSupply', finitePositive(raw.circulatingSupply));
   if (supply === null) {
-    nullReasons.circulatingSupply =
+    nullReasons.circulatingSupply ??=
       raw.circulatingSupply === 0 ? 'source reported 0 (unknown)' : 'not reported by source';
   }
 
   // Market cap: provider circulating cap first; else calculate from circulating supply. Never FDV.
-  let marketCap = finitePositive(raw.marketCap);
+  // A reported cap outside the storable range is not replaced by a calculated one.
+  let marketCap = inRange('marketCap', finitePositive(raw.marketCap));
   let marketCapProvenance: MarketCapProvenance = 'provider_reported';
   if (marketCap === null) {
-    if (price !== null && supply !== null) {
-      marketCap = price * supply;
+    const calculated =
+      price !== null && supply !== null && nullReasons.marketCap === undefined
+        ? inRange('marketCap', price * supply)
+        : null;
+    if (calculated !== null) {
+      marketCap = calculated;
       marketCapProvenance = 'calculated_from_circulating_supply';
       flags.push('market_cap_calculated');
     } else {
       marketCapProvenance = 'unavailable';
-      nullReasons.marketCap =
+      nullReasons.marketCap ??=
         raw.marketCap === 0
           ? 'source reported 0 (unknown) and circulating supply unavailable; FDV is never substituted'
           : 'not reported and circulating supply unavailable; FDV is never substituted';
@@ -117,15 +163,15 @@ export function validateObservation(raw: RawObservation, opts: ValidateOptions):
     }
   }
 
-  const volume24h = finiteOrNull(raw.volume24h);
+  const volume24h = inRange('volumeRolling24h', finiteOrNull(raw.volume24h));
   if (volume24h === null || volume24h < 0) {
-    nullReasons.volumeRolling24h = 'not reported by source';
+    nullReasons.volumeRolling24h ??= 'not reported by source';
     flags.push('missing_volume');
   }
 
-  const volumeHourly = finiteOrNull(raw.volumeHourly ?? null);
+  const volumeHourly = inRange('volumeHourly', finiteOrNull(raw.volumeHourly ?? null));
   if (volumeHourly === null) {
-    nullReasons.volumeHourly =
+    nullReasons.volumeHourly ??=
       'source provides rolling 24h volume only; hourly volume is not derived from differences of overlapping 24h totals';
   }
 
@@ -188,18 +234,25 @@ export function validateObservation(raw: RawObservation, opts: ValidateOptions):
     ),
   ].slice(0, 200);
 
-  const fdv = finitePositive(raw.fullyDilutedValuation);
-  if (fdv === null) nullReasons.fullyDilutedValuation = 'not reported by source';
+  const fdv = inRange('fullyDilutedValuation', finitePositive(raw.fullyDilutedValuation));
+  if (fdv === null) nullReasons.fullyDilutedValuation ??= 'not reported by source';
 
   const liquidity = {
-    bidAskSpreadPct: finiteOrNull(raw.bidAskSpreadPct ?? null),
-    depthPlus2PctUsd: finiteOrNull(raw.depthPlus2PctUsd ?? null),
-    depthMinus2PctUsd: finiteOrNull(raw.depthMinus2PctUsd ?? null),
+    bidAskSpreadPct: inRange('bidAskSpreadPct', finiteOrNull(raw.bidAskSpreadPct ?? null)),
+    depthPlus2PctUsd: inRange('depthPlus2PctUsd', finiteOrNull(raw.depthPlus2PctUsd ?? null)),
+    depthMinus2PctUsd: inRange('depthMinus2PctUsd', finiteOrNull(raw.depthMinus2PctUsd ?? null)),
   };
   if (liquidity.bidAskSpreadPct === null)
-    nullReasons.bidAskSpreadPct = 'source listing endpoint does not provide spread';
+    nullReasons.bidAskSpreadPct ??= 'source listing endpoint does not provide spread';
   if (liquidity.depthPlus2PctUsd === null)
-    nullReasons.depthPlus2PctUsd = 'source listing endpoint does not provide depth';
+    nullReasons.depthPlus2PctUsd ??= 'source listing endpoint does not provide depth';
+
+  const providerChangePct1h = inRange('providerChangePct1h', finiteOrNull(raw.changePct1h ?? null));
+  const providerChangePct24h = inRange(
+    'providerChangePct24h',
+    finiteOrNull(raw.changePct24h ?? null),
+  );
+  const providerChangePct7d = inRange('providerChangePct7d', finiteOrNull(raw.changePct7d ?? null));
 
   return {
     providerAssetId: raw.providerAssetId,
@@ -219,9 +272,9 @@ export function validateObservation(raw: RawObservation, opts: ValidateOptions):
     volumeRolling24h: volume24h !== null && volume24h >= 0 ? volume24h : null,
     volumeHourly,
     volumeHourlySource: volumeHourly === null ? null : (raw.volumeHourlySource ?? null),
-    providerChangePct1h: finiteOrNull(raw.changePct1h ?? null),
-    providerChangePct24h: finiteOrNull(raw.changePct24h ?? null),
-    providerChangePct7d: finiteOrNull(raw.changePct7d ?? null),
+    providerChangePct1h,
+    providerChangePct24h,
+    providerChangePct7d,
     ...liquidity,
     liquiditySource: raw.liquiditySource ?? null,
     rank,
