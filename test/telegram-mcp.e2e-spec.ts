@@ -280,7 +280,7 @@ describe('Telegram bot commands', () => {
       /Several coins use the symbol TWIN\. Tap one:[\s\S]*\/coin_990005[\s\S]*\/coin_990006/,
     );
     expect((await bot.handle('186142556', '/coin NOPE'))[0]).toMatch(
-      /No coin with the symbol NOPE/,
+      /No coin ranked 1–1,200 with the symbol NOPE/,
     );
     expect(sf.calls.every((c) => !c.url.includes('getUpdates'))).toBe(true);
   });

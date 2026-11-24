@@ -11,6 +11,8 @@ import { plain } from '../../common/utils/plain.js';
 import { DailyMetric } from '../daily-metrics/entities/daily-metric.entity.js';
 import { CrawlBatch } from '../ingestion/entities/crawl-batch.entity.js';
 import { ScanResult } from '../scan/entities/scan-result.entity.js';
+import { ScanRun } from '../scan/entities/scan-run.entity.js';
+import { ScanService } from '../scan/scan.service.js';
 import {
   LBANK,
   type ResolvedPair,
@@ -48,7 +50,37 @@ const parse = <T>(schema: z.ZodType<T>, v: unknown): T => {
  */
 @Injectable()
 export class ReviewService {
-  constructor(@InjectDataSource() private readonly db: DataSource) {}
+  constructor(
+    @InjectDataSource() private readonly db: DataSource,
+    private readonly scan: ScanService,
+  ) {}
+
+  /**
+   * The Tier 1 record a venue decision is checked against: the coin's row in the given batch (or
+   * the latest scanned one), stored or, outside the Review Queue, evaluated on request from that
+   * batch's stored inputs (D4); without a batch id, its most recent stored row as a last resort.
+   */
+  private async venueRecord(providerId: string, cmcId: number, batchId?: string) {
+    const target =
+      batchId ??
+      (
+        await this.db.getRepository(ScanRun).findOne({
+          where: { providerId, status: 'succeeded' },
+          order: { asOf: 'DESC' },
+          select: { batchId: true },
+        })
+      )?.batchId;
+    const rows = this.db.getRepository(ScanResult);
+    if (target) {
+      const stored = await rows.findOneBy({ batchId: target, cmcId });
+      if (stored) return stored;
+      const [onRequest] = await this.scan.evaluateCoins(target, [cmcId]);
+      if (onRequest) return onRequest;
+    }
+    return batchId
+      ? null
+      : rows.findOne({ where: { providerId, cmcId }, order: { crawledAt: 'DESC' } });
+  }
 
   /** LBank pairs of the asset that are verified tradable now (feed proof in the record or a reviewer). */
   private async lbankPairsNow(providerId: string, cmcId: number, recordPairs: ResolvedPair[]) {
@@ -80,7 +112,7 @@ export class ReviewService {
       .findOneBy({ batchId: input.batchId, cmcId: input.cmcId });
     if (!record)
       throw new ReviewInputError([
-        `no Tier 1 record for CMC id ${input.cmcId} in batch ${input.batchId}`,
+        `CMC id ${input.cmcId} has no stored Review Queue row in batch ${input.batchId}: reviews are kept for the coins the scan put in the queue`,
       ]);
     const pairs = record.lbankPairs ?? [];
     const lb = await this.lbankPairsNow(record.providerId, record.cmcId, pairs);
@@ -211,14 +243,7 @@ export class ReviewService {
     const input = parse(VenueDecisionSchema, body);
     if (input.decision !== 'NOT_TRADABLE' && !input.marketPair)
       throw new ReviewInputError([`${input.decision} needs the LBank market pair`]);
-    const record = await this.db.getRepository(ScanResult).findOne({
-      where: {
-        providerId,
-        cmcId: input.cmcId,
-        ...(input.batchId ? { batchId: input.batchId } : {}),
-      },
-      order: { crawledAt: 'DESC' },
-    });
+    const record = await this.venueRecord(providerId, input.cmcId, input.batchId);
     if (!record) throw new ReviewInputError([`no Tier 1 record for CMC id ${input.cmcId}`]);
     if (input.marketPair) {
       const pairs = (record.lbankPairs ?? []).map((p) => p.marketPair);

@@ -33,6 +33,11 @@ never real orders. Spec: `docs/strategy-two-tier-vmc.md`. Purpose and open decis
   daily High (`forward_day0_capture`, rules `star-forward-2`).
   Pure rules in `forward-rules.ts` / `cohort.ts`; a rule change bumps `FORWARD_RULES_VERSION`
   (not `RULESET_VERSION`) and the doc. Reprocessing never creates events.
+- **Storage scope** (`docs/adr/0008-storage-scope.md`, D4): every coin is screened hourly and kept
+  in the registry, but only ranks 1–1200 are stored as snapshots and only Review Queue rows as
+  `scan_result`; other coins are counted on `scan_run.counts` and traced on request
+  (`ScanService.evaluateCoins`, writes nothing). NEEDS_REVIEW fails closed (no windows or stars).
+  Never prune queue rows, daily rows or forward-test data; earlier rows go only via `storage:prune`.
 - **Deterministic code owns all numbers**: exact decimals (`common/utils/decimal.ts`), no rounding
   before comparisons, no invented thresholds. Missing or ambiguous inputs → N/A or NEEDS_REVIEW
   with a reason code, never silently eligible.
@@ -78,6 +83,7 @@ npm run db:pull-prod                    # replace the local DB with production's
 npm run cli -- run-once                 # one pipeline run (fixture source by default)
 npm run cli -- tier1:trace --id 990001  # calculation trace for one coin
 npm run cli -- forward:status           # forward test: star groups, coverage, warnings
+npm run cli -- storage:prune            # dry run of the one-time D4 cleanup (--apply [--vacuum] after a backup)
 npm start                               # API http://127.0.0.1:3000 + scheduler (no pages)
 npm run front:install && npm run front:dev  # dashboard http://127.0.0.1:5173, proxies /api to :3000 (sign in: owner / owner first)
 npm run front:typecheck && npm run front:build  # strict TS check; production bundle (front/dist)

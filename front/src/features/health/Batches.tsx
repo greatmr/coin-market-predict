@@ -226,7 +226,15 @@ const BATCH_COLS: Column<BatchRow>[] = [
   {
     label: 'Collected',
     num: true,
+    title: 'Coins read and checked, of those the source lists',
     render: (b) => `${fmtInt(b.collected)} / ${fmtInt(b.listedTotal)}`,
+  },
+  {
+    label: 'Stored',
+    num: true,
+    title:
+      'Snapshots kept for the hour: ranks 1–1,200 (every collected coin before the storage change)',
+    render: (b) => fmtInt(b.stored ?? b.collected),
   },
   {
     label: 'Ranks 1–1200',
@@ -244,10 +252,12 @@ const BATCH_COLS: Column<BatchRow>[] = [
         : '—',
   },
   {
-    label: 'Eligible / review / excluded',
+    label: 'Screened / eligible',
+    title:
+      'Coins ranked 1–1,200 screened (stored as snapshots) and how many passed every hard filter. Only the queue is stored per coin.',
     render: (b) =>
       b.scan?.counts
-        ? `${fmtInt(b.scan.counts.eligible)} / ${fmtInt(b.scan.counts.needsReview)} / ${fmtInt(b.scan.counts.excluded)}`
+        ? `${fmtInt(b.scan.counts.screened ?? b.scan.counts.assets)} / ${fmtInt(b.scan.counts.eligible)}`
         : '—',
   },
   { label: 'Export', render: (b) => (b.scan ? b.scan.exportStatus || '—' : '—') },

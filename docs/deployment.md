@@ -84,6 +84,20 @@ M008, the Star Event Forward Test), take the backup below first: the app applies
 container start. Check with `dc exec api node dist/cli.js db:status`; forward-test commands are in
 [forward-test.md § 12](forward-test.md#12-runbook).
 
+**Storage scope (D4, 2026-11-24, [ADR-0008](adr/0008-storage-scope.md)).** That update (migration
+M014) stops storing per-coin rows outside the Review Queue and snapshots ranked above 1200; it
+deletes nothing. Remove the earlier rows once, by hand, right after an hourly run has finished
+(minute ~15; the command holds the pipeline lease, so a run starting meanwhile is skipped):
+```bash
+dc exec -T postgres pg_dump -U coins -Fc -t scan_result -t market_snapshot -t crawl_batch \
+  -t scan_run -t app_state coins > ~/coins-pre-prune-$(date +%F).dump   # backup first
+dc exec api node dist/cli.js storage:prune                    # dry run: counts only
+dc exec api node dist/cli.js storage:prune --apply --vacuum   # delete, then return the space
+```
+Until it has run, hourly retention deletes no snapshot (`legacyPending` in the run's retention
+metrics). `RETENTION_DETAIL_DAYS` (default 7) is the hourly window kept afterwards; check whether
+`.env.prod` sets it (by name only): an explicit 30 keeps about four times the snapshots.
+
 ## API on its own subdomain (optional)
 By default the dashboard and the API share `https://predict.jahantalab.com` (`web` proxies `/api`).
 To serve the API at `https://api-predict.jahantalab.com` instead (same site, so the session cookie

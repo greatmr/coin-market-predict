@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { type DataSource, MoreThan } from 'typeorm';
+import type { DataSource } from 'typeorm';
 
 import { APP_CONFIG, type AppConfig } from '../../config/index.js';
 
@@ -30,23 +30,11 @@ export class ReportService {
       this.db.getRepository(CrawlBatch).findOneByOrFail({ id: batchId }),
     ]);
     const provider = await this.db.getRepository(Provider).findOneBy({ id: batch.providerId });
-    const results = this.db.getRepository(ScanResult);
-    const [queue, needsYes, unverifiedYes] = await Promise.all([
-      results.find({
-        where: { batchId, inQueue: true },
-        order: { queueOrder: 'ASC' },
-        take: this.cfg.TELEGRAM_QUEUE_ROWS,
-      }),
-      results.count({ where: { batchId, eligibilityStatus: 'NEEDS_REVIEW', stars: MoreThan(0) } }),
-      results.count({
-        where: {
-          batchId,
-          eligibilityStatus: 'NEEDS_REVIEW',
-          stars: MoreThan(0),
-          lbankStatus: 'PAIR_LISTED_UNVERIFIED',
-        },
-      }),
-    ]);
+    const queue = await this.db.getRepository(ScanResult).find({
+      where: { batchId, inQueue: true },
+      order: { queueOrder: 'ASC' },
+      take: this.cfg.TELEGRAM_QUEUE_ROWS,
+    });
     const counts = (run.counts ?? {}) as Record<string, number>;
     const rows: QueueRow[] = queue.map((r) => ({
       order: r.queueOrder ?? 0,
@@ -74,13 +62,10 @@ export class ReportService {
       queueStatus: run.queueStatus ?? 'EMPTY',
       counts: {
         assets: counts.assets ?? 0,
+        screened: counts.screened ?? counts.assets ?? 0,
         eligible: counts.eligible ?? 0,
-        needsReview: counts.needsReview ?? 0,
-        excluded: counts.excluded ?? 0,
         queue: counts.queue ?? 0,
       },
-      needsReviewWithYes: needsYes,
-      lbankUnverifiedWithYes: unverifiedYes,
       rows,
       warnings: run.warnings,
       botUsername: this.telegram.botUsername,

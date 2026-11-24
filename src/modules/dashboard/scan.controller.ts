@@ -11,7 +11,7 @@ import { ReadModelService } from '../read-model/read-model.service.js';
 import { type OptionalBatchDto, OptionalBatchSchema } from './dto/common.dto.js';
 import { type ScanQueryDto, ScanQuerySchema } from './dto/scan.dto.js';
 
-/** Tier 1 result sheets and reprocessing of a stored batch. */
+/** The stored Review Queue and reprocessing of a stored batch. */
 @Controller('scan')
 export class ScanController {
   constructor(

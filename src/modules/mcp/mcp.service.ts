@@ -29,7 +29,7 @@ export class McpService {
       defineTool({
         name: 'get_scan_summary',
         description:
-          'Latest Tier 1 scan: crawl batch status, crawl age, queue status (published or withheld and why), counts (eligible / needs review / excluded / queue / N/A per window), warnings, export files and any failure banner.',
+          'Latest Tier 1 scan: crawl batch status, crawl age, queue status (published or withheld and why), counts (coins checked, ranked 1–1200, eligible, missing or ambiguous data, excluded with reasons, queue, N/A per window), warnings, export files and any failure banner.',
         scope: 'read',
         input: {},
         output: json,
@@ -38,10 +38,10 @@ export class McpService {
       defineTool({
         name: 'get_scan_results',
         description:
-          'Rows of one Tier 1 sheet for the latest (or given) batch: queue (eligible with ≥1 YES, ranked by stars, then weighted points 3d 60 / 7d 25 / 30d 15, complete score first, weighted strength, 3-day multiple, CMC id), eligible, needs_review, excluded, or all. Each row has rank, cap, rolling-24h volume, current VMC, 3/7/14/30-day means, 3/7/30-day multiples with YES/NO/N/A and reason codes, stars, eligibility reasons, LBank pair status, the weighted star ranking (points, score_complete, strength, ranking version) and the latest human review.',
+          'The Review Queue of the latest (or given) batch: eligible coins with ≥1 YES, ranked by stars, then weighted points 3d 60 / 7d 25 / 30d 15, complete score first, weighted strength, 3-day multiple, CMC id. Only the queue is stored per coin; other coins are counted in get_scan_summary and can be traced one at a time with get_asset_trace. Each row has rank, cap, rolling-24h volume, current VMC, 3/7/14/30-day means, 3/7/30-day multiples with YES/NO/N/A and reason codes, stars, eligibility reasons, LBank pair status, the weighted star ranking (points, score_complete, strength, ranking version) and the latest human review.',
         scope: 'read',
         input: {
-          sheet: z.enum(['queue', 'eligible', 'needs_review', 'excluded', 'all']).optional(),
+          sheet: z.enum(['queue']).optional(),
           batchId: z.string().uuid().optional(),
           search: z.string().max(64).optional(),
           limit: z.number().int().min(1).max(500).optional(),
@@ -60,7 +60,7 @@ export class McpService {
       defineTool({
         name: 'get_asset_trace',
         description:
-          'Full calculation trace for one CMC id (latest or given batch): current observation and formula, the 30 completed daily rows actually used (exact revisions), every window mean and comparison, eligibility reasons, LBank pairs, decisions and mapping tasks, CMC Markets venue rows, and the review history.',
+          'Full calculation trace for one CMC id (latest or given batch): current observation and formula, the 30 completed daily rows actually used (exact revisions), every window mean and comparison, eligibility reasons, LBank pairs, decisions and mapping tasks, CMC Markets venue rows, and the review history. A coin outside the stored Review Queue is evaluated on request from the batch\'s stored inputs (evaluation.mode "on_request"); coins ranked above 1200 have no stored observation.',
         scope: 'read',
         input: { cmcId: z.number().int().positive(), batchId: z.string().uuid().optional() },
         output: json,

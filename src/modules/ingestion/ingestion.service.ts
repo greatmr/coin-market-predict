@@ -21,7 +21,12 @@ import {
 import { type BatchStatus, RULES } from '../strategy/index.js';
 
 import { classifyAsset, stricterClass } from './classify.js';
-import { type CoverageReport, rankContinuity, trackerEvidence } from './coverage.js';
+import {
+  type CoverageReport,
+  inStoredUniverse,
+  rankContinuity,
+  trackerEvidence,
+} from './coverage.js';
 import { AssetContract } from './entities/asset-contract.entity.js';
 import { AssetIdentity } from './entities/asset-identity.entity.js';
 import { Asset } from './entities/asset.entity.js';
@@ -58,6 +63,7 @@ const BATCH_UPDATE_COLUMNS = [
   'status_reasons',
   'listed_total',
   'collected',
+  'stored',
   'field_counts',
   'missing_ranks',
   'duplicate_ranks',
@@ -437,24 +443,25 @@ export class IngestionService {
   }
 
   /**
-   * Crawl-batch record computed from the snapshots actually stored for the slot (PDF p.16), so a
-   * replay describes the same data. COMPLETE needs the whole listing and contiguous ranks 1–1200.
+   * Crawl-batch record (PDF p.16). `collected` counts every coin read in the slot; field counts,
+   * times and rank continuity come from the snapshots actually stored (ranks 1–1200 since D4), so
+   * a replay describes the same data. COMPLETE needs the whole listing and contiguous ranks 1–1200.
    */
   async recordBatch(
     slot: Date,
     runId: string | null,
     startedAt: Date,
-    coverage: Pick<CoverageReport, 'label' | 'universeSize' | 'notes'>,
+    coverage: Pick<CoverageReport, 'label' | 'universeSize' | 'notes' | 'collected'>,
   ): Promise<{ id: string; status: BatchStatus }> {
     const providerId = this.source.info.id;
     const [stats] = (await this.db.query(
-      `SELECT count(*)::int AS collected, min(collected_at) AS crawled_at, min(observed_at) AS obs_min, max(observed_at) AS obs_max,
+      `SELECT count(*)::int AS stored, min(collected_at) AS crawled_at, min(observed_at) AS obs_min, max(observed_at) AS obs_max,
               count(price)::int AS price, count(market_cap)::int AS cap, count(volume_rolling_24h)::int AS vol, count(observed_at)::int AS observed,
               count(rank)::int AS rank, count(date_added)::int AS date_added, count(*) FILTER (WHERE cardinality(tags) > 0)::int AS tags
          FROM market_snapshot WHERE provider_id = $1 AND slot_time = $2`,
       [providerId, slot],
     )) as Array<{
-      collected: number;
+      stored: number;
       crawled_at: Date | null;
       obs_min: Date | null;
       obs_max: Date | null;
@@ -466,7 +473,9 @@ export class IngestionService {
       date_added: number;
       tags: number;
     }>;
-    const collected = stats?.collected ?? 0;
+    const stored = stats?.stored ?? 0;
+    // A replayed slot may have stored more than this attempt read (first write wins).
+    const collected = Math.max(coverage.collected, stored);
     const reasons: string[] = [];
     let missing: number[] = [];
     let duplicates: number[] = [];
@@ -480,6 +489,7 @@ export class IngestionService {
       if (missing.length) reasons.push(`missing_ranks:${missing.length}`);
       if (duplicates.length) reasons.push(`duplicate_ranks:${duplicates.length}`);
     } else reasons.push('source_ids_are_not_cmc_ids');
+    if (collected > 0 && stored === 0) reasons.push('no_ranked_observations_stored');
     const status: BatchStatus =
       collected === 0 ? 'FAILED' : reasons.length ? 'INCOMPLETE' : 'COMPLETE';
     if (collected === 0) reasons.push('no_observations_stored');
@@ -493,6 +503,7 @@ export class IngestionService {
       statusReasons: reasons,
       listedTotal: coverage.universeSize,
       collected,
+      stored,
       fieldCounts: {
         price: stats?.price ?? 0,
         marketCap: stats?.cap ?? 0,
@@ -551,6 +562,7 @@ export class IngestionService {
       status: 'FAILED' as const,
       statusReasons: ['collection_failed'],
       collected: 0,
+      stored: 0,
       fieldCounts: {},
       errors: { message: redact(err).slice(0, 1000) },
     };
@@ -563,6 +575,7 @@ export class IngestionService {
         'status',
         'status_reasons',
         'collected',
+        'stored',
         'field_counts',
         'errors',
       ],
@@ -599,7 +612,10 @@ export class IngestionService {
       })),
       now,
     );
-    const inserted = await this.persistDrafts(drafts, idMap, runId);
+    // Every coin is read, validated and kept in the registry above; only ranks 1–1200 become
+    // snapshots (D4). The rest fails the rank rule (or has no rank) and leaves no hourly row.
+    const keep = drafts.filter((d) => inStoredUniverse(d.rank));
+    const inserted = await this.persistDrafts(keep, idMap, runId);
 
     const lastDiscovery = await this.lastDiscovery(providerId);
     // The total reported by this sweep describes the same listing as its observations. The last
@@ -631,14 +647,19 @@ export class IngestionService {
       notes.push(
         `source total ${result.universeSize} this slot (last discovery: ${lastDiscovery.sourceTotal})`,
       );
-    if (inserted < drafts.length)
+    if (inserted < keep.length)
       notes.push(
-        `${drafts.length - inserted} snapshots already stored for this slot (idempotent re-run)`,
+        `${keep.length - inserted} snapshots already stored for this slot (idempotent re-run)`,
       );
-    const batch = await this.recordBatch(slot, runId, now, { label, universeSize, notes });
+    const batch = await this.recordBatch(slot, runId, now, {
+      label,
+      universeSize,
+      notes,
+      collected,
+    });
     await this.syncCmcAssets(result.observations, batch.id, now);
     this.log.log(
-      `collected ${collected} observations for ${slot.toISOString()} (${label}${coveragePct !== null ? `, ${coveragePct.toFixed(1)}%` : ''}; batch ${batch.status})`,
+      `collected ${collected} observations for ${slot.toISOString()} (${label}${coveragePct !== null ? `, ${coveragePct.toFixed(1)}%` : ''}; ${keep.length} ranked 1–${RULES.rankMax} stored; batch ${batch.status})`,
     );
     return {
       providerId,
@@ -646,6 +667,7 @@ export class IngestionService {
       universeSize,
       universeComplete: lastDiscovery?.coverageComplete ?? false,
       collected,
+      stored: keep.length,
       sourceListingComplete: result.complete,
       coveragePct,
       label,

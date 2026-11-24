@@ -113,7 +113,7 @@ agreement details, Binance main terms, CoinCap free tier.
 |---|---|
 | Hourly listing | 1 per hour (~720/month), plus up to 3 re-reads in an hour whose listing gives one rank to two coins (CMC's rank cache read mid-refresh: 4 of the first 191 live hours, 2026-11-10 to 2026-11-18) |
 | LBank Spot pairs | 2 requests per fetch (~900 pairs, overlapping pages), once every `LBANK_PAIRS_REFRESH_DAYS` (30) plus manual refreshes |
-| Daily rows | ~1 per screen candidate per UTC day (non-excluded coins, roughly 500–1,100), plus retries after `TIER1_DAILY_RETRY_HOURS` for coins whose latest day was not yet published |
+| Daily rows | ~1 per screen candidate per UTC day (ELIGIBLE coins since `vmc-tier1-2`, roughly 250–300), plus retries after `TIER1_DAILY_RETRY_HOURS` for coins whose latest day was not yet published |
 | Signal-day hourly Highs (forward test) | ~1 per coin and signal date whose daily High came before detection and was not reached later (a share of each day's new events), retried within `MISSING_DATA_RETRY_DAYS` only while no capture matches |
 | Venue rows | ≤ `TIER1_VENUE_MAX_ASSETS_PER_RUN` per run, each candidate at most every `TIER1_VENUE_REFRESH_HOURS` |
 | LBank Futures + Bithumb lists | ~4 per refresh (perpetual: 2 pages, futures: 1, Bithumb: 1), every `EXCHANGE_LISTS_REFRESH_HOURS` (24) plus `exchange-lists:refresh`; a failed attempt is retried after at most 6 h; skipped when the request reserve is reached |

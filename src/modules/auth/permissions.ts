@@ -13,7 +13,7 @@ export const USER_ROLES = ['owner', 'analyzer', 'reviewer'] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 
 export const PERMISSIONS = [
-  /** Overview, the four sheets, coin details, snapshots, coin search, the LBank list status. */
+  /** Overview, the Review Queue, coin details, snapshots, coin search, the LBank list status. */
   'data:read',
   /** Crawl batches, pipeline runs, source health, open mapping tasks. */
   'health:read',

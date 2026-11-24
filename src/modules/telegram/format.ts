@@ -108,14 +108,13 @@ export interface Tier1ReportInput {
   batchReasons: string[];
   queueStatus: string;
   counts: {
+    /** Every coin read in the batch. */
     assets: number;
+    /** Coins ranked 1–1200 (stored and screened); the rest is checked by rank only. */
+    screened: number;
     eligible: number;
-    needsReview: number;
-    excluded: number;
     queue: number;
   };
-  needsReviewWithYes: number;
-  lbankUnverifiedWithYes: number;
   rows: QueueRow[];
   warnings: string[];
   /** The bot's @username: coin names become tappable deep links. Null keeps /coin_<id> commands. */
@@ -188,7 +187,7 @@ export function formatTier1Report(r: Tier1ReportInput): string[] {
       `⚠️ <b>Batch ${escapeHtml(r.batchStatus.toLowerCase())}</b>${r.batchReasons.length ? `: ${escapeHtml(r.batchReasons.join(', '))}` : ''}`,
     );
 
-  const funnel = `<i>${int(r.counts.assets)} coins · ${int(r.counts.eligible)} eligible · ${int(r.counts.needsReview)} need review · ${int(r.counts.excluded)} excluded</i>`;
+  const funnel = `<i>${int(r.counts.assets)} coins checked · ${int(r.counts.screened)} ranked 1–1,200 · ${int(r.counts.eligible)} eligible</i>`;
   const withheld = WITHHELD[r.queueStatus];
   if (withheld) {
     blocks.push(
@@ -217,10 +216,6 @@ export function formatTier1Report(r: Tier1ReportInput): string[] {
       `<i>Bold = at least 1.5× the coin's own mean (YES). ${r.botUsername ? 'Tap a coin for its details.' : 'Tap a /coin link for details.'}${more > 0 ? ` ${plural(more, 'more coin')} on the dashboard.` : ''}</i>`,
     );
   }
-  if (r.needsReviewWithYes)
-    blocks.push(
-      `🔎 ${plural(r.needsReviewWithYes, 'more coin')} met a window but ${r.needsReviewWithYes === 1 ? 'needs' : 'need'} review first${r.lbankUnverifiedWithYes ? ` (${int(r.lbankUnverifiedWithYes)} with an unverified LBank pair)` : ''}. See the dashboard.`,
-    );
   blocks.push(
     `<i>${escapeHtml(RESEARCH_NOTE)}${r.attribution && r.isLive ? ` · ${escapeHtml(r.attribution.replace(/^Data:\s*/i, 'data: '))}` : ''}</i>`,
   );
@@ -342,6 +337,7 @@ const REASON_TEXT: Record<string, string> = {
   DAILY_ROW_INVALID: 'a completed day is invalid',
   ZERO_BASELINE: 'zero baseline',
   NOT_EVALUATED_EXCLUDED: 'not evaluated (excluded)',
+  NOT_EVALUATED_NEEDS_REVIEW: 'not evaluated (missing or ambiguous input)',
   CURRENT_STALE: 'quote older than the limit',
   CURRENT_MISSING: 'no current quote',
   TIMESTAMP_UNVERIFIED: 'no provider time',
@@ -368,7 +364,7 @@ const pad = (s: string, w: number, left = false) =>
 const lower = (s: string) => s.toLowerCase().replace(/_/g, ' ');
 const STATUS: Record<string, string> = {
   ELIGIBLE: '✅ Eligible',
-  NEEDS_REVIEW: '🔎 Needs review',
+  NEEDS_REVIEW: '⚠️ Missing or ambiguous data',
   EXCLUDED: '⛔ Excluded',
 };
 
@@ -416,7 +412,7 @@ function vmcBlock(t: CoinDetailInput): string {
     `<i>${compactUsd(n(r.volume24hUsd))} rolling 24h volume ÷ ${compactUsd(n(r.capUsd))} cap</i>`,
   ];
   if (t.windows.every((w) => n(w.mean) === null) && !t.daily.used.length)
-    return [...head, '<i>Windows not evaluated: excluded coins get no daily history.</i>'].join(
+    return [...head, '<i>Windows not evaluated: only eligible coins get daily history.</i>'].join(
       '\n',
     );
   return [

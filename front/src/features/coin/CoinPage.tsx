@@ -41,7 +41,7 @@ import type { AssetTrace } from './types';
 
 const TAB_KEYS: readonly CoinTab[] = ['review', 'agent', 'history', 'details'];
 const NOT_FOUND =
-  'This coin has no Tier 1 record in the latest scan, so there is nothing to trace yet. Coins appear here after a run collects them.';
+  'Nothing is stored for this coin in the latest scan: only coins ranked 1–1,200 are kept each hour (and only review-queue rows for good). It is still checked every hour and opens here as soon as it ranks 1–1,200.';
 
 const traceUrl = (cmcId: number, batchId: string | null) =>
   `assets/${cmcId}/trace${batchId ? `?batchId=${encodeURIComponent(batchId)}` : ''}`;
@@ -305,7 +305,14 @@ function CoinDetail({
           {guard('The venue chart', <VenuePanel t={t} />)}
         </div>
         {guard('The LBank pairs', <LbankPanel t={t} decide={(d, p) => void decide(d, p)} />)}
-        {guard('The review form', <ReviewForm t={t} reload={reload} formRef={formRef} />)}
+        {t.evaluation?.stored === false ? (
+          <p className="muted small">
+            Reviews are kept for coins in the review queue. This coin is not in the queue of this
+            batch, so there is nothing to review here.
+          </p>
+        ) : (
+          guard('The review form', <ReviewForm t={t} reload={reload} formRef={formRef} />)
+        )}
       </>
     ),
     agent: canAgent ? guard("Claude's view", <AgentPanel cmcId={r.cmcId} />) : null,
@@ -328,6 +335,9 @@ function CoinDetail({
   return (
     <>
       <CoinHero t={t} />
+      {t.evaluation && t.evaluation.mode !== 'stored' && t.evaluation.note ? (
+        <p className="muted small coin-eval-note">{t.evaluation.note}</p>
+      ) : null}
       <div
         ref={barRef}
         className="detail-tabs"

@@ -21,8 +21,9 @@ import { Provider } from '../../sources/entities/provider.entity.js';
 import { type BatchStatus, CRAWL_STATUSES } from '../../strategy/index.js';
 
 /**
- * One crawl batch per provider and UTC hour slot (PDF p.16 crawl_batches), computed from the
- * snapshots actually stored. COMPLETE needs the whole listing and contiguous ranks 1–1200.
+ * One crawl batch per provider and UTC hour slot (PDF p.16 crawl_batches): how many coins were read
+ * and stored, and field counts, times and rank continuity of the snapshots actually stored.
+ * COMPLETE needs the whole listing and contiguous ranks 1–1200.
  */
 @Entity({ name: 'crawl_batch' })
 @Unique('ux_crawl_batch_slot', ['providerId', 'slotTime'])
@@ -77,10 +78,18 @@ export class CrawlBatch {
   @Column({ name: 'listed_total', type: 'integer', nullable: true })
   listedTotal!: number | null;
 
+  /** Coins read and validated in the slot (every listed coin, stored or not). */
   @Column({ type: 'integer' })
   collected!: number;
 
-  /** field → number of observations with a non-null value. */
+  /**
+   * Snapshots stored for the slot: ranks 1–1200 since D4 (M014). NULL on earlier batches, which
+   * stored every collected coin.
+   */
+  @Column({ type: 'integer', nullable: true })
+  stored!: number | null;
+
+  /** field → number of stored observations with a non-null value. */
   @Column({ name: 'field_counts', type: 'jsonb' })
   fieldCounts!: Record<string, number>;
 

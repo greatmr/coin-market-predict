@@ -6,12 +6,21 @@ export type Tally = Record<string, number>;
 
 /** scan_run.counts as the scan writes it (everything the overview charts read). */
 export interface ScanCountsDetail {
+  /** Every coin read in the batch. */
   assets?: number;
+  /** Coins ranked 1–1200: stored and screened (absent before D4: every coin was screened). */
+  screened?: number;
+  /** Coins read but not stored: ranked above 1200 or unranked. */
+  outsideUniverse?: number;
+  /** Coins whose windows were computed (ELIGIBLE). */
   evaluated?: number;
   eligible?: number;
+  /** Missing or ambiguous inputs: fail closed, never evaluated (since vmc-tier1-2). */
   needsReview?: number;
   excluded?: number;
   queue?: number;
+  /** Rows stored per coin: the Review Queue. */
+  stored?: number;
   stars?: Tally;
   pass?: Partial<Record<'pass3d' | 'pass7d' | 'pass30d', Tally>>;
   current?: Tally;

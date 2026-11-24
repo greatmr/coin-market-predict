@@ -23,25 +23,6 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M20 19V3" />
     </>
   ),
-  eligible: (
-    <>
-      <circle cx="12" cy="12" r="8" />
-      <path d="M8.5 12.5l2.5 2.5 4.5-5" />
-    </>
-  ),
-  needs_review: (
-    <>
-      <path d="M12 4l9 16H3z" />
-      <path d="M12 10v4" />
-      <path d="M12 17h.01" />
-    </>
-  ),
-  excluded: (
-    <>
-      <circle cx="12" cy="12" r="8" />
-      <path d="M6.5 17.5l11-11" />
-    </>
-  ),
   forward: (
     <>
       <path d="M4 18l5-6 4 3 7-9" />

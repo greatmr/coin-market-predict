@@ -9,6 +9,7 @@ import { DailyMetricsService } from '../src/modules/daily-metrics/daily-metrics.
 import { DailyMetricRevision } from '../src/modules/daily-metrics/entities/daily-metric-revision.entity.js';
 import { DailyMetric } from '../src/modules/daily-metrics/entities/daily-metric.entity.js';
 import { MANDATORY_COLUMNS } from '../src/modules/exports/export.service.js';
+import { CmcAsset } from '../src/modules/ingestion/entities/cmc-asset.entity.js';
 import { CrawlBatch } from '../src/modules/ingestion/entities/crawl-batch.entity.js';
 import { MarketSnapshot } from '../src/modules/ingestion/entities/market-snapshot.entity.js';
 import { IngestionService } from '../src/modules/ingestion/ingestion.service.js';
@@ -18,6 +19,7 @@ import { Review } from '../src/modules/reviews/entities/review.entity.js';
 import { ReviewInputError, ReviewService } from '../src/modules/reviews/review.service.js';
 import { ScanResult } from '../src/modules/scan/entities/scan-result.entity.js';
 import { ScanRun } from '../src/modules/scan/entities/scan-run.entity.js';
+import { ScanService } from '../src/modules/scan/scan.service.js';
 import { compareQueue, rankingScore } from '../src/modules/strategy/index.js';
 import { TelegramDelivery } from '../src/modules/telegram/entities/telegram-delivery.entity.js';
 import { ReportService } from '../src/modules/telegram/report.service.js';
@@ -65,7 +67,19 @@ const S = {
   R1201: 990028,
   SNGL: 990029,
 };
-const row = (cmcId: number) => ctx.repo(ScanResult).findOneByOrFail({ batchId, cmcId });
+/**
+ * The coin's Tier 1 result in the batch: its stored Review Queue row, or (any other coin with a
+ * stored snapshot) the same rules evaluated on request from the batch's stored inputs (D4).
+ */
+const row = async (cmcId: number, app = ctx.app) => {
+  const stored = await ctx.repo(ScanResult).findOneBy({ batchId, cmcId });
+  if (stored) return stored;
+  const [onRequest] = await app.get(ScanService).evaluateCoins(batchId, [cmcId]);
+  if (!onRequest) throw new Error(`CMC id ${cmcId} has no stored snapshot in batch ${batchId}`);
+  return onRequest;
+};
+const isStored = async (cmcId: number) =>
+  (await ctx.repo(ScanResult).countBy({ batchId, cmcId })) > 0;
 /** The comparable outcome of every result row of the batch (row ids change on reprocess). */
 const outcomes = async () =>
   (
@@ -119,16 +133,66 @@ describe('Tier 1 end to end on the synthetic fixture', () => {
       duplicateRanks: [],
     });
     // Ranks 1–1300 are contiguous; one more coin is deliberately unranked (RANK_MISSING case).
+    // Every coin is read; only ranks 1–1200 are stored as snapshots (D4).
     expect(batch.collected).toBe(1301);
     expect(batch.listedTotal).toBe(1301);
+    expect(batch.stored).toBe(1200);
+    expect(batch.fieldCounts.rank).toBe(1200);
     const run = await ctx.repo(ScanRun).findOneByOrFail({ batchId });
     expect(run).toMatchObject({
       status: 'succeeded',
       queueStatus: 'PUBLISHED',
       isLive: false,
-      rulesetVersion: 'vmc-tier1-1',
+      rulesetVersion: 'vmc-tier1-2',
     });
-    expect(await ctx.repo(ScanResult).countBy({ batchId })).toBe(1301);
+    // Only the Review Queue is stored per coin; every other coin is counted on the scan run.
+    const c = run.counts as {
+      assets: number;
+      screened: number;
+      outsideUniverse: number;
+      eligible: number;
+      needsReview: number;
+      excluded: number;
+      evaluated: number;
+      queue: number;
+      stored: number;
+      stars: Record<string, number>;
+    };
+    expect(await ctx.repo(ScanResult).countBy({ batchId })).toBe(c.queue);
+    expect(await ctx.repo(ScanResult).countBy({ batchId, inQueue: false })).toBe(0);
+    expect(c).toMatchObject({
+      assets: 1301,
+      screened: 1200,
+      outsideUniverse: 101,
+      stored: c.queue,
+    });
+    expect(c.eligible + c.needsReview + c.excluded).toBe(1200);
+    expect(c.evaluated).toBe(c.eligible);
+    expect(c.stars['0']! + c.queue).toBe(c.eligible);
+  });
+
+  it('stores snapshots of ranks 1–1200 only; a coin ranked above 1200 or unranked leaves no row', async () => {
+    const batch = await ctx.repo(CrawlBatch).findOneByOrFail({ id: batchId });
+    const snaps = ctx.repo(MarketSnapshot);
+    expect(await snaps.countBy({ slotTime: batch.slotTime })).toBe(1200);
+    const ranks = await snaps
+      .createQueryBuilder('s')
+      .select('min(s.rank)', 'lo')
+      .addSelect('max(s.rank)', 'hi')
+      .addSelect('count(*) FILTER (WHERE s.rank IS NULL)', 'unranked')
+      .where('s.slot_time = :t', { t: batch.slotTime })
+      .getRawOne<{ lo: number; hi: number; unranked: string }>();
+    expect([ranks!.lo, ranks!.hi, Number(ranks!.unranked)]).toEqual([1, 1200, 0]);
+    // R1201 (rank 1201, VMC 4× its mean) and NORK (no rank) are read and counted, never stored or
+    // evaluated: no snapshot, no result, nothing to evaluate on request.
+    for (const id of [S.R1201, S.NORK]) {
+      expect(await snaps.countBy({ providerAssetId: String(id) })).toBe(0);
+      expect(await ctx.app.get(ScanService).evaluateCoins(batchId, [id])).toEqual([]);
+      expect(await isStored(id)).toBe(false);
+    }
+    // The coin registry keeps them, ready for the hour they rank 1–1200.
+    for (const id of [S.R1201, S.NORK])
+      expect(await ctx.repo(CmcAsset).countBy({ cmcId: id, lastBatchId: batchId })).toBe(1);
   });
 
   it('YES/NO/YES asset keeps every window with exact multiples (p.7, p.19 B)', async () => {
@@ -148,7 +212,7 @@ describe('Tier 1 end to end on the synthetic fixture', () => {
     expect(r.lbankStatus).toBe('VERIFIED');
   });
 
-  it('0-star eligible asset is kept in All Eligible but not in the queue', async () => {
+  it('a 0-star eligible asset is evaluated every hour but not stored (D4)', async () => {
     const r = await row(S.ZERO);
     expect([r.eligibilityStatus, r.stars, r.inQueue, r.pass3d, r.pass7d, r.pass30d]).toEqual([
       'ELIGIBLE',
@@ -158,12 +222,16 @@ describe('Tier 1 end to end on the synthetic fixture', () => {
       'NO',
       'NO',
     ]);
+    expect(await isStored(S.ZERO)).toBe(false);
+    // Its daily baseline is kept, so a later hour can compare it again.
+    expect(await ctx.repo(DailyMetric).countBy({ cmcId: S.ZERO })).toBeGreaterThanOrEqual(30);
   });
 
   it('ambiguous LBank tickers are held for review with a saved mapping-evidence task (p.10)', async () => {
     const amb = await row(S.AMB);
     expect(amb.eligibilityStatus).toBe('NEEDS_REVIEW');
     expect(amb.eligibilityReasons).toContain('LBANK_STATUS_UNKNOWN:AMBIGUOUS_MAPPING');
+    expect(await isStored(S.AMB)).toBe(false);
     for (const id of [S.TWIN_A, S.TWIN_B])
       expect((await row(id)).lbankReason).toBe('AMBIGUOUS_MAPPING');
     const tasks = await ctx
@@ -230,19 +298,19 @@ describe('Tier 1 end to end on the synthetic fixture', () => {
     expect((await row(S.TSLAX)).eligibilityReasons).toEqual(['TOKENIZED_ASSET']);
     expect(await st(S.FANX)).toBe('ELIGIBLE');
     expect((await row(S.WRPX)).eligibilityReasons).toContain('CLASS_AMBIGUOUS:wrapped');
-    expect([await st(S.R100), await st(S.R101), await st(S.R1200), await st(S.R1201)]).toEqual([
+    expect([await st(S.R100), await st(S.R101), await st(S.R1200)]).toEqual([
       'EXCLUDED',
       'ELIGIBLE',
       'ELIGIBLE',
-      'EXCLUDED',
     ]);
+    // Rank 1201 fails the rank rule at collection: counted, never stored (see above).
+    expect(await ctx.repo(MarketSnapshot).countBy({ providerAssetId: String(S.R1201) })).toBe(0);
     expect([await st(S.CAP15), await st(S.CAPLO)]).toEqual(['ELIGIBLE', 'EXCLUDED']);
     expect([await st(S.AGE60), await st(S.AGE59), await st(S.YUNG)]).toEqual([
       'ELIGIBLE',
       'EXCLUDED',
       'EXCLUDED',
     ]);
-    expect((await row(S.NORK)).eligibilityReasons).toEqual(['RANK_MISSING']);
     expect((await row(S.NOCAP)).eligibilityReasons).toContain('MARKET_CAP_MISSING');
     const stale = await row(S.STAL);
     expect([stale.currentStatus, stale.pass3d, stale.reason3d, stale.stars]).toEqual([
@@ -285,7 +353,7 @@ describe('Tier 1 end to end on the synthetic fixture', () => {
       if (s.weightedStrength === null) expect(r.weightedStrength).toBeNull();
       // Stored at 30 dp from the unrounded multiples.
       else expect(dec(r.weightedStrength)!.minus(s.weightedStrength).abs().lt('1e-27')).toBe(true);
-      expect(r.rulesetVersion).toBe('vmc-tier1-1');
+      expect(r.rulesetVersion).toBe('vmc-tier1-2');
     }
     const keys = q.map((r) => ({
       cmcId: r.cmcId,
@@ -341,32 +409,30 @@ describe('Tier 1 end to end on the synthetic fixture', () => {
     expect((await row(S.TRIP)).venueReview).toBe('PENDING');
   });
 
-  it('exports five sheets with every mandatory column; N/A numerics are blank with a reason (p.17)', async () => {
+  it('exports the Review Queue with every mandatory column and the run metadata; N/A numerics are blank with a reason (p.17)', async () => {
     const run = await ctx.repo(ScanRun).findOneByOrFail({ batchId });
     expect(run.exportStatus).toBe('succeeded');
     const files = run.exportFiles!.map((f) => f.name).sort();
-    expect(files).toEqual([
-      'all_eligible.csv',
-      'excluded.csv',
-      'needs_review.csv',
-      'review_queue.csv',
-      'run_metadata.csv',
-    ]);
-    const csv = readFileSync(join(run.exportPath!, 'review_queue.csv'), 'utf8').split('\r\n');
+    // Since D4 no per-coin sheet exists for eligible-without-star, needs-review or excluded coins.
+    expect(files).toEqual(['review_queue.csv', 'run_metadata.csv']);
+    const queue = readFileSync(join(run.exportPath!, 'review_queue.csv'), 'utf8');
+    const csv = queue.split('\r\n');
     const header = csv[0]!.split(',');
     for (const c of MANDATORY_COLUMNS) expect(header).toContain(c);
-    const all = readFileSync(join(run.exportPath!, 'all_eligible.csv'), 'utf8');
-    expect(all).toMatch(/,SYNTHETIC\r\n/);
-    const yny = all.split('\r\n').find((l) => l.includes(',990001,'))!;
+    expect(queue).toMatch(/,SYNTHETIC\r\n/);
+    const yny = csv.find((l) => l.includes(',990001,'))!;
     expect(yny).toContain(',YES,NO,YES,2,ELIGIBLE,');
-    const needs = readFileSync(join(run.exportPath!, 'needs_review.csv'), 'utf8').split('\r\n');
-    const gap = readFileSync(join(run.exportPath!, 'all_eligible.csv'), 'utf8')
-      .split('\r\n')
-      .find((l) => l.includes(',990007,'))!
-      .split(',');
+    const gap = csv.find((l) => l.includes(',990007,'))!.split(',');
     expect(gap[header.indexOf('multiple_7d')]).toBe('');
     expect(gap[header.indexOf('reason_7d')]).toBe('DAILY_ROW_MISSING');
-    expect(needs.length).toBeGreaterThan(3);
+    expect(csv.filter((l) => l.includes(',ELIGIBLE,')).length).toBe(
+      (run.counts as { queue: number }).queue,
+    );
+    const meta = readFileSync(join(run.exportPath!, 'run_metadata.csv'), 'utf8');
+    expect(meta).toMatch(/\r\nassets,1301\r\n/);
+    expect(meta).toMatch(/\r\nscreened_rank_1_1200,1200\r\n/);
+    expect(meta).toMatch(/\r\noutside_rank_1_1200_not_stored,101\r\n/);
+    expect(meta).toMatch(/\r\nexclusion_reasons,/);
     expect(existsSync(join(run.exportPath!, 'manifest.json'))).toBe(true);
     expect(existsSync(join(run.exportPath!, 'workbook.xlsx'))).toBe(false);
   });
@@ -422,6 +488,7 @@ describe('replay, revisions and human records', () => {
     );
     await ctx.app.get(PipelineService).reprocess(batchId);
     expect(await counts()).toEqual(before);
+    expect((await outcomes()).length).toBe(hashes.size);
     for (const a of await outcomes()) expect(a).toEqual(hashes.get(a.cmcId));
     const run = await ctx.repo(ScanRun).findOneByOrFail({ batchId });
     expect(run.attempts).toBeGreaterThanOrEqual(3);
@@ -559,29 +626,28 @@ describe('replay, revisions and human records', () => {
     await expect(
       reviews.create({ cmcId: S.YNY, batchId, reviewer: 'tester', finalDecision: 'NO_TRADE' }),
     ).rejects.toBeInstanceOf(ReviewInputError);
-    // An ambiguous (unconfirmed) LBank mapping is not a tradable pair for a PLAN_READY plan.
+    // A coin with an ambiguous (unconfirmed) LBank mapping is NEEDS_REVIEW: it fails closed, is not
+    // in the stored Review Queue, and cannot be given a plan at all (D4).
     await expect(
-      reviews
-        .create({
-          cmcId: S.AMB,
-          batchId,
-          reviewer: 'tester',
-          finalDecision: 'PLAN_READY',
-          lbankPair: 'AMBX/USDT',
-          plan: {
-            entryPrice: '1',
-            entryTime: '2026-11-05T00:00:00Z',
-            stopPrice: '0.9',
-            targets: [
-              { price: '1.1', allocationPct: '50' },
-              { price: '1.2', allocationPct: '25' },
-              { price: '1.3', allocationPct: '25' },
-            ],
-            notes: 'x',
-          },
-        })
-        .then((r) => r.validation.errors.join(' ')),
-    ).resolves.toMatch(/not verified tradable/);
+      reviews.create({
+        cmcId: S.AMB,
+        batchId,
+        reviewer: 'tester',
+        finalDecision: 'PLAN_READY',
+        lbankPair: 'AMBX/USDT',
+        plan: {
+          entryPrice: '1',
+          entryTime: '2026-11-05T00:00:00Z',
+          stopPrice: '0.9',
+          targets: [
+            { price: '1.1', allocationPct: '50' },
+            { price: '1.2', allocationPct: '25' },
+            { price: '1.3', allocationPct: '25' },
+          ],
+          notes: 'x',
+        },
+      }),
+    ).rejects.toThrow(/no stored Review Queue row/);
   });
 
   it('with LBANK_REQUIRE_MANUAL_VERIFICATION a listed pair waits for a reviewer; the verification makes it eligible', async () => {
@@ -591,7 +657,7 @@ describe('replay, revisions and human records', () => {
     });
     try {
       await manual.app.get(PipelineService).reprocess(batchId, { export: false });
-      const before = await row(S.UNV);
+      const before = await row(S.UNV, manual.app);
       expect([before.lbankStatus, before.eligibilityStatus, before.inQueue]).toEqual([
         'PAIR_LISTED_UNVERIFIED',
         'NEEDS_REVIEW',
@@ -615,7 +681,7 @@ describe('replay, revisions and human records', () => {
         'fixture',
       );
       await manual.app.get(PipelineService).reprocess(batchId, { export: false });
-      const after = await row(S.UNV);
+      const after = await row(S.UNV, manual.app);
       expect([after.lbankStatus, after.eligibilityStatus, after.inQueue]).toEqual([
         'VERIFIED',
         'ELIGIBLE',
@@ -676,10 +742,13 @@ describe('replay, revisions and human records', () => {
     await ctx.repo(VenueCrawl).update({ kind: 'lbank_spot_pairs' }, { status: 'FAILED' });
     const r = await ctx.app.get(PipelineService).reprocess(batchId, { export: false });
     expect(r.scan!.queueStatus).toBe('WITHHELD_LBANK_UNAVAILABLE');
-    expect(await ctx.repo(ScanResult).countBy({ batchId, eligibilityStatus: 'ELIGIBLE' })).toBe(0);
-    expect((await row(S.YNY)).eligibilityReasons).toContain(
-      'LBANK_STATUS_UNKNOWN:LBANK_FEED_FAILED',
-    );
+    expect(r.scan!.counts).toMatchObject({ eligible: 0, queue: 0, stored: 0 });
+    expect(r.scan!.venueCandidates).toEqual([]);
+    // Fail closed: nothing is stored or evaluated, not even the designed 3-star coin.
+    expect(await ctx.repo(ScanResult).countBy({ batchId })).toBe(0);
+    const yny = await row(S.YNY);
+    expect(yny.eligibilityReasons).toContain('LBANK_STATUS_UNKNOWN:LBANK_FEED_FAILED');
+    expect([yny.stars, yny.pass3d, yny.reason3d]).toEqual([0, 'N/A', 'NOT_EVALUATED_NEEDS_REVIEW']);
     expect(r.scan!.warnings.join(' ')).toMatch(/LBANK_FEED_UNAVAILABLE/);
     await ctx.repo(VenueCrawl).update({ kind: 'lbank_spot_pairs' }, { status: 'COMPLETE' });
   });

@@ -1,6 +1,6 @@
 // Overview: run pulse, the screen funnel, the queue strip, the forward test at a glance, window /
 // eligibility / star mixes and the Tier 1 rules. Data quality and exclusion reasons are on Data.
-import { Link, useNavigate } from 'react-router';
+import { Link } from 'react-router';
 
 import { ChartBox, Donut, HBars } from '../../components/charts';
 import { SkeletonBlock } from '../../components/ui';
@@ -18,7 +18,6 @@ import type { ScanCountsDetail, Tally } from './types';
 
 export default function Overview() {
   const { overview: ov, cfg } = useApp();
-  const navigate = useNavigate();
   const b = ov ? ov.latestBatch : null,
     sc = ov ? ov.scan : null;
   const c: ScanCountsDetail = (sc?.counts as ScanCountsDetail | undefined) ?? {};
@@ -31,10 +30,18 @@ export default function Overview() {
         {
           label: 'Listed on CMC',
           value: c.assets || 0,
-          sub: b ? `${fmtInt(b.collected)} of ${fmtInt(b.listedTotal)} collected` : '',
+          sub: b ? `${fmtInt(b.collected)} of ${fmtInt(b.listedTotal)} checked` : '',
         },
-        { label: 'Evaluated', value: c.evaluated || 0, sub: 'windows computed' },
-        { label: 'Eligible', value: c.eligible || 0, sub: 'all hard filters pass' },
+        {
+          label: 'Ranked 1–1,200',
+          value: c.screened ?? c.assets ?? 0,
+          sub: 'screened; the rest is checked by rank only',
+        },
+        {
+          label: 'Eligible',
+          value: c.eligible || 0,
+          sub: 'all hard filters pass, windows computed',
+        },
         { label: 'Review queue', value: c.queue || 0, sub: statusText(QUEUE, sc.queueStatus) },
       ]
     : null;
@@ -121,7 +128,7 @@ export default function Overview() {
         <div className="panel">
           <div className="panel-head">
             <h2>Eligibility</h2>
-            <span className="hint">every coin in the batch</span>
+            <span className="hint">every coin in the batch; reasons on Data</span>
           </div>
           <div>
             {!ov ? (
@@ -130,23 +137,17 @@ export default function Overview() {
               <Donut
                 totalLabel="coins"
                 segs={[
+                  { label: 'Eligible', value: c.eligible || 0, tone: 'base' },
                   {
-                    label: 'Eligible',
-                    value: c.eligible || 0,
-                    tone: 'base',
-                    onClick: () => navigate(pathOf('eligible')),
-                  },
-                  {
-                    label: 'Needs review',
+                    label: 'Missing or ambiguous data',
                     value: c.needsReview || 0,
                     tone: 'warn',
-                    onClick: () => navigate(pathOf('needs_review')),
                   },
+                  { label: 'Excluded by a rule', value: c.excluded || 0, tone: 'muted' },
                   {
-                    label: 'Excluded',
-                    value: c.excluded || 0,
-                    tone: 'muted',
-                    onClick: () => navigate(pathOf('excluded')),
+                    label: 'Outside rank 1–1,200',
+                    value: c.outsideUniverse || 0,
+                    tone: 'faint',
                   },
                 ]}
               />
@@ -158,7 +159,7 @@ export default function Overview() {
         <div className="panel">
           <div className="panel-head">
             <h2>Stars</h2>
-            <span className="hint">windows met, evaluated coins</span>
+            <span className="hint">windows met, eligible coins</span>
           </div>
           <div>
             {!ov ? (
@@ -179,7 +180,8 @@ export default function Overview() {
       </div>
 
       <p className="muted small overview-data-link">
-        Data quality and why coins are left out are on <Link to={pathOf('data')}>Data</Link>.
+        Only the review queue is stored per coin. Data quality and why the other coins are left out
+        are on <Link to={pathOf('data')}>Data</Link>; any coin opens from the search box.
       </p>
 
       <Rules cfg={cfg} />

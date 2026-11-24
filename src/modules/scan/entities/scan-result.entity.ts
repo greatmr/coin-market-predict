@@ -34,8 +34,12 @@ import {
 import { ScanRun } from './scan-run.entity.js';
 
 /**
- * One Tier 1 result per (crawl batch, CMC id) (PDF p.12, p.16, p.17). Raw inputs and source
+ * One stored Tier 1 result per (crawl batch, CMC id) (PDF p.12, p.16, p.17). Raw inputs and source
  * timestamps sit beside every computed value; N/A values are NULL with a reason code.
+ *
+ * Since operator decision D4 (2026-11-24, ADR-0008) only Review Queue rows are stored: every other
+ * coin is evaluated in memory, counted on its `scan_run`, and re-evaluated from the batch's stored
+ * inputs on request. The columns and statuses stay, so storing other rows again needs no migration.
  */
 @Entity({ name: 'scan_result' })
 @Unique('ux_scan_result_asset', ['batchId', 'cmcId'])

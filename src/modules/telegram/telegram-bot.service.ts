@@ -352,7 +352,7 @@ export class TelegramBotService implements OnApplicationBootstrap, OnApplication
       const queue = String(o.scan.queueStatus ?? '');
       lines.push(
         `<b>Latest scan</b> · batch ${escapeHtml(batch)}, ${o.crawlAgeMinutes ?? '?'} min old`,
-        `🎯 Queue ${c.queue ?? 0}${queue.startsWith('WITHHELD') ? ' (withheld)' : ''} · ✅ eligible ${c.eligible ?? 0} · 🔎 needs review ${c.needsReview ?? 0}`,
+        `🎯 Queue ${c.queue ?? 0}${queue.startsWith('WITHHELD') ? ' (withheld)' : ''} · ✅ eligible ${c.eligible ?? 0} of ${c.screened ?? c.assets ?? 0} ranked 1–1,200`,
       );
     } else lines.push('<b>Latest scan</b> · none yet. Send /run to create one.');
     if (o.schedule?.enabled && o.schedule.nextRunAt)
@@ -392,7 +392,7 @@ export class TelegramBotService implements OnApplicationBootstrap, OnApplication
       };
     if (!exact.length)
       return {
-        message: `No coin with the symbol ${escapeHtml(q)} in the latest scan. Try the CMC id.`,
+        message: `No coin ranked 1–1,200 with the symbol ${escapeHtml(q)} in the latest scan. Try the CMC id.`,
       };
     return { cmcId: exact[0]!.cmcId };
   }

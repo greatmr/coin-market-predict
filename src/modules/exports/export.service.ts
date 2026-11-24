@@ -99,13 +99,11 @@ export const EXTRA_COLUMNS = [
   'data_label',
 ] as const;
 
-export const SHEETS = [
-  'All_Eligible',
-  'Review_Queue',
-  'Needs_Review',
-  'Excluded',
-  'Run_Metadata',
-] as const;
+/**
+ * Since D4 (ADR-0008) only the Review Queue is stored, so it is the only per-coin sheet; every
+ * other coin is summarized in Run_Metadata (counts by status and reason).
+ */
+export const SHEETS = ['Review_Queue', 'Run_Metadata'] as const;
 
 export interface ExportFile {
   name: string;
@@ -126,7 +124,8 @@ const s = (v: { toString(): string } | null | undefined) =>
   v === null || v === undefined ? null : v.toString();
 
 /**
- * CSV per sheet + a SHA-256 manifest for one crawl batch (PDF p.17, p.18).
+ * CSV per sheet + a SHA-256 manifest for one crawl batch (PDF p.17, p.18; since D4 the Review
+ * Queue and the run metadata only).
  * Files are written to a temporary directory and renamed into place, so a failed export never
  * replaces a valid earlier one; the database keeps the full history either way.
  */
@@ -150,7 +149,7 @@ export class ExportService {
       this.db.getRepository(CrawlBatch).findOneByOrFail({ id: batchId }),
       this.db
         .getRepository(ScanResult)
-        .find({ where: { batchId }, order: { queueOrder: 'ASC', cmcId: 'ASC' } }),
+        .find({ where: { batchId, inQueue: true }, order: { queueOrder: 'ASC', cmcId: 'ASC' } }),
       this.db
         .getRepository(Review)
         .find({ where: { batchId }, order: { cmcId: 'ASC', revision: 'DESC' } }),
@@ -244,19 +243,9 @@ export class ExportService {
       ];
     };
     const header = [...MANDATORY_COLUMNS, ...EXTRA_COLUMNS] as string[];
-    const queue = results
-      .filter((r) => r.inQueue)
-      .sort((a, b) => (a.queueOrder ?? 0) - (b.queueOrder ?? 0));
-    const byStars = (a: ScanResult, b: ScanResult) => b.stars - a.stars || a.cmcId - b.cmcId;
-    const eligible = [
-      ...queue,
-      ...results.filter((r) => r.eligibilityStatus === 'ELIGIBLE' && !r.inQueue).sort(byStars),
-    ];
-    const needsReview = results.filter((r) => r.eligibilityStatus === 'NEEDS_REVIEW').sort(byStars);
-    const excluded = results
-      .filter((r) => r.eligibilityStatus === 'EXCLUDED')
-      .sort((a, b) => (a.rank ?? 1e9) - (b.rank ?? 1e9) || a.cmcId - b.cmcId);
+    const queue = [...results].sort((a, b) => (a.queueOrder ?? 0) - (b.queueOrder ?? 0));
     const counts = (run.counts ?? {}) as Record<string, unknown>;
+    const stars = (counts.stars ?? {}) as Record<string, number>;
     const meta: Cell[][] = [
       ['data_label', label],
       ['crawl_batch_id', batch.id],
@@ -269,7 +258,8 @@ export class ExportService {
       ['batch_status_reasons', batch.statusReasons.join('; ')],
       ['listed_total', batch.listedTotal],
       ['collected', batch.collected],
-      ['field_counts', JSON.stringify(batch.fieldCounts)],
+      ['stored_snapshots_rank_1_1200', batch.stored ?? batch.collected],
+      ['field_counts_stored', JSON.stringify(batch.fieldCounts)],
       ['missing_ranks_1_1200', batch.missingRanks.length],
       ['duplicate_ranks_1_1200', batch.duplicateRanks.length],
       ['scan_status', run.status],
@@ -291,10 +281,15 @@ export class ExportService {
       ['max_quote_age_minutes', this.cfg.MAX_QUOTE_AGE_MINUTES],
       ['queue_status', run.queueStatus],
       ['assets', counts.assets as number],
+      ['screened_rank_1_1200', (counts.screened ?? counts.assets) as number],
+      ['outside_rank_1_1200_not_stored', (counts.outsideUniverse ?? 0) as number],
       ['eligible', counts.eligible as number],
-      ['needs_review', counts.needsReview as number],
+      ['eligible_zero_star', (stars['0'] ?? 0) as number],
+      ['needs_review_not_evaluated', counts.needsReview as number],
       ['excluded', counts.excluded as number],
       ['review_queue', counts.queue as number],
+      ['exclusion_reasons', JSON.stringify(counts.reasons ?? {})],
+      ['stars', JSON.stringify(stars)],
       ['not_available_by_window', JSON.stringify(counts.notAvailable ?? {})],
       ['lbank_crawl', JSON.stringify(counts.lbankCrawl ?? null)],
       ['warnings', run.warnings.join(' | ')],
@@ -306,10 +301,7 @@ export class ExportService {
       label,
       header,
       sheets: {
-        All_Eligible: eligible.map(toRow),
         Review_Queue: queue.map(toRow),
-        Needs_Review: needsReview.map(toRow),
-        Excluded: excluded.map(toRow),
         Run_Metadata: meta,
       },
     };

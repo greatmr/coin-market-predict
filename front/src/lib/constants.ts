@@ -6,7 +6,8 @@ export type StatusMap = Record<string, readonly [Tone, string]>;
 
 export const ELIG: StatusMap = {
   ELIGIBLE: ['good', 'Eligible'],
-  NEEDS_REVIEW: ['warning', 'Needs review'],
+  // A data-quality state (fails closed), not the human review queue: worded so they never mix.
+  NEEDS_REVIEW: ['warning', 'Missing or ambiguous data'],
   EXCLUDED: ['', 'Excluded'],
 };
 export const LBANK: StatusMap = {
@@ -79,6 +80,7 @@ const REASON_TEXT: Record<string, string> = {
   DAILY_ROW_INVALID: 'a completed day is invalid',
   ZERO_BASELINE: 'zero baseline',
   NOT_EVALUATED_EXCLUDED: 'not evaluated (excluded)',
+  NOT_EVALUATED_NEEDS_REVIEW: 'not evaluated (missing or ambiguous input)',
   CURRENT_MISSING: 'no current quote',
   CURRENT_STALE: 'stale quote',
   TIMESTAMP_UNVERIFIED: 'no provider time',

@@ -14,6 +14,7 @@ import { PipelineStage } from '../pipeline/entities/pipeline-stage.entity.js';
 import { Review } from '../reviews/entities/review.entity.js';
 import { ScanResult } from '../scan/entities/scan-result.entity.js';
 import { ScanRun } from '../scan/entities/scan-run.entity.js';
+import { ScanModule } from '../scan/scan.module.js';
 import { Provider } from '../sources/entities/provider.entity.js';
 import { SourceHealth } from '../sources/entities/source-health.entity.js';
 import { TelegramDelivery } from '../telegram/entities/telegram-delivery.entity.js';
@@ -47,6 +48,7 @@ import { ReadModelService } from './read-model.service.js';
       JobLease,
       TelegramDelivery,
     ]),
+    ScanModule,
   ],
   providers: [ReadModelService],
   exports: [ReadModelService],

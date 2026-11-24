@@ -179,10 +179,13 @@ volume.
   empty one), review the SQL, and register it in `src/database/migrations/index.ts`; the schema
   drift test checks that entities and migrations agree. Never `synchronize`, `schema:sync` or
   `schema:drop`; `db:revert` only on development databases.
-- Retention: `RETENTION_DETAIL_DAYS=30` (default) keeps 30 days of hourly detail for every coin,
-  then thins coins outside the Tier 1 band to one snapshot per UTC day; see
-  [Storage and retention](docs/architecture.md#storage-and-retention). Reviews, decisions, daily
-  rows and batches are never pruned.
+- Storage (D4, [ADR-0008](docs/adr/0008-storage-scope.md)): every coin is screened hourly, but
+  only ranks 1–1200 are stored as snapshots and only the Review Queue as scan rows.
+  `RETENTION_DETAIL_DAYS=7` (default) keeps 7 days of hourly snapshots, then only the inputs of
+  queue rows, forward-test snapshots and BTC/ETH; see
+  [Storage and retention](docs/architecture.md#storage-and-retention). Queue rows, reviews,
+  decisions, daily rows and batches are never pruned. Rows stored before D4 are removed once with
+  `npm run cli -- storage:prune` after a backup.
 - Backup: `docker compose exec -T postgres pg_dump -U coins -Fc coins > backups/coins-$(date +%F).dump`
 - Restore (into an empty DB): `docker compose exec -T postgres pg_restore -U coins -d coins --clean --if-exists < backups/coins-YYYY-MM-DD.dump`
 - History survives container restarts in the named volume `coins_pgdata`. Do not run

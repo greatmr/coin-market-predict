@@ -1637,6 +1637,12 @@ progress.bar::-moz-progress-bar {
   stroke: var(--muted);
   background: var(--muted);
 }
+.donut-seg.faint,
+.swatch.faint {
+  stroke: var(--muted);
+  background: var(--muted);
+  opacity: 0.4;
+}
 .legend {
   list-style: none;
   margin: 0;
@@ -2999,6 +3005,10 @@ button.chip:hover {
 }
 
 /* Coin detail tabs: Review, History, Calculation details */
+/* A coin outside the stored review queue: how its record was obtained (D4). */
+.coin-eval-note {
+  margin: 0 0 10px;
+}
 .detail-tabs {
   position: sticky;
   top: -18px;

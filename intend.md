@@ -23,6 +23,11 @@ and an owner-only Claude agent that, on request, reads one coin's stored data an
 view on a pump within 7 days. That view is kept as history and treated as review material, like
 everything else here.
 
+Changed 2026-11-24 (`docs/adr/0008-storage-scope.md`, D4): the Eligible, Needs review and Excluded
+pages and exports are gone. Every coin is still screened each hour and kept in the coin registry,
+but only what the strategy found (the Review Queue) is stored per coin; everything else is counted
+per run and traced on request. Missing or ambiguous data fails closed.
+
 Added 2026-11-17 (`docs/adr/0007-exchange-listings.md`): on the forward-test tab, each coin's
 Average Return over all its stored events (a peak return, never profit; a lower bound while any
 Return is), and whether the coin is listed now on LBank Spot, LBank Futures and Bithumb, each from
@@ -47,7 +52,8 @@ filters. Descriptive attributes: no Tier 1 rule, star or point reads them.
    reasons; daily revisions preserved.
 5. **Pipeline**: hourly, non-overlapping across instances, bounded retries, idempotent writes,
    restart recovery, no backfill of missed hours, Telegram retries independent of collection.
-6. **Outputs**: All Eligible, Review Queue, Needs Review, Excluded and Run Metadata as CSV
+6. **Outputs**: Review Queue and Run Metadata as CSV (All Eligible, Needs Review and Excluded
+   removed on 2026-11-24, D4: those coins are counted in Run Metadata, not listed)
    with checksums (p.17); queue withheld when the batch is incomplete or the LBank feed is
    unavailable (p.18); dashboard with per-coin calculation traces; read-only MCP; Telegram
    compact summary with dry-run mode.
@@ -95,7 +101,10 @@ filters. Descriptive attributes: no Tier 1 rule, star or point reads them.
   acceptance cases); fixture mode runs end to end (fixture crawl
   → PostgreSQL → Tier 1 scan → exports → dashboard / MCP → Telegram dry run).
 - Fixture data is labelled synthetic everywhere it appears (DB flag, dashboard, exports, Telegram).
-- A batch is never COMPLETE unless every listed coin was stored and ranks 1–1200 are contiguous.
+- A batch is never COMPLETE unless every listed coin was read and ranks 1–1200 are contiguous
+  (ranks 1–1200 are stored as snapshots; the rest is counted, D4).
+- Only the Review Queue is stored per coin: a 0-star eligible coin is screened every hour and is
+  stored from the hour it reaches a star; missing or ambiguous data never becomes a signal.
 - Every displayed or exported number traces to stored inputs (trace view, inputs hash, revision ids).
 - Telegram live delivery only with `TELEGRAM_MODE=live` and valid credentials.
 
@@ -113,9 +122,10 @@ filters. Descriptive attributes: no Tier 1 rule, star or point reads them.
 4. **LBank list cadence.** Decided: listed pairs count as tradable, list refreshed every 30 days
    or manually (D1, D2). Revisit if suspended LBank pairs keep reaching the queue
    (`LBANK_REQUIRE_MANUAL_VERIFICATION=true` restores a human check per pair).
-5. **Storage retention.** Default `RETENTION_DETAIL_DAYS=30`: afterwards, coins outside the Tier 1
-   band keep one snapshot per UTC day and scan rows excluded only by rank/cap keep one batch per
-   UTC day. Set `0` to keep all hourly detail.
+5. **Storage retention.** Decided 2026-11-24 (D4, `docs/adr/0008-storage-scope.md`): store per
+   coin only the Review Queue, and snapshots of ranks 1–1200 for `RETENTION_DETAIL_DAYS` (default
+   7); afterwards only queue inputs, forward-test snapshots and BTC/ETH stay. Earlier rows are
+   removed once with `storage:prune` after a backup. Set `0` to keep all hourly detail.
 6. **Intraday High for the signal day.** Decided 2026-11-18 (rules `star-forward-2`): the signal
    day after detection is measured with the same CMC history route's hourly OHLC (`interval=1h`,
    assessed in `docs/source-feasibility.md`; used only when its hours match the daily High). Still

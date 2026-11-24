@@ -4,7 +4,7 @@
  * The status lists are the value sets of the matching PostgreSQL enum types (migration M005):
  * adding a value needs a migration as well.
  */
-export const RULESET_VERSION = 'vmc-tier1-1';
+export const RULESET_VERSION = 'vmc-tier1-2';
 
 export const STRATEGY_NAME =
   'Two-Tier VMC strategy (Tier 1 CMC screen → Tier 2 human chart review)';
@@ -108,6 +108,8 @@ export const REASON = {
   dailyRowInvalid: 'DAILY_ROW_INVALID',
   zeroBaseline: 'ZERO_BASELINE',
   notEvaluated: 'NOT_EVALUATED_EXCLUDED',
+  /** NEEDS_REVIEW fails closed (vmc-tier1-2): no daily rows, windows or stars. */
+  notEvaluatedReview: 'NOT_EVALUATED_NEEDS_REVIEW',
   // current observation
   currentMissing: 'CURRENT_MISSING',
   currentStale: 'CURRENT_STALE',

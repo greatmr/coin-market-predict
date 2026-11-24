@@ -8,17 +8,7 @@ import { useSearchParams } from 'react-router';
 import type { Permission } from '../types/api';
 
 export type SectionKey =
-  | 'overview'
-  | 'queue'
-  | 'eligible'
-  | 'needs_review'
-  | 'excluded'
-  | 'forward'
-  | 'data'
-  | 'batches'
-  | 'access'
-  | 'users'
-  | 'account';
+  'overview' | 'queue' | 'forward' | 'data' | 'batches' | 'access' | 'users' | 'account';
 
 export interface Section {
   key: SectionKey;
@@ -64,33 +54,6 @@ export const SECTIONS: readonly Section[] = [
     counted: true,
   },
   {
-    key: 'eligible',
-    group: 'screen',
-    path: '/eligible',
-    label: 'Eligible',
-    title: 'Eligible',
-    sub: 'Every coin that passes all hard filters, including 0-star coins and windows that failed.',
-    counted: true,
-  },
-  {
-    key: 'needs_review',
-    group: 'screen',
-    path: '/needs-review',
-    label: 'Needs review',
-    title: 'Needs review',
-    sub: 'Missing or ambiguous inputs are never silently eligible. Open a coin to resolve its LBank mapping.',
-    counted: true,
-  },
-  {
-    key: 'excluded',
-    group: 'screen',
-    path: '/excluded',
-    label: 'Excluded',
-    title: 'Excluded',
-    sub: 'Coins with at least one failed hard filter. Their windows are not evaluated.',
-    counted: true,
-  },
-  {
     key: 'forward',
     group: 'screen',
     primary: true,
@@ -107,7 +70,7 @@ export const SECTIONS: readonly Section[] = [
     path: '/data',
     label: 'Data',
     title: 'Data',
-    sub: 'Data quality of the latest batch (quotes, LBank mapping and list, scan warnings, last export) and why coins are left out of the screen.',
+    sub: 'Data quality of the latest batch (quotes, LBank mapping and list, scan warnings, last export), how many coins were screened and why the others are left out. Only the review queue is stored per coin.',
   },
   {
     key: 'batches',
@@ -150,9 +113,11 @@ export const SECTIONS: readonly Section[] = [
 export const sectionByKey = (key: SectionKey): Section => SECTIONS.find((s) => s.key === key)!;
 export const pathOf = (key: SectionKey): string => sectionByKey(key).path;
 
-/** The four Tier 1 result sheets and their API names. */
-export const SHEETS = ['queue', 'eligible', 'needs_review', 'excluded'] as const;
-export type SheetKey = (typeof SHEETS)[number];
+/**
+ * Paths of the removed Eligible, Needs review and Excluded pages (D4: only the review queue is
+ * stored per coin). Old links land on Data, which counts those coins and their reasons.
+ */
+export const RETIRED_SHEET_PATHS = ['eligible', 'needs-review', 'excluded'] as const;
 
 export type CoinTab = 'review' | 'agent' | 'history' | 'details';
 /** /coins/:cmcId with optional batch and detail tab. */

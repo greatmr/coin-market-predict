@@ -285,9 +285,6 @@ function SignedIn({ me, cfg }: { me: User; cfg: AppConfig }) {
     const c = overview?.scan?.counts ?? {};
     return {
       queue: c.queue ?? 0,
-      eligible: c.eligible ?? 0,
-      needs_review: c.needsReview ?? 0,
-      excluded: c.excluded ?? 0,
       forward: navCounts.forward,
       access: navCounts.access ?? 0,
     };

@@ -104,7 +104,10 @@ export interface CrawlBatch {
   id: string;
   slotTime: Iso;
   status: 'COMPLETE' | 'INCOMPLETE' | 'FAILED' | string;
+  /** Every coin read in the slot. */
   collected: number;
+  /** Snapshots stored: ranks 1–1200 (null before D4: every coin was stored). */
+  stored?: number | null;
   listedTotal: number;
   crawledAt: Iso;
   [key: string]: unknown;
@@ -112,11 +115,14 @@ export interface CrawlBatch {
 
 export interface ScanCounts {
   assets?: number;
+  screened?: number;
+  outsideUniverse?: number;
   evaluated?: number;
   eligible?: number;
   needsReview?: number;
   excluded?: number;
   queue?: number;
+  stored?: number;
   [key: string]: number | undefined;
 }
 

@@ -10,7 +10,10 @@ export interface CoverageReport {
   /** Listing size reported by the latest discovery (null = unknown). */
   universeSize: number | null;
   universeComplete: boolean;
+  /** Observations read and validated: every listed coin of the slot. */
   collected: number;
+  /** Observations stored as snapshots: ranks 1–1200 only (`inStoredUniverse`). */
+  stored: number;
   sourceListingComplete: boolean;
   coveragePct: number | null;
   /** "complete" only when the whole listing was collected; otherwise "partial" or "unknown". */
@@ -55,6 +58,16 @@ export function trackerEvidence(
   }
   return out;
 }
+
+/**
+ * Whether an observation is stored as a snapshot (operator decision D4, ADR-0008): ranks 1–1200,
+ * i.e. the Tier 1 band, the ranks the continuity check needs and the BTC/ETH benchmarks. A coin
+ * ranked above 1200 or unranked is read and counted every hour (the rank comes first and fails
+ * the rank rule, or is missing and fails closed) but leaves no row; it is stored again from the
+ * hour it ranks 1–1200.
+ */
+export const inStoredUniverse = (rank: number | null): boolean =>
+  rank !== null && rank >= 1 && rank <= RULES.rankMax;
 
 /** Ranks 1..max absent from, and present more than once in, a batch (assumption A12). */
 export function rankContinuity(

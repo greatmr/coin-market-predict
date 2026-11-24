@@ -24,9 +24,7 @@ export default function VenuePanel({ t }: { t: AssetTrace }) {
     return (
       <section className="panel">
         {head}
-        <div className="empty">
-          Venue rows are collected for review candidates (the queue, or needs review with a YES).
-        </div>
+        <div className="empty">Venue rows are collected for coins in the review queue only.</div>
       </section>
     );
   const vol = (x: { volumeUsd: Num | null }) => num(x.volumeUsd) || 0;

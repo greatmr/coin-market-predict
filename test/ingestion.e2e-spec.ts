@@ -106,7 +106,10 @@ describe('ingestion against PostgreSQL', () => {
     expect(second.notes.join(' ')).toMatch(/idempotent re-run/);
     const batch = await batches().findOneByOrFail({ id: first.batchId });
     expect(batch.crawledAt.getTime()).toBeLessThan(Date.now());
-    expect(batch.fieldCounts.rank).toBe(1300);
+    // Every listed coin is read; snapshots are stored for ranks 1–1200 only (D4).
+    expect([batch.collected, batch.stored, batch.fieldCounts.rank]).toEqual([1301, 1200, 1200]);
+    expect([first.collected, first.stored]).toEqual([1301, 1200]);
+    expect(n1).toBe(1200);
   });
 
   it('enforces the uniqueness constraint at the database level', async () => {
@@ -128,9 +131,16 @@ describe('ingestion against PostgreSQL', () => {
     expect(s.rank).toBe(190);
     expect(s.tags).toEqual(['stablecoin', 'usd-stablecoin']);
     expect(s.dateAdded).toBeInstanceOf(Date);
-    const unranked = await snapshots().findOneByOrFail({ providerAssetId: '990021' });
-    expect(unranked.rank).toBeNull();
-    expect(unranked.nullReasons.rank).toMatch(/not reported/);
+    // An unranked coin (or one ranked above 1200) is read and kept in the registry, but leaves no
+    // hourly snapshot: it fails the rank rule (or closed) before anything else is looked at.
+    expect(await snapshots().countBy({ providerAssetId: '990021' })).toBe(0);
+    expect(await snapshots().countBy({ providerAssetId: '990028' })).toBe(0);
+    expect(await db.getRepository(CmcAsset).countBy({ cmcId: 990021 })).toBe(1);
+    expect(
+      await db
+        .getRepository(AssetIdentity)
+        .countBy({ providerAssetId: '990028', delistedAt: IsNull() }),
+    ).toBe(1);
   });
 
   it('keeps same-symbol assets distinct by CMC id and links providers only by chain + contract', async () => {

@@ -130,16 +130,34 @@ run bookkeeping       ─► PipelineRun, PipelineStage, JobLease, SourceHealth,
 
 ## Retention
 
-| Data             | Policy                                                                                                                                                                                                                                                                                                                                           |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `MarketSnapshot` | Every hour for `RETENTION_DETAIL_DAYS` (default 30). Afterwards, coins outside the Tier 1 band (rank 101–1200, or unranked with cap ≥ $15M) for the whole day ±72 h keep only their first snapshot of each UTC day; band coins keep every hour. `RETENTION_SNAPSHOT_DAYS` > 0 additionally deletes snapshots older than that (default 0 = keep). |
-| `ScanResult`     | Every batch for `RETENTION_DETAIL_DAYS`. Afterwards, rows excluded **only** by `RANK_OUT_OF_RANGE` / `MARKET_CAP_BELOW_MIN` keep the first batch of each UTC day; all other rows are kept.                                                                                                                                                       |
-| Export files     | Removed from disk after `EXPORT_RETENTION_DAYS` (default 7); the database keeps the history.                                                                                                                                                                                                                                                     |
-| Everything else  | Never pruned: batches, runs, stages, daily rows and revisions, fetch state, venue crawls and events, identity and change log, reviews, decisions, Telegram deliveries, and every forward-test table (watchlist, events, Highs, outcomes, trigger runs, rejections, update runs; added 2026-11-10, M008).                                         |
+| Data             | Policy                                                                                                                                                                                                                                                                                                                                     |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `MarketSnapshot` | Stored for ranks 1–1200 only (D4, ADR-0008). Every hour for `RETENTION_DETAIL_DAYS` (default 7); afterwards only the inputs of stored Review Queue rows, forward-test detection snapshots and BTC/ETH remain. `RETENTION_SNAPSHOT_DAYS` > 0 additionally deletes snapshots older than that (default 0 = keep), forward-test ones excepted. |
+| `ScanResult`     | Review Queue rows only (D4); never pruned. Every other coin is counted on `ScanRun.counts` and traced on request from the stored inputs.                                                                                                                                                                                                   |
+| Export files     | Removed from disk after `EXPORT_RETENTION_DAYS` (default 7); the database keeps the history.                                                                                                                                                                                                                                               |
+| Everything else  | Never pruned: batches, runs, stages, daily rows and revisions, fetch state, venue crawls and events, identity and change log, reviews, decisions, Telegram deliveries, and every forward-test table (watchlist, events, Highs, outcomes, trigger runs, rejections, update runs; added 2026-11-10, M008).                                   |
 
-Thinning works through whole UTC days older than the cutoff, at most three days per run,
-resuming from the `retention.detailThinnedUntil.<provider>` watermark. It has not run yet: the
-oldest live data is from 2026-11-05, so the first day becomes eligible around 2026-12-05.
+Retention works through whole UTC days older than the cutoff, at most three days per run,
+resuming from the `retention.snapshotsPrunedUntil.<provider>` watermark. The watermark is set by
+the one-time `storage:prune` (or, on a database without earlier-policy rows, by the first run);
+until then hourly retention deletes nothing. The earlier `retention.detailThinnedUntil` key is
+unused.
+
+## Storage scope (D4, 2026-11-24)
+
+Audit of a copy of production (2026-11-10 19:00 → 2026-11-24 10:00 UTC, 323 hourly batches,
+4,905 MB): `scan_result` 2,569,213 rows / 2,492 MB (EXCLUDED 96.5 %, ELIGIBLE 0-star 2.6 %,
+Review Queue 0.7 %, NEEDS_REVIEW 0.1 %) and `market_snapshot` 2,581,215 rows / 2,320 MB (ranked
+above 1200: 84.8 %) were 98 % of the database. Each hourly run wrote ~7,954 scan rows and ~7,970
+snapshots. Since D4 it writes ~57 scan rows (the queue) and 1,200 snapshots (ranks 1–1200).
+
+`storage:prune --apply --vacuum` on that copy (7-day window; 387 s): `scan_result` 2,561,385 →
+18,496 rows (2,613 → 98 MB), `market_snapshot` 2,581,215 → 224,164 rows (2,432 → 215 MB), database
+5,144 → 412 MB. Every forward-test event kept its detection snapshot, every queue row its input
+snapshot; daily rows, the coin registry, batches and runs were untouched. Steady state at the
+defaults: ~7 days × 1,200 hourly snapshots plus ~1,400 queue rows and their snapshots per day.
+
+The rest of this report (2026-11-06) describes the earlier policy.
 
 ## Current contents (2026-11-06, 23 live slots)
 

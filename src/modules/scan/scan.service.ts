@@ -1,11 +1,20 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { Between, DataSource, In, LessThan, LessThanOrEqual, Not } from 'typeorm';
+import {
+  And,
+  Between,
+  DataSource,
+  In,
+  LessThan,
+  LessThanOrEqual,
+  MoreThanOrEqual,
+  Not,
+} from 'typeorm';
 
 import { insertRows } from '../../common/entities/insert.js';
 import { redact } from '../../common/security/redact.js';
 import { addDays, isoDate } from '../../common/utils/dates.js';
-import { type DValue, dec, forStorage, sha256 } from '../../common/utils/decimal.js';
+import { D, type DValue, dec, forStorage, sha256 } from '../../common/utils/decimal.js';
 
 import { APP_CONFIG, type AppConfig } from '../../config/index.js';
 
@@ -88,6 +97,8 @@ export interface BatchContext {
     status: BatchStatus;
     statusReasons: string[];
     isLive: boolean;
+    /** Coins read in the batch (every listed coin), stored or not. */
+    collected: number;
   };
   asOf: Date;
   overrides: Overrides;
@@ -98,6 +109,7 @@ export interface BatchContext {
     fresh: boolean;
     pairs: number;
   } | null;
+  /** Every coin with a stored snapshot in the batch (or the requested ones). */
   assets: PreEvaluation[];
   maxQuoteAgeMs: number;
 }
@@ -114,13 +126,48 @@ export interface ScanOutcome {
 /** A `scan_result` row as written: decimals are exact decimal text (rounded only for storage). */
 type Persisted<T> = { [K in keyof T]: T[K] extends DValue | null ? string | null : T[K] };
 type ScanRow = Omit<Persisted<ScanResult>, 'id' | 'scanRun' | 'provider'>;
+/** A row with its unrounded sort keys (the stored values are rounded for storage only). */
+type EvaluatedRow = ScanRow & { _m3: DValue | null; _strength: DValue | null };
+
+/**
+ * A coin evaluated on request from the stored inputs of one batch, shaped like a stored row (exact
+ * decimals as `D`). Never stored: `inQueue` stays false and `queueOrder` null, because only the scan
+ * of the whole batch decides the queue.
+ */
+export type OnRequestResult = Omit<ScanResult, 'id' | 'scanRun' | 'provider'>;
+
+/** Decimal fields of a scan row (text when written, `D` when read back). */
+const DECIMAL_FIELDS = [
+  'ageDays',
+  'priceUsd',
+  'capUsd',
+  'volume24hUsd',
+  'currentVmc',
+  'vmc3dAvg',
+  'vmc7dAvg',
+  'vmc14dAvg',
+  'vmc30dAvg',
+  'multiple3d',
+  'multiple7d',
+  'multiple30d',
+  'weightedStrength',
+] as const;
+
+/** Bound on the ids kept for the MISSING_DAILY_DATA comparison with earlier batches. */
+const MAX_MISSING_DAILY_IDS = 2000;
+const MISSING_DAILY_LOOKBACK_MS = 26 * 3_600_000;
 
 const n = (v: { toString(): string } | null | undefined) => dec(v ?? null);
 
 /**
  * Tier 1 scan of one crawl batch (PDF p.9–14, p.16). Every rule comes from the strategy module
  * (`modules/strategy`); this service only loads the stored inputs, applies the rules and persists
- * the results, the queue order, mapping tasks and the run summary.
+ * the Review Queue, the mapping tasks and the run summary.
+ *
+ * Storage scope (operator decision D4, ADR-0008): every coin of the batch is evaluated, but only
+ * Review Queue rows are stored. Everything else is counted on the `scan_run` (status, reasons,
+ * stars, windows) and can be evaluated again on request from the same stored inputs
+ * (`evaluateCoins`), which writes nothing.
  */
 @Injectable()
 export class ScanService {
@@ -142,30 +189,45 @@ export class ScanService {
       .findOne({ where: { providerId, status: Not('FAILED') }, order: { slotTime: 'DESC' } });
   }
 
-  /** Inputs of one batch as stored, plus the evaluation that needs no daily rows. */
-  async loadContext(batchId: string): Promise<BatchContext> {
+  /**
+   * Inputs of one batch as stored, plus the evaluation that needs no daily rows. With `cmcIds`, only
+   * those coins are loaded (a rank shared with any other coin of the batch still counts as a
+   * duplicate).
+   */
+  async loadContext(
+    batchId: string,
+    opts: { cmcIds?: readonly number[] } = {},
+  ): Promise<BatchContext> {
     const b = await this.db.getRepository(CrawlBatch).findOneByOrFail({ id: batchId });
     const asOf = b.crawledAt;
     const overrides = this.strategy.loadOverrides();
-    const snaps = await this.db.getRepository(MarketSnapshot).find({
-      where: { providerId: b.providerId, slotTime: b.slotTime },
-      relations: { asset: true },
-      select: {
-        id: true,
-        providerAssetId: true,
-        price: true,
-        marketCap: true,
-        marketCapProvenance: true,
-        volumeRolling24h: true,
-        observedAt: true,
-        collectedAt: true,
-        rank: true,
-        dateAdded: true,
-        tags: true,
-        sourceUrl: true,
-        asset: { id: true, symbol: true, name: true, assetClass: true, classSource: true },
-      },
-    });
+    const only = opts.cmcIds ? [...new Set(opts.cmcIds)] : null;
+    const snaps =
+      only && !only.length
+        ? []
+        : await this.db.getRepository(MarketSnapshot).find({
+            where: {
+              providerId: b.providerId,
+              slotTime: b.slotTime,
+              ...(only ? { providerAssetId: In(only.map(String)) } : {}),
+            },
+            relations: { asset: true },
+            select: {
+              id: true,
+              providerAssetId: true,
+              price: true,
+              marketCap: true,
+              marketCapProvenance: true,
+              volumeRolling24h: true,
+              observedAt: true,
+              collectedAt: true,
+              rank: true,
+              dateAdded: true,
+              tags: true,
+              sourceUrl: true,
+              asset: { id: true, symbol: true, name: true, assetClass: true, classSource: true },
+            },
+          });
     const cmcIds = snaps
       .map((s) => Number(s.providerAssetId))
       .filter((x) => Number.isSafeInteger(x));
@@ -204,9 +266,11 @@ export class ScanService {
     const lctx = this.strategy.lbankContext(crawlView, asOf);
 
     const decisions = new Map<number, VenueDecisionView[]>();
-    for (const d of await this.db
-      .getRepository(VenueDecision)
-      .findBy({ providerId: b.providerId, exchange: LBANK })) {
+    for (const d of await this.db.getRepository(VenueDecision).findBy({
+      providerId: b.providerId,
+      exchange: LBANK,
+      ...(only ? { cmcId: In(cmcIds) } : {}),
+    })) {
       decisions.set(d.cmcId, [
         ...(decisions.get(d.cmcId) ?? []),
         {
@@ -220,12 +284,13 @@ export class ScanService {
       ]);
     }
     const history = new Map<number, { lastAbsentAt: Map<string, Date>; everListed: Set<string> }>();
-    if (crawlView) {
+    if (crawlView && (!only || cmcIds.length)) {
       for (const e of await this.db.getRepository(VenuePairEvent).find({
         where: {
           providerId: b.providerId,
           exchange: LBANK,
           at: LessThanOrEqual(crawlView.finishedAt),
+          ...(only ? { cmcId: In(cmcIds) } : {}),
         },
         order: { at: 'ASC' },
       })) {
@@ -236,8 +301,18 @@ export class ScanService {
       }
     }
     const rankCounts = new Map<number, number>();
-    for (const s of snaps)
-      if (s.rank !== null) rankCounts.set(s.rank, (rankCounts.get(s.rank) ?? 0) + 1);
+    if (only) {
+      const ranks = [...new Set(snaps.map((s) => s.rank).filter((r): r is number => r !== null))];
+      if (ranks.length)
+        for (const r of (await this.db.query(
+          `SELECT rank, count(*)::int AS n FROM market_snapshot
+            WHERE provider_id = $1 AND slot_time = $2 AND rank = ANY($3::int[]) GROUP BY rank`,
+          [b.providerId, b.slotTime, ranks],
+        )) as Array<{ rank: number; n: number }>)
+          rankCounts.set(r.rank, r.n);
+    } else
+      for (const s of snaps)
+        if (s.rank !== null) rankCounts.set(s.rank, (rankCounts.get(s.rank) ?? 0) + 1);
     const noHistory: PairHistoryView = { lastAbsentAt: new Map(), everListed: new Set() };
 
     const assets: PreEvaluation[] = [];
@@ -304,6 +379,7 @@ export class ScanService {
         status: b.status,
         statusReasons: b.statusReasons,
         isLive: b.isLive,
+        collected: b.collected,
       },
       asOf,
       overrides,
@@ -321,7 +397,7 @@ export class ScanService {
     };
   }
 
-  /** Assets whose completed daily rows are needed (not excluded), most relevant first. */
+  /** ELIGIBLE assets, whose completed daily rows are needed, most relevant first. */
   dailyCandidates(ctx: BatchContext): Array<{ cmcId: number; slug: string | null }> {
     const tier = (a: PreEvaluation) =>
       a.lbank.status === 'VERIFIED' ? 0 : a.lbank.status === 'PAIR_LISTED_UNVERIFIED' ? 1 : 2;
@@ -342,7 +418,7 @@ export class ScanService {
       .map((a) => ({ cmcId: a.cmcId, slug: a.slug }));
   }
 
-  /** Evaluate and persist every asset of the batch; reprocessing replaces the batch's rows. */
+  /** Evaluate every asset of the batch and store its Review Queue; reprocessing replaces it. */
   async scan(batchId: string, extraWarnings: string[] = []): Promise<ScanOutcome> {
     const startedAt = new Date();
     const ctx = await this.loadContext(batchId);
@@ -382,7 +458,7 @@ export class ScanService {
     try {
       const outcome = await this.evaluateAndPersist(ctx, cv, extraWarnings);
       this.log.log(
-        `scan ${batch.slotTime.toISOString()}: ${JSON.stringify({ eligible: outcome.counts.eligible, needsReview: outcome.counts.needsReview, excluded: outcome.counts.excluded, queue: outcome.counts.queue, queueStatus: outcome.queueStatus })}`,
+        `scan ${batch.slotTime.toISOString()}: ${JSON.stringify({ listed: outcome.counts.assets, screened: outcome.counts.screened, eligible: outcome.counts.eligible, needsReview: outcome.counts.needsReview, excluded: outcome.counts.excluded, queue: outcome.counts.queue, queueStatus: outcome.queueStatus })}`,
       );
       return outcome;
     } catch (err) {
@@ -394,13 +470,29 @@ export class ScanService {
     }
   }
 
-  private async evaluateAndPersist(
-    ctx: BatchContext,
-    cv: string,
-    extraWarnings: string[],
-  ): Promise<ScanOutcome> {
+  /**
+   * Evaluate coins of a stored batch on request (coin page, trace, agent, Telegram /coin, venue
+   * decisions) with the same rules and inputs as the scan. Writes nothing. Coins without a stored
+   * snapshot in the batch (ranked above 1200 or unranked since D4) are absent from the result.
+   */
+  async evaluateCoins(batchId: string, cmcIds: readonly number[]): Promise<OnRequestResult[]> {
+    const ctx = await this.loadContext(batchId, { cmcIds });
+    if (!ctx.assets.length) return [];
+    const cv = this.strategy.configVersion(ctx.overrides);
+    const rows = await this.evaluate(ctx, cv, new Date());
+    return rows.map(({ _m3, _strength, ...r }) => {
+      const out: Record<string, unknown> = { ...r, inQueue: false, queueOrder: null };
+      for (const k of DECIMAL_FIELDS) {
+        const v = r[k];
+        out[k] = v === null ? null : new D(v);
+      }
+      return out as OnRequestResult;
+    });
+  }
+
+  /** Every asset of the context as a result row (not yet ranked); reads daily rows and venues only. */
+  private async evaluate(ctx: BatchContext, cv: string, computedAt: Date): Promise<EvaluatedRow[]> {
     const { batch, asOf } = ctx;
-    const computedAt = new Date();
     const evaluated = ctx.assets.filter((a) => needsDailyRows(a.eligibility));
     const daily = await this.dailyInputs(
       batch.providerId,
@@ -412,10 +504,12 @@ export class ScanService {
       evaluated.map((a) => a.cmcId),
     );
 
-    // Unrounded sort keys (the stored values are rounded for storage only).
-    const rows: Array<ScanRow & { _m3: DValue | null; _strength: DValue | null }> = [];
+    const rows: EvaluatedRow[] = [];
     for (const a of ctx.assets) {
       const isEvaluated = needsDailyRows(a.eligibility);
+      // Why the windows were not evaluated: a known failed filter, or a missing / ambiguous input.
+      const skipped =
+        a.eligibility.status === 'NEEDS_REVIEW' ? REASON.notEvaluatedReview : REASON.notEvaluated;
       const rowsFor = daily.get(a.cmcId) ?? new Map<string, DailyInput>();
       const currentInput = {
         present: true,
@@ -429,7 +523,7 @@ export class ScanService {
       const ev = this.strategy.evaluateVmc(asOf, rowsFor, currentInput);
       const comparisons: Record<PassWindow, Comparison> = isEvaluated
         ? ev.comparisons
-        : notEvaluated();
+        : notEvaluated(skipped);
       const windows = ev.windows;
       const stars = isEvaluated ? ev.stars : 0;
       // Weighted star ranking (weighted_star_v1): from the same comparisons, never a new pass.
@@ -446,7 +540,7 @@ export class ScanService {
         : null;
       const flags = this.flagsFor(a, ev.current, windows, isEvaluated, batch.status);
       const avg = (d: WindowDays) => (isEvaluated ? forStorage(windows[d].mean) : null);
-      const avgReason = (d: WindowDays) => (isEvaluated ? windows[d].reason : REASON.notEvaluated);
+      const avgReason = (d: WindowDays) => (isEvaluated ? windows[d].reason : skipped);
       const window30 = windows[30];
       const lineage = isEvaluated
         ? {
@@ -553,11 +647,21 @@ export class ScanService {
         _strength: rank.weightedStrength,
       });
     }
+    return rows;
+  }
+
+  private async evaluateAndPersist(
+    ctx: BatchContext,
+    cv: string,
+    extraWarnings: string[],
+  ): Promise<ScanOutcome> {
+    const { batch } = ctx;
+    const rows = await this.evaluate(ctx, cv, new Date());
 
     const queue = rows.filter((r) =>
       inReviewQueue({ eligibilityStatus: r.eligibilityStatus, stars: r.stars }),
     );
-    const sortKey = (r: (typeof rows)[number]) => ({
+    const sortKey = (r: EvaluatedRow) => ({
       cmcId: r.cmcId,
       stars: r.stars,
       weightedPassPoints: r.weightedPassPoints!,
@@ -583,7 +687,8 @@ export class ScanService {
 
     const counts = await this.countsAndWarnings(ctx, rows, queue.length, extraWarnings);
     const tasks = ctx.assets.flatMap((a) => a.lbank.tasks.map((t) => ({ ...t, cmcId: a.cmcId })));
-    const persistable = rows.map(({ _m3, _strength, ...r }) => r);
+    // Only the Review Queue is stored (D4): a withheld queue too, marked by its queue status.
+    const persistable = queue.map(({ _m3, _strength, ...r }) => r);
     await this.db.transaction(async (m) => {
       await m.getRepository(ScanResult).delete({ batchId: batch.id });
       await insertRows(m, ScanResult, persistable as never);
@@ -641,13 +746,8 @@ export class ScanService {
         },
       );
     });
-    const venueCandidates = rows
-      .filter((r) => r.inQueue || (r.eligibilityStatus === 'NEEDS_REVIEW' && r.stars > 0))
-      .sort(
-        (x, y) =>
-          (x.queueOrder ?? 1e9) - (y.queueOrder ?? 1e9) || y.stars - x.stars || x.cmcId - y.cmcId,
-      )
-      .map((r) => ({ cmcId: r.cmcId, slug: r.slug ?? null }));
+    // CMC Markets venue rows are fetched for the Review Queue only (never outside it).
+    const venueCandidates = queue.map((r) => ({ cmcId: r.cmcId, slug: r.slug ?? null }));
     return {
       batchId: batch.id,
       status: 'succeeded',
@@ -759,7 +859,10 @@ export class ScanService {
     );
   }
 
-  /** Run counts and observability warnings (PDF p.18). Counts and comparisons only; no thresholds. */
+  /**
+   * Run counts and observability warnings (PDF p.18): the scan-level record of every coin that is
+   * not stored. Counts and comparisons only; no thresholds.
+   */
   private async countsAndWarnings(
     ctx: BatchContext,
     rows: ScanRow[],
@@ -768,13 +871,24 @@ export class ScanService {
   ) {
     const tally = (xs: string[]) =>
       xs.reduce<Record<string, number>>((m, x) => ((m[x] = (m[x] ?? 0) + 1), m), {});
-    const evaluated = rows.filter((r) => r.eligibilityStatus !== 'EXCLUDED');
+    // Windows are evaluated for ELIGIBLE coins only (vmc-tier1-2).
+    const evaluated = rows.filter((r) => needsDailyRows({ status: r.eligibilityStatus }));
+    // Coins read in the batch but not stored (ranked above 1200 or unranked): checked at
+    // collection, counted here, never evaluated further.
+    const listed = Math.max(ctx.batch.collected, rows.length);
+    const missingDaily = evaluated
+      .filter((r) => r.avg3dReason === REASON.dailyRowMissing)
+      .map((r) => r.cmcId)
+      .sort((a, b) => a - b);
     const counts: Record<string, unknown> = {
-      assets: rows.length,
+      assets: listed,
+      screened: rows.length,
+      outsideUniverse: listed - rows.length,
       eligible: rows.filter((r) => r.eligibilityStatus === 'ELIGIBLE').length,
       needsReview: rows.filter((r) => r.eligibilityStatus === 'NEEDS_REVIEW').length,
       excluded: rows.filter((r) => r.eligibilityStatus === 'EXCLUDED').length,
       queue,
+      stored: queue,
       evaluated: evaluated.length,
       stars: tally(evaluated.map((r) => String(r.stars))),
       pass: Object.fromEntries(
@@ -792,6 +906,7 @@ export class ScanService {
       current: tally(rows.map((r) => r.currentStatus)),
       lbank: tally(rows.map((r) => r.lbankStatus)),
       reasons: tally(rows.flatMap((r) => r.eligibilityReasons.map((x) => x.split(':')[0]!))),
+      missingDaily: missingDaily.slice(0, MAX_MISSING_DAILY_IDS),
       batchStatus: ctx.batch.status,
       lbankCrawl: ctx.lbankCrawl,
       overridesVersion: ctx.overrides.version,
@@ -816,24 +931,27 @@ export class ScanService {
       );
     else if (ctx.lbankCrawl.pairs === 0)
       warnings.push('EMPTY_VENUE_MAPPING: the LBank crawl returned no pairs');
-    const missingDaily = evaluated
-      .filter((r) => r.avg3dReason === REASON.dailyRowMissing)
-      .map((r) => r.cmcId);
     if (missingDaily.length) {
-      const prev = (await this.db
-        .getRepository(ScanResult)
-        .createQueryBuilder('r')
-        .select('DISTINCT r.cmc_id', 'cmcId')
-        .where('r.provider_id = :providerId', { providerId: ctx.batch.providerId })
-        .andWhere('r.cmc_id = ANY(:ids)', { ids: missingDaily })
-        .andWhere('r.avg_3d_reason = :reason', { reason: REASON.dailyRowMissing })
-        .andWhere('r.crawled_at < :to AND r.crawled_at >= :from', {
-          to: ctx.batch.crawledAt,
-          from: new Date(ctx.batch.crawledAt.getTime() - 26 * 3_600_000),
-        })
-        .getRawMany()) as Array<{ cmcId: number }>;
+      // Earlier batches keep their ids on the scan run (rows outside the queue are not stored).
+      const earlier = await this.db.getRepository(ScanRun).find({
+        where: {
+          providerId: ctx.batch.providerId,
+          status: 'succeeded',
+          asOf: And(
+            MoreThanOrEqual(new Date(ctx.asOf.getTime() - MISSING_DAILY_LOOKBACK_MS)),
+            LessThan(ctx.asOf),
+          ),
+        },
+        select: { batchId: true, counts: true },
+      });
+      const seen = new Set(
+        earlier.flatMap(
+          (r) => ((r.counts as { missingDaily?: unknown } | null)?.missingDaily ?? []) as number[],
+        ),
+      );
+      const also = missingDaily.filter((id) => seen.has(id)).length;
       warnings.push(
-        `MISSING_DAILY_DATA: ${missingDaily.length} evaluated assets lack a completed daily row in the 3-day window${prev.length ? ` (${prev.length} also in an earlier batch within 26 h)` : ''}`,
+        `MISSING_DAILY_DATA: ${missingDaily.length} evaluated assets lack a completed daily row in the 3-day window${also ? ` (${also} also in an earlier batch within 26 h)` : ''}`,
       );
     }
     const stale = rows.filter((r) => r.currentStatus === 'STALE').length;

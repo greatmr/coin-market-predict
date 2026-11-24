@@ -72,6 +72,14 @@ const HELP = `Coins Predicts CLI — Two-Tier VMC strategy (docs/strategy-two-ti
                                Events with their latest outcome (provisional or final)
   forward:update               Run the daily High update now (under the pipeline lease), then export
   forward:export               Write the event export and star-group report (CSV + manifest)
+
+  Storage (docs/operator-guide.md § Storage cleanup; take a backup before --apply)
+  storage:prune [--apply] [--vacuum]
+                               Remove rows stored under the earlier storage policy: scan rows
+                               outside the Review Queue, snapshots ranked above 1200 or unranked,
+                               and snapshots past RETENTION_DETAIL_DAYS that no queue row, forward
+                               test event or benchmark needs. Dry run (counts only) without --apply;
+                               --vacuum then rewrites both tables (VACUUM FULL) to return the space
   telegram:preview [--batch ID] [--fake]
                                Print the Telegram summary (latest batch, or a fake-data layout)
   telegram:test [--sample]     Verify bot token + chat and send one test message
@@ -215,6 +223,23 @@ async function main() {
           process.exitCode = 1;
         break;
       }
+      case 'storage:prune': {
+        const apply = process.argv.includes('--apply');
+        const vacuum = process.argv.includes('--vacuum');
+        if (vacuum && !apply) throw new Error('--vacuum needs --apply');
+        const r = await ctx.get(PipelineService).pruneStorage({
+          apply,
+          vacuum,
+          onProgress: (line) => process.stderr.write(`${line}\n`),
+        });
+        out(r);
+        if ('skipped' in r) process.exitCode = 1;
+        else if (!apply)
+          process.stderr.write(
+            'Dry run: nothing was deleted. Take a backup, then run again with --apply [--vacuum].\n',
+          );
+        break;
+      }
       case 'tier1:batches': {
         const rows = await ctx.get(ReadModelService).batches(24);
         out(
@@ -226,7 +251,7 @@ async function main() {
                 counts?: Record<string, number>;
                 exportStatus?: string;
               } | null;
-              return `${String(b.slotTime)}  ${String(b.status).padEnd(10)} collected ${String(b.collected).padStart(5)}  scan ${s?.status ?? '-'} ${s?.queueStatus ?? ''} queue ${s?.counts?.queue ?? '-'} eligible ${s?.counts?.eligible ?? '-'} review ${s?.counts?.needsReview ?? '-'} export ${s?.exportStatus ?? '-'}  ${String(b.id)}`;
+              return `${String(b.slotTime)}  ${String(b.status).padEnd(10)} collected ${String(b.collected).padStart(5)} stored ${String(b.stored ?? b.collected).padStart(5)}  scan ${s?.status ?? '-'} ${s?.queueStatus ?? ''} queue ${s?.counts?.queue ?? '-'} eligible ${s?.counts?.eligible ?? '-'} export ${s?.exportStatus ?? '-'}  ${String(b.id)}`;
             })
             .join('\n'),
         );
@@ -676,9 +701,7 @@ function fakePreview(tz: string): string[] {
     batchStatus: 'COMPLETE',
     batchReasons: [],
     queueStatus: 'PUBLISHED',
-    counts: { assets: 8041, eligible: 212, needsReview: 341, excluded: 7488, queue: 2 },
-    needsReviewWithYes: 14,
-    lbankUnverifiedWithYes: 11,
+    counts: { assets: 8041, screened: 1200, eligible: 212, queue: 2 },
     rows: [
       {
         order: 1,

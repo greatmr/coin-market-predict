@@ -10,6 +10,7 @@ import { LeaseService } from '../src/modules/pipeline/lease.service.js';
 import { PIPELINE_LEASE, PipelineService } from '../src/modules/pipeline/pipeline.service.js';
 import { ReadModelService } from '../src/modules/read-model/read-model.service.js';
 import { ScanResult } from '../src/modules/scan/entities/scan-result.entity.js';
+import { ScanRun } from '../src/modules/scan/entities/scan-run.entity.js';
 import { ScanService } from '../src/modules/scan/scan.service.js';
 import { Provider } from '../src/modules/sources/entities/provider.entity.js';
 import { SourceHealthService } from '../src/modules/sources/source-health.service.js';
@@ -53,7 +54,15 @@ describe('hourly pipeline', () => {
     };
     expect(ov.latestRun.progress).toBeNull();
     expect(ov.schedule.cron).toBeTruthy();
-    expect(await ctx.repo(ScanResult).countBy({ batchId: r.batchId! })).toBeGreaterThan(1000);
+    // Every listed coin is screened; only the Review Queue is stored per coin (D4).
+    const counts = (await ctx.repo(ScanRun).findOneByOrFail({ batchId: r.batchId! })).counts as {
+      assets: number;
+      queue: number;
+    };
+    expect(counts.assets).toBeGreaterThan(1000);
+    expect(counts.queue).toBeGreaterThan(0);
+    expect(await ctx.repo(ScanResult).countBy({ batchId: r.batchId! })).toBe(counts.queue);
+    expect(await ctx.repo(MarketSnapshot).count()).toBe(1200);
     const deliveries = await ctx.repo(TelegramDelivery).findBy({ runId: r.runId! });
     expect(deliveries.length).toBeGreaterThan(0);
     expect(deliveries.every((d) => d.status === 'dry_run')).toBe(true);

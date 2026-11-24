@@ -10,6 +10,7 @@ import {
   type EligibilityInput,
   classify,
   evaluateEligibility,
+  needsDailyRows,
 } from './eligibility.js';
 import {
   type CurrentInput,
@@ -17,6 +18,7 @@ import {
   compare,
   currentObservation,
   evaluateVmc,
+  notEvaluated,
   windowMean,
 } from './vmc.js';
 
@@ -328,6 +330,32 @@ describe('F: eligibility boundaries (inclusive) checked in UTC', () => {
       REASON.rankOutOfRange,
       `${REASON.lbankUnknown}:LBANK_FEED_STALE`,
     ]);
+  });
+  it('NEEDS_REVIEW fails closed: only ELIGIBLE coins get daily rows, windows and stars (vmc-tier1-2)', () => {
+    expect(needsDailyRows(evaluateEligibility({ rank: 500, ...base }))).toBe(true);
+    for (const o of [
+      { rank: null },
+      { rankDuplicate: true },
+      { capUsd: null },
+      { capProviderReported: false },
+      { dateAdded: null },
+      { lbank: { status: 'PAIR_LISTED_UNVERIFIED' as const, reason: 'NO_TRADING_STATUS_PROOF' } },
+      { lbank: { status: 'UNKNOWN' as const, reason: 'AMBIGUOUS_MAPPING' } },
+      { cls: { ...regular, assetClass: 'ambiguous' as const, kind: 'wrapped' } },
+    ]) {
+      const e = evaluateEligibility({ rank: 500, ...base, ...o });
+      expect(e.status).toBe('NEEDS_REVIEW');
+      expect(needsDailyRows(e)).toBe(false);
+    }
+    expect(needsDailyRows(evaluateEligibility({ rank: 1201, ...base }))).toBe(false);
+    // Its windows are N/A with their own reason, so it can never count a star.
+    const skipped = notEvaluated(REASON.notEvaluatedReview);
+    expect(Object.values(skipped).map((c) => [c.status, c.reason])).toEqual([
+      ['N/A', 'NOT_EVALUATED_NEEDS_REVIEW'],
+      ['N/A', 'NOT_EVALUATED_NEEDS_REVIEW'],
+      ['N/A', 'NOT_EVALUATED_NEEDS_REVIEW'],
+    ]);
+    expect(Object.values(notEvaluated()).every((c) => c.reason === REASON.notEvaluated)).toBe(true);
   });
 });
 

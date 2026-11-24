@@ -6,7 +6,7 @@ import { Shell } from './Shell';
 import { RouteError } from './components/ErrorBoundary';
 import { Toasts } from './components/Feedback';
 import { ChangePasswordPage, LoginPage } from './features/auth/AuthScreen';
-import { SECTIONS, type SectionKey, legacyRedirect } from './lib/routes';
+import { RETIRED_SHEET_PATHS, SECTIONS, type SectionKey, legacyRedirect } from './lib/routes';
 import { SessionProvider } from './state/session';
 
 const Overview = lazy(() => import('./features/overview/Overview'));
@@ -47,10 +47,7 @@ const page = (node: ReactNode) => (
 
 const ELEMENTS: Record<SectionKey, ReactNode> = {
   overview: <Overview />,
-  queue: <Sheet sheet="queue" key="queue" />,
-  eligible: <Sheet sheet="eligible" key="eligible" />,
-  needs_review: <Sheet sheet="needs_review" key="needs_review" />,
-  excluded: <Sheet sheet="excluded" key="excluded" />,
+  queue: <Sheet />,
   forward: <Forward />,
   data: <Data />,
   batches: <Batches />,
@@ -77,6 +74,10 @@ const router = createBrowserRouter([
             handle: { section: s.key, permission: s.permission },
           })),
           { path: 'coins/:cmcId', element: page(<CoinPage />), errorElement: <RouteError /> },
+          ...RETIRED_SHEET_PATHS.map((path) => ({
+            path,
+            element: <Navigate to={SECTIONS.find((x) => x.key === 'data')!.path} replace />,
+          })),
           { path: '*', element: <NotFound /> },
         ],
       },

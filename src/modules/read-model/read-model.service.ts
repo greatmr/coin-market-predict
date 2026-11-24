@@ -13,7 +13,6 @@ import {
   MoreThan,
   MoreThanOrEqual,
   type ObjectLiteral,
-  type SelectQueryBuilder,
 } from 'typeorm';
 
 import { addDays, isoDate } from '../../common/utils/dates.js';
@@ -36,6 +35,7 @@ import { nextCronRun, runProgress } from '../pipeline/progress.js';
 import { Review } from '../reviews/entities/review.entity.js';
 import { ScanResult } from '../scan/entities/scan-result.entity.js';
 import { ScanRun } from '../scan/entities/scan-run.entity.js';
+import { type OnRequestResult, ScanService } from '../scan/scan.service.js';
 import { Provider } from '../sources/entities/provider.entity.js';
 import { SourceHealth } from '../sources/entities/source-health.entity.js';
 import { DEFAULT_OPEN_COOLDOWN_MS } from '../sources/http/polite-client.js';
@@ -47,7 +47,21 @@ import { VenueMappingTask } from '../venues/entities/venue-mapping-task.entity.j
 
 import { chartCandidates } from './tradingview.js';
 
-export type Sheet = 'queue' | 'eligible' | 'needs_review' | 'excluded' | 'all';
+/**
+ * The stored result sheet. Since D4 (ADR-0008) only the Review Queue is stored: eligible coins
+ * without a star, NEEDS_REVIEW and EXCLUDED coins are counted on the scan run and evaluated on
+ * request (`assetTrace`), never listed.
+ */
+export type Sheet = 'queue';
+
+/** How the record of a trace was obtained. */
+export type TraceEvaluation =
+  /** The stored Review Queue row of the batch. */
+  | 'stored'
+  /** Not stored: computed now from the batch's stored inputs with the scan's own rules. */
+  | 'on_request'
+  /** The coin has no stored snapshot in the latest batch: its most recent stored row instead. */
+  | 'earlier_stored';
 
 /** Name of the pipeline's job lease (mirrors `PIPELINE_LEASE` without importing the pipeline). */
 const PIPELINE_LEASE_NAME = 'hourly-pipeline';
@@ -126,7 +140,7 @@ const asCmcId = (s: string) =>
  * The weighted star ranking of one stored row with its formulas (weighted_star_v1). Recomputed from
  * the stored statuses for display; the stored score is what the queue was sorted by.
  */
-function rankingTrace(r: ScanResult) {
+function rankingTrace(r: OnRequestResult) {
   const passes = [
     [3, r.pass3d, r.multiple3d],
     [7, r.pass7d, r.multiple7d],
@@ -164,6 +178,7 @@ export class ReadModelService {
   constructor(
     @InjectDataSource() private readonly db: DataSource,
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
+    private readonly scan: ScanService,
   ) {}
 
   get providerId() {
@@ -189,22 +204,26 @@ export class ReadModelService {
     return r?.batchId ?? null;
   }
 
-  /** Coins of one scanned batch whose symbol matches case-insensitively (exact), lowest rank first. */
+  /**
+   * Coins of one scanned batch whose symbol matches case-insensitively (exact), lowest rank first:
+   * every coin with a stored snapshot in the batch (ranks 1–1200), matched by its CMC symbol.
+   */
   async findBySymbol(
     batchId: string,
     symbol: string,
     limit: number,
   ): Promise<Array<{ cmcId: number; symbol: string; name: string }>> {
-    const rows = await this.repo(ScanResult)
-      .createQueryBuilder('r')
-      .select(['r.id', 'r.cmcId', 'r.symbol', 'r.name'])
-      .where('r.batch_id = :batchId', { batchId })
-      .andWhere('lower(r.symbol) = lower(:symbol)', { symbol })
-      .orderBy('r.rank', 'ASC', 'NULLS LAST')
-      .addOrderBy('r.cmc_id', 'ASC')
-      .limit(limit)
-      .getMany();
-    return rows.map((r) => ({ cmcId: r.cmcId, symbol: r.symbol, name: r.name }));
+    const rows = (await this.db.query(
+      `SELECT c.cmc_id AS "cmcId", c.symbol, c.name
+         FROM crawl_batch b
+         JOIN market_snapshot s ON s.provider_id = b.provider_id AND s.slot_time = b.slot_time
+         JOIN cmc_asset c ON c.provider_id = s.provider_id AND c.cmc_id::text = s.provider_asset_id
+        WHERE b.id = $1 AND lower(c.symbol) = lower($2)
+        ORDER BY s.rank ASC NULLS LAST, c.cmc_id ASC
+        LIMIT $3`,
+      [batchId, symbol, limit],
+    )) as Array<{ cmcId: number; symbol: string; name: string }>;
+    return rows;
   }
 
   async listAssets(q: { search?: string; limit: number; offset: number }) {
@@ -471,7 +490,7 @@ export class ReadModelService {
     });
   }
 
-  /** Rows of one result sheet (PDF p.17 sheets), with each asset's latest human review. */
+  /** Rows of the Review Queue (PDF p.17 sheet), with each asset's latest human review. */
   async scanSheet(q: {
     sheet: Sheet;
     batchId?: string;
@@ -483,11 +502,8 @@ export class ReadModelService {
     if (!batchId) return plain<Record<string, unknown>>({ batchId: null, total: 0, rows: [] });
     const base = this.repo(ScanResult)
       .createQueryBuilder('r')
-      .where('r.batch_id = :batchId', { batchId });
-    if (q.sheet === 'queue') base.andWhere('r.in_queue = true');
-    else if (q.sheet === 'eligible') base.andWhere("r.eligibility_status = 'ELIGIBLE'");
-    else if (q.sheet === 'needs_review') base.andWhere("r.eligibility_status = 'NEEDS_REVIEW'");
-    else if (q.sheet === 'excluded') base.andWhere("r.eligibility_status = 'EXCLUDED'");
+      .where('r.batch_id = :batchId', { batchId })
+      .andWhere('r.in_queue = true');
     const search = q.search?.trim();
     if (search) {
       const cmcId = asCmcId(search);
@@ -501,8 +517,11 @@ export class ReadModelService {
         }),
       );
     }
-    const page = base.clone().select(['r.id', ...LIST_COLUMNS.map((c) => `r.${c}`)]);
-    this.sheetOrder(page, q.sheet);
+    const page = base
+      .clone()
+      .select(['r.id', ...LIST_COLUMNS.map((c) => `r.${c}`)])
+      .orderBy('r.queue_order', 'ASC', 'NULLS LAST')
+      .addOrderBy('r.cmc_id', 'ASC');
     const [total, rows, run] = await Promise.all([
       base.getCount(),
       page.offset(q.offset).limit(q.limit).getMany(),
@@ -521,17 +540,6 @@ export class ReadModelService {
       offset: q.offset,
       rows: rows.map((r) => ({ ...withoutId(r), review: reviews.get(r.cmcId) ?? null })),
     });
-  }
-
-  private sheetOrder(qb: SelectQueryBuilder<ScanResult>, sheet: Sheet) {
-    if (sheet === 'queue') qb.orderBy('r.queue_order', 'ASC', 'NULLS LAST');
-    else if (sheet === 'excluded')
-      qb.orderBy('r.rank', 'ASC', 'NULLS LAST').addOrderBy('r.cmc_id', 'ASC');
-    else
-      qb.orderBy('r.in_queue', 'DESC')
-        .addOrderBy('r.queue_order', 'ASC', 'NULLS LAST')
-        .addOrderBy('r.stars', 'DESC')
-        .addOrderBy('r.cmc_id', 'ASC');
   }
 
   private async latestReviews(cmcIds: number[]) {
@@ -561,17 +569,31 @@ export class ReadModelService {
    * Full calculation trace for one CMC id in one batch (PDF p.20 #2): the current observation, the
    * 30 completed daily rows actually used (exact revisions), every window, comparison, eligibility
    * reason, LBank and venue evidence, decisions, tasks and the review history.
+   *
+   * The record is the batch's stored Review Queue row; for any other coin with a stored snapshot in
+   * the batch it is evaluated on request from the same stored inputs and rules (nothing is written,
+   * D4). Without a batch id, a coin outside ranks 1–1200 in the latest batch falls back to its most
+   * recent stored row. `evaluation` says which.
    */
   async assetTrace(cmcId: number, batchId?: string) {
     const results = this.repo(ScanResult);
-    let record: ScanResult | null;
-    if (batchId) record = await results.findOneBy({ batchId, cmcId });
-    else {
-      const latest = await this.latestScanBatchId();
+    const latest = await this.latestScanBatchId();
+    const target = batchId ?? latest;
+    let record: ScanResult | OnRequestResult | null = null;
+    let evaluation: TraceEvaluation = 'stored';
+    if (target) {
+      record = await results.findOneBy({ batchId: target, cmcId });
+      if (!record) {
+        record = (await this.scan.evaluateCoins(target, [cmcId]))[0] ?? null;
+        evaluation = 'on_request';
+      }
+    }
+    if (!record && !batchId) {
       record = await results.findOne({
-        where: { providerId: this.providerId, cmcId, ...(latest ? { batchId: latest } : {}) },
+        where: { providerId: this.providerId, cmcId },
         order: { crawledAt: 'DESC' },
       });
+      evaluation = 'earlier_stored';
     }
     if (!record) return null;
     const providerId = record.providerId;
@@ -720,6 +742,17 @@ export class ReadModelService {
     return plain<Record<string, unknown>>({
       record,
       batch,
+      evaluation: {
+        mode: evaluation,
+        stored: evaluation !== 'on_request',
+        latestBatchId: latest,
+        note:
+          evaluation === 'on_request'
+            ? 'Not in the stored Review Queue of this batch: computed now from its stored inputs with the same rules. Nothing about this coin is stored for this hour.'
+            : evaluation === 'earlier_stored'
+              ? 'This coin has no stored observation in the latest batch (it is outside ranks 1–1200 there): this is its most recent stored Tier 1 row.'
+              : null,
+      },
       scanRun: run
         ? {
             status: run.status,

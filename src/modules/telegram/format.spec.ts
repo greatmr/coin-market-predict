@@ -39,9 +39,7 @@ const input = (o: Partial<Tier1ReportInput> = {}): Tier1ReportInput => ({
   batchStatus: 'COMPLETE',
   batchReasons: [],
   queueStatus: 'PUBLISHED',
-  counts: { assets: 8041, eligible: 300, needsReview: 250, excluded: 7491, queue: 2 },
-  needsReviewWithYes: 0,
-  lbankUnverifiedWithYes: 0,
+  counts: { assets: 8041, screened: 1200, eligible: 300, queue: 2 },
   rows: [
     row(1),
     row(2, {
@@ -196,7 +194,9 @@ describe('Telegram Tier 1 summary (mobile)', () => {
     expect(msg).toMatch(/VMC screen · 10:30 IRST/); // 07:00 UTC in Asia/Tehran
     expect(msg).toMatch(/Thu 5 Nov · batch 07:00 UTC · CoinMarketCap website/);
     expect(msg).toMatch(/2 coins in the review queue/);
-    expect(msg).toMatch(/8,041 coins · 300 eligible · 250 need review · 7,491 excluded/);
+    expect(msg).toMatch(/8,041 coins checked · 1,200 ranked 1–1,200 · 300 eligible/);
+    // The data-quality category is never presented next to the review queue (D4).
+    expect(msg).not.toMatch(/need(s)? review|excluded/i);
     // YES windows are bold, NO plain, N/A a dash; mixed results stay visible.
     expect(msg).toContain('<b>1. C1</b>  ★★☆  VMC <b>20.0%</b>  /coin_990001');
     expect(msg).toContain('└ 3d <b>2.00×</b> · 7d 1.33× · 30d <b>4.00×</b>');
@@ -233,7 +233,7 @@ describe('Telegram Tier 1 summary (mobile)', () => {
   it('says how many queued coins are not listed', () => {
     const msg = formatTier1Report(
       input({
-        counts: { assets: 8041, eligible: 300, needsReview: 250, excluded: 7491, queue: 12 },
+        counts: { assets: 8041, screened: 1200, eligible: 300, queue: 12 },
       }),
     ).join('\n');
     expect(msg).toMatch(/10 more coins on the dashboard/);
@@ -254,22 +254,19 @@ describe('Telegram Tier 1 summary (mobile)', () => {
     expect(lb).toMatch(/LBank pair list is missing or stale/);
   });
 
-  it('publishes an honest empty queue, points to coins needing review, and labels test data', () => {
+  it('publishes an honest empty queue and labels test data', () => {
     const msg = formatTier1Report(
       input({
         isLive: false,
         rows: [],
-        counts: { assets: 1301, eligible: 40, needsReview: 30, excluded: 1231, queue: 0 },
+        counts: { assets: 1301, screened: 1200, eligible: 40, queue: 0 },
         queueStatus: 'EMPTY',
-        needsReviewWithYes: 4,
-        lbankUnverifiedWithYes: 3,
       }),
     ).join('\n');
     expect(msg).toMatch(/Test data/);
     expect(msg).toMatch(/Review queue is empty/);
-    expect(msg).toMatch(
-      /4 more coins met a window but need review first \(3 with an unverified LBank pair\)/,
-    );
+    expect(msg).toMatch(/1,301 coins checked · 1,200 ranked 1–1,200 · 40 eligible/);
+    expect(msg).not.toMatch(/need(s)? review/i);
   });
 
   it('/coin renders the coin detail with sparklines in phone-width messages', () => {
@@ -321,7 +318,7 @@ describe('Telegram Tier 1 summary (mobile)', () => {
     const all = formatCoinDetail(t).join('\n');
     expect(all).toMatch(/⛔ Excluded/);
     expect(all).toMatch(/Left out: no LBank Spot pair/);
-    expect(all).toMatch(/Windows not evaluated: excluded coins get no daily history/);
+    expect(all).toMatch(/Windows not evaluated: only eligible coins get daily history/);
     expect(all).not.toContain('<pre>');
     expect(all).not.toMatch(/Where it trades|Review<\/b>|blockquote/);
   });

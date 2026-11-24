@@ -175,7 +175,8 @@ export function evaluateEligibility(i: EligibilityInput): EligibilityResult {
 }
 
 /**
- * Whether completed daily rows should be fetched for an asset: everything not already excluded
- * by a known hard filter (A11). LBank NOT_LISTED / NOT_TRADABLE assets are excluded and skipped.
+ * Whether an asset's windows are evaluated, and its completed daily rows fetched: ELIGIBLE assets
+ * only (A11, `vmc-tier1-2`). NEEDS_REVIEW fails closed like EXCLUDED: missing or ambiguous inputs
+ * never get windows or stars, so they can never become a signal (operator decision D4).
  */
-export const needsDailyRows = (e: Pick<EligibilityResult, 'status'>) => e.status !== 'EXCLUDED';
+export const needsDailyRows = (e: Pick<EligibilityResult, 'status'>) => e.status === 'ELIGIBLE';

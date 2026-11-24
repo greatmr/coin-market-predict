@@ -36,7 +36,7 @@ import { PipelineRun } from './entities/pipeline-run.entity.js';
 import { PipelineStage } from './entities/pipeline-stage.entity.js';
 import { LeaseService } from './lease.service.js';
 import { STAGES, type Stage, type StageProgress, progressBar } from './progress.js';
-import { RetentionService } from './retention.service.js';
+import { type PruneReport, RetentionService } from './retention.service.js';
 
 export { STAGES, progressBar };
 export const PIPELINE_LEASE = 'hourly-pipeline';
@@ -432,6 +432,21 @@ export class PipelineService {
   /** Re-export a scanned batch under the pipeline lease, so it never races an hourly export. */
   async exportBatch(batchId: string): Promise<ExportResult | { skipped: string }> {
     return this.exclusive(() => this.exports.export(batchId));
+  }
+
+  /**
+   * One-time cleanup of rows stored under the earlier storage policy (CLI `storage:prune`, D4,
+   * ADR-0008), under the pipeline lease so no hourly run writes meanwhile. A dry run unless `apply`;
+   * take a backup first (docs/operator-guide.md § Storage cleanup).
+   */
+  async pruneStorage(opts: {
+    apply: boolean;
+    vacuum?: boolean;
+    onProgress?: (line: string) => void;
+  }): Promise<PruneReport | { skipped: string }> {
+    return this.exclusive(() =>
+      this.retention.pruneLegacy(this.providerId, this.clock.now(), opts),
+    );
   }
 
   /**

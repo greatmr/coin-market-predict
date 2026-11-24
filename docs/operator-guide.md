@@ -31,20 +31,23 @@ exports and the Telegram summary. Missed hours are recorded, never invented.
 
 | Section (left rail) | Shows                                                                                                                                                                                                                                                                                                                                                                                                        |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Overview            | Run ring (progress while a run is going, otherwise a countdown to the next run) with the stage list; a funnel from every listed coin to evaluated, eligible and the review queue; review-queue cards; the forward test at a glance (results by stars, the last High check, a link to the full table); window results (YES / NO / N/A per window), eligibility donut, stars and the rule list                 |
+| Overview            | Run ring (progress while a run is going, otherwise a countdown to the next run) with the stage list; a funnel from every listed coin to ranks 1–1200, eligible and the review queue; review-queue cards; the forward test at a glance (results by stars, the last High check, a link to the full table); window results (YES / NO / N/A per window), eligibility donut, stars and the rule list              |
 | Review queue        | ELIGIBLE coins with at least one YES among 3d / 7d / 30d, ranked by stars, then weighted points (3d 60 · 7d 25 · 30d 15 per YES; `≥ n` = lower bound because a window is N/A), complete scores first, weighted strength, the 3-day multiple and CMC id ([strategy § 6a](strategy-two-tier-vmc.md#6a-weighted-star-ranking-weighted_star_v1-operator-decision-d3)). A 2-star row always precedes a 1-star row |
-| Eligible            | Every coin passing all hard filters, including 0-star rows                                                                                                                                                                                                                                                                                                                                                   |
-| Needs review        | Coins with missing or ambiguous inputs (no rank / cap / listing date, ambiguous class, unverified or ambiguous LBank pair, LBank feed down). Windows are still computed                                                                                                                                                                                                                                      |
-| Excluded            | Coins with a known failed filter, with every reason                                                                                                                                                                                                                                                                                                                                                          |
 | Forward test        | Star Event Forward Test: the events table with its filters, High-check status, window progress and notes; the summary, results by stars, rejected triggers and _Update Highs now_ are on the Data page ([§ 5a](#5a-star-event-forward-test))                                                                                                                                                                 |
-| Data                | Data quality of the latest batch (quote and LBank status, LBank list age and _Refresh LBank list now_, scan warnings, last export) and why coins are left out (exclusion reasons)                                                                                                                                                                                                                            |
+| Data                | Data quality of the latest batch (quote and LBank status, LBank list age and _Refresh LBank list now_, scan warnings, last export) and why coins are left out: coins ranked above 1200 or unranked, and every exclusion reason (the only per-batch record of coins outside the queue, D4)                                                                                                                    |
 | Runs & health       | Source, circuit and request budget; the latest run's stages on a timeline; hourly crawl batches (missing / duplicate ranks); runs; open LBank mapping tasks                                                                                                                                                                                                                                                  |
 | Telegram            | Missed reports, pending requests, members                                                                                                                                                                                                                                                                                                                                                                    |
 
-The queue, eligible and needs-review lists switch between **Table** and **Scatter** (current VMC
-against the coin's own 30-day mean on log scales, with the 1.5× line; click a dot to open the
-coin). **Find a coin** — the search at the top centre of every page (⌘K / Ctrl K, or `/`) —
-searches every known coin by symbol, name or CMC id.
+The review queue switches between **Table** and **Scatter** (current VMC against the coin's own
+30-day mean on log scales, with the 1.5× line; click a dot to open the coin). Since 2026-11-24
+(D4, [ADR-0008](adr/0008-storage-scope.md)) the Eligible, Needs review and Excluded pages are gone:
+only the queue is stored per coin; Overview and Data count the rest. **Find a coin** — the search
+at the top centre of every page (⌘K / Ctrl K, or `/`) — searches every known coin by symbol, name
+or CMC id, and its page shows its result for the latest hour: the stored queue row, or (any other
+coin ranked 1–1200) the same rules evaluated on request from that hour's stored inputs, labelled
+as such. A coin outside ranks 1–1200 has nothing stored for the hour; it is still checked every
+hour. "Missing or ambiguous data" (the old _Needs review_ status) fails closed: such a coin is never
+evaluated for stars, never queued and never a forward-test event.
 
 The sidebar groups the sections into _Screen_, _Data & operations_ and _Settings_ (Telegram,
 users, and _Preferences_, which shows your avatar with an online / offline dot); _Sign out_ is at
@@ -88,7 +91,7 @@ of tappable choices.
 
 | Banner / status                  | Meaning                                                                                                   | What to do                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | -------------------------------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Withheld: incomplete batch       | Ranks 1–1200 had a gap or duplicate, or not every listed coin was stored                                  | Check _Runs & health_ (the batch notes list every listing read). A website listing in which CMC gives one rank to two coins (its rank cache caught mid-refresh) is read again automatically, up to 3 times 60 s apart, so this remains only when every read was inconsistent. A stored hour cannot be crawled again (first write wins); the next hourly batch usually recovers. Rows remain inspectable but are not a complete queue, and no forward-test events open from it |
+| Withheld: incomplete batch       | Ranks 1–1200 had a gap or duplicate, or the listing was not read in full                                  | Check _Runs & health_ (the batch notes list every listing read). A website listing in which CMC gives one rank to two coins (its rank cache caught mid-refresh) is read again automatically, up to 3 times 60 s apart, so this remains only when every read was inconsistent. A stored hour cannot be crawled again (first write wins); the next hourly batch usually recovers. Rows remain inspectable but are not a complete queue, and no forward-test events open from it |
 | Withheld: LBank feed unavailable | No complete LBank Spot markets list yet, or the stored list is older than `LBANK_PAIRS_MAX_AGE_DAYS` (35) | Press _Refresh LBank list now_ on _Data_ (or `lbank:refresh`); check source health if it fails. Every LBank status is UNKNOWN until a complete list exists                                                                                                                                                                                                                                                                                                                    |
 | Empty                            | No eligible coin met any window                                                                           | Nothing to review this hour; no rule is relaxed to fill it                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
@@ -237,8 +240,9 @@ the two new ones now.
 ## 5. Exports
 
 Each scanned batch is written to `var/exports/<provider>/<slot>Z_<batch>[_SYNTHETIC]/`:
-`all_eligible.csv`, `review_queue.csv`, `needs_review.csv`, `excluded.csv`, `run_metadata.csv`,
-and `manifest.json` (SHA-256 per file). Values are full precision; an N/A value is blank with
+`review_queue.csv`, `run_metadata.csv` (with the counts of every coin by status and reason) and
+`manifest.json` (SHA-256 per file); `all_eligible.csv`, `needs_review.csv` and `excluded.csv` were
+dropped on 2026-11-24 (D4). Values are full precision; an N/A value is blank with
 its reason code; `data_label` says LIVE or SYNTHETIC. (The Excel workbook and the dashboard's
 Exports page were removed on 2026-11-24: exports are CSV files on disk, read them there or
 regenerate them with the CLI; Telegram sends text only.)
@@ -323,6 +327,7 @@ the UTC day containing detection + 168 h. Rules, statuses, fields and gaps:
 | `forward:events [--view V] [--stars N] [--json]` | Forward-test events (`active`, `final`, `incomplete`, `all`) with their latest outcome |
 | `forward:update`                                 | Run the daily High update now (normally automatic), then write its export              |
 | `forward:export`                                 | Write the forward-test CSVs and manifest                                               |
+| `storage:prune [--apply] [--vacuum]`             | One-time removal of earlier-policy rows (§ 9a); a dry run without `--apply`            |
 
 ## 7. Troubleshooting
 
@@ -353,6 +358,31 @@ docker compose exec -T postgres pg_restore -U coins -d coins --clean --if-exists
 npm run db:status     # applied and pending migrations; exits 1 while any is pending
 npm run db:migrate    # applies pending migrations (Docker: RUN_MIGRATIONS=true at container start)
 ```
+
+### 9a. Storage cleanup (once, after the D4 deploy)
+
+The deploy only stops the extra writes; rows stored under the earlier policy stay until you remove
+them, and until then hourly retention deletes no snapshot (the run's `metrics.retention` shows
+`legacyPending: true`). Run it right after an hourly run has finished (it holds the pipeline lease,
+so an hourly run that starts meanwhile is skipped):
+
+```bash
+# 1. Backup first (the two affected tables plus their context; or the whole database)
+docker compose exec -T postgres pg_dump -U coins -Fc -t scan_result -t market_snapshot \
+  -t crawl_batch -t scan_run -t app_state coins > backups/coins-pre-prune-$(date +%F).dump
+# 2. Dry run: counts only, nothing deleted
+npm run cli -- storage:prune
+# 3. Delete, then rewrite both tables so the disk space comes back (VACUUM FULL locks each table
+#    for seconds once they are small)
+npm run cli -- storage:prune --apply --vacuum
+```
+
+It deletes scan rows outside the Review Queue (unless a review or venue decision names them),
+snapshots ranked above 1200 or unranked, and snapshots older than `RETENTION_DETAIL_DAYS` that no
+stored queue row, forward-test event or BTC/ETH benchmark needs. Forward-test tables, daily rows,
+batches, runs and the coin registry are not touched. It works batch by batch and slot by slot, so
+an interrupted run can simply be started again. Measured on a production copy (2026-11-24): 6.5
+minutes, 5.1 GB → 0.4 GB.
 
 ### Copy production to the local database
 

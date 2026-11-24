@@ -225,11 +225,8 @@ export function evaluateVmc(
 }
 
 /** Comparisons for an excluded asset: not evaluated (no daily history is fetched for it). */
-export function notEvaluated(): Record<PassWindow, Comparison> {
+export function notEvaluated(reason: string = REASON.notEvaluated): Record<PassWindow, Comparison> {
   return Object.fromEntries(
-    RULES.passWindows.map((n) => [
-      n,
-      { multiple: null, status: 'N/A' as const, reason: REASON.notEvaluated },
-    ]),
+    RULES.passWindows.map((n) => [n, { multiple: null, status: 'N/A' as const, reason }]),
   ) as Record<PassWindow, Comparison>;
 }

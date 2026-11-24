@@ -90,13 +90,14 @@ const schema = z
     CRAWL_EXPECTED_INTERVAL_MINUTES: z.coerce.number().int().min(1).max(1440).default(60),
     /** Quote age beyond which the current observation is stale; default 2 × the crawl interval (p.12). */
     MAX_QUOTE_AGE_MINUTES: optionalInt(1),
+    /** > 0: delete snapshots older than N days outright (forward-test snapshots stay). 0 = off. */
     RETENTION_SNAPSHOT_DAYS: z.coerce.number().int().min(0).default(0),
     /**
-     * After N days: snapshots of coins outside the Tier 1 rank band are thinned to the first
-     * snapshot of each UTC day, and scan rows excluded only by rank/cap to the first batch of each
-     * UTC day. 0 = keep all detail.
+     * Hourly snapshots (ranks 1–1200) are kept N days for reprocessing, on-request traces and price
+     * context; afterwards only the ones a stored Review Queue row used, forward-test snapshots and
+     * the BTC/ETH benchmarks stay (D4, ADR-0008). 0 = keep all detail.
      */
-    RETENTION_DETAIL_DAYS: z.coerce.number().int().min(0).default(30),
+    RETENTION_DETAIL_DAYS: z.coerce.number().int().min(0).default(7),
 
     // --- Two-Tier VMC strategy, Tier 1 (docs/strategy-two-tier-vmc.md) --------------------
     /** Completed UTC days requested per daily-history refresh (≥ 30 needed; extra days catch revisions). */

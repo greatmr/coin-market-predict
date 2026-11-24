@@ -198,9 +198,19 @@ export interface ChartCandidate {
 }
 
 /** GET /api/assets/:cmcId/trace */
+/** How the trace's record was obtained (ReadModelService.assetTrace, D4). */
+export interface TraceEvaluation {
+  /** stored: the batch's Review Queue row; on_request: computed now from the batch's stored inputs; earlier_stored: the coin's last stored row (no observation in the latest batch). */
+  mode: 'stored' | 'on_request' | 'earlier_stored';
+  stored: boolean;
+  latestBatchId: string | null;
+  note: string | null;
+}
+
 export interface AssetTrace {
   record: TraceRecord;
   batch: TraceBatch;
+  evaluation?: TraceEvaluation;
   current: { label: string; formula: string; status: string; reason: string | null };
   daily: { asOfDate: string; latestCompletedDate: string; used: DailyRow[] };
   windows: TraceWindow[];

@@ -25,6 +25,8 @@ export interface BatchRow {
   statusReasons: string[];
   listedTotal: number | null;
   collected: number;
+  /** Snapshots stored (ranks 1–1200); null before D4, when every collected coin was stored. */
+  stored: number | null;
   missingRanks: number[];
   duplicateRanks: number[];
   notes: string[];
