@@ -16,7 +16,6 @@ import { AgentController } from './agent.controller.js';
 import { AssetsController } from './assets.controller.js';
 import { AuthController } from './auth.controller.js';
 import { DashboardController } from './dashboard.controller.js';
-import { ExportsController } from './exports.controller.js';
 import { ForwardController } from './forward.controller.js';
 import { LbankController } from './lbank.controller.js';
 import { PipelineController } from './pipeline.controller.js';
@@ -50,7 +49,6 @@ import { UsersController } from './users.controller.js';
     DashboardController,
     ScanController,
     AssetsController,
-    ExportsController,
     ReviewsController,
     LbankController,
     PipelineController,

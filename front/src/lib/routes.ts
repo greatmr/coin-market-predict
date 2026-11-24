@@ -16,7 +16,6 @@ export type SectionKey =
   | 'forward'
   | 'data'
   | 'batches'
-  | 'exports'
   | 'access'
   | 'users'
   | 'account';
@@ -118,15 +117,6 @@ export const SECTIONS: readonly Section[] = [
     title: 'Runs & health',
     sub: "Crawl batches, pipeline runs and the source's request budget.",
     permission: 'health:read',
-  },
-  {
-    key: 'exports',
-    group: 'data',
-    path: '/exports',
-    label: 'Exports',
-    title: 'Exports',
-    sub: 'CSV per sheet for each scanned batch, with SHA-256 checksums in the manifest.',
-    permission: 'exports:read',
   },
   {
     key: 'access',

@@ -14,7 +14,6 @@ const Sheet = lazy(() => import('./features/sheets/Sheet'));
 const Forward = lazy(() => import('./features/forward/Forward'));
 const Data = lazy(() => import('./features/data/Data'));
 const Batches = lazy(() => import('./features/health/Batches'));
-const Exports = lazy(() => import('./features/health/Exports'));
 const Access = lazy(() => import('./features/telegram/Access'));
 const Users = lazy(() => import('./features/users/Users'));
 const Account = lazy(() => import('./features/account/Account'));
@@ -55,7 +54,6 @@ const ELEMENTS: Record<SectionKey, ReactNode> = {
   forward: <Forward />,
   data: <Data />,
   batches: <Batches />,
-  exports: <Exports />,
   access: <Access />,
   users: <Users />,
   account: <Account />,

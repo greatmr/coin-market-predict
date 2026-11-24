@@ -56,13 +56,6 @@ const PATHS: Record<string, ReactNode> = {
     </>
   ),
   batches: <path d="M3 12h4l2-6 4 12 2-6h6" />,
-  exports: (
-    <>
-      <path d="M12 4v11" />
-      <path d="M7.5 10.5L12 15l4.5-4.5" />
-      <path d="M5 20h14" />
-    </>
-  ),
   access: <path d="M21 4L3 11l6 2 2 6 3-4 4 3z" />,
   users: (
     <>

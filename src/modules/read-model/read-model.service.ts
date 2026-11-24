@@ -1,7 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { existsSync } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
 import {
   And,
   Brackets,
@@ -10,12 +8,10 @@ import {
   type FindOptionsWhere,
   ILike,
   In,
-  IsNull,
   LessThan,
   Like,
   MoreThan,
   MoreThanOrEqual,
-  Not,
   type ObjectLiteral,
   type SelectQueryBuilder,
 } from 'typeorm';
@@ -834,51 +830,6 @@ export class ReadModelService {
         };
       }),
     );
-  }
-
-  async exportsList(limit: number) {
-    const rows = await this.repo(ScanRun).find({
-      where: { providerId: this.providerId, exportStatus: Not(IsNull()) },
-      order: { asOf: 'DESC' },
-      take: limit,
-      select: {
-        batchId: true,
-        asOf: true,
-        isLive: true,
-        queueStatus: true,
-        exportStatus: true,
-        exportPath: true,
-        exportFiles: true,
-        exportedAt: true,
-        error: true,
-      },
-    });
-    return plain<Array<Record<string, unknown>>>(
-      rows.map((r) => ({
-        ...r,
-        // Exports written before the Excel workbook was removed still list it; it is not served.
-        exportFiles: (r.exportFiles ?? []).filter((f) => !f.name.endsWith('.xlsx')),
-        exportPath: r.exportPath
-          ? r.exportPath.replace(resolve(this.cfg.TIER1_EXPORT_DIR), this.cfg.TIER1_EXPORT_DIR)
-          : null,
-        available: !!r.exportPath && existsSync(r.exportPath),
-      })),
-    );
-  }
-
-  /** Absolute path of one exported file of a batch, only if it is listed in that export. */
-  async exportFile(batchId: string, name: string): Promise<string | null> {
-    const run = await this.repo(ScanRun).findOne({
-      where: { batchId },
-      select: { batchId: true, exportPath: true, exportFiles: true },
-    });
-    if (!run?.exportPath) return null;
-    const files = (run.exportFiles ?? []).map((f) => f.name).concat('manifest.json');
-    if (!files.includes(name)) return null;
-    const root = resolve(this.cfg.TIER1_EXPORT_DIR);
-    const full = resolve(join(run.exportPath, name));
-    if (!full.startsWith(root + sep) || !existsSync(full)) return null;
-    return full;
   }
 
   async mappingTasks(status: 'OPEN' | 'RESOLVED' | 'ALL', limit: number) {

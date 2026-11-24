@@ -1,4 +1,4 @@
-// Payloads of /api/batches, /api/health, /api/mapping-tasks and /api/exports (read-model service).
+// Payloads of /api/batches, /api/health, and /api/mapping-tasks (read-model service).
 import type { Iso, PipelineStage, ScanCounts } from '../../types/api';
 
 export interface BatchScan {
@@ -114,25 +114,4 @@ export interface MappingTask {
   evidence: Record<string, unknown>;
   status: string;
   createdAt: Iso;
-}
-
-export interface ExportFile {
-  name: string;
-  rows: number;
-  bytes: number;
-  sha256: string;
-}
-
-/** GET /api/exports */
-export interface ExportRow {
-  batchId: string;
-  asOf: Iso;
-  isLive: boolean;
-  queueStatus: string | null;
-  exportStatus: string | null;
-  exportPath: string | null;
-  exportFiles: ExportFile[] | null;
-  exportedAt: Iso | null;
-  error: string | null;
-  available: boolean;
 }

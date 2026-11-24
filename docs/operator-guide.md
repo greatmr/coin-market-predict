@@ -39,7 +39,6 @@ exports and the Telegram summary. Missed hours are recorded, never invented.
 | Forward test        | Star Event Forward Test: results by stars, every event with its High-check status, window progress and notes ([§ 5a](#5a-star-event-forward-test))                                                                                                                                                                                                                                                           |
 | Data                | Data quality of the latest batch (quote and LBank status, LBank list age and _Refresh LBank list now_, scan warnings, last export) and why coins are left out (exclusion reasons)                                                                                                                                                                                                                            |
 | Runs & health       | Source, circuit and request budget; the latest run's stages on a timeline; hourly crawl batches (missing / duplicate ranks); runs; open LBank mapping tasks                                                                                                                                                                                                                                                  |
-| Exports             | Per-batch CSV files with checksums                                                                                                                                                                                                                                                                                                                                                                           |
 | Telegram            | Missed reports, pending requests, members                                                                                                                                                                                                                                                                                                                                                                    |
 
 The queue, eligible and needs-review lists switch between **Table** and **Scatter** (current VMC
@@ -240,8 +239,9 @@ the two new ones now.
 Each scanned batch is written to `var/exports/<provider>/<slot>Z_<batch>[_SYNTHETIC]/`:
 `all_eligible.csv`, `review_queue.csv`, `needs_review.csv`, `excluded.csv`, `run_metadata.csv`,
 and `manifest.json` (SHA-256 per file). Values are full precision; an N/A value is blank with
-its reason code; `data_label` says LIVE or SYNTHETIC. (The Excel workbook was removed on
-2026-11-24; exports are CSV only and Telegram sends text only.)
+its reason code; `data_label` says LIVE or SYNTHETIC. (The Excel workbook and the dashboard's
+Exports page were removed on 2026-11-24: exports are CSV files on disk, read them there or
+regenerate them with the CLI; Telegram sends text only.)
 A failed export never replaces the previous one. Files are pruned after
 `EXPORT_RETENTION_DAYS`; the database keeps every result, so `npm run cli -- tier1:export
 --batch <id>` regenerates them.

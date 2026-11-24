@@ -45,7 +45,7 @@ on (batch, CMC id); reviews and venue decisions are append-only; exports are per
 | Current observation (p.12)                  | `tier1/vmc.ts` `currentObservation`                      | `ScanResult.currentStatus`                                                           | current panel                | unit: stale, missing time, mismatched, invalid           |
 | Stars, sort, queue (p.14)                   | `tier1/queue.ts` `compareQueue`, `inReviewQueue`         | `ScanResult.inQueue/queueOrder`                                                      | Review Queue                 | unit: sort keys incl. N/A after NO                       |
 | Venue concentration (p.15)                  | `tier1/venues.ts` flags                                  | `VenueCrawl` (asset markets)                                                         | venue panel                  | unit: Upbit top, single venue, pending                   |
-| Exports (p.17)                              | `tier1/export.service.ts`, `common/csv.ts`               | `ScanRun.export*`, files under `var/exports/<provider>/<slot>Z_<batch>[_SYNTHETIC]/` | Exports tab, download        | unit: columns, N/A blank                                 |
+| Exports (p.17)                              | `tier1/export.service.ts`, `common/csv.ts`               | `ScanRun.export*`, files under `var/exports/<provider>/<slot>Z_<batch>[_SYNTHETIC]/` | files on disk (CLI)          | unit: columns, N/A blank                                 |
 | Observability (p.18)                        | `ScanRun.counts/warnings`                                | `ScanRun`                                                                            | Overview, Batches            | db: incomplete batch withholds queue                     |
 | Reviews Tier 1 + Tier 2 (p.15, p.24–27)     | `tier1/review-rules.ts`, `tier1/review.service.ts`       | `Review` (append-only revisions, Tier 1 snapshot)                                    | asset drawer forms           | unit: plan validation, deadline; db: revisions preserved |
 | Demonstration (p.20)                        | fixture market `sources/fixture/fixture-cmc.ts`          | synthetic batch                                                                      | CLI `tier1:trace`, dashboard | db: end-to-end demo cases, replay idempotency            |
@@ -103,7 +103,7 @@ Removed: `MIN_MARKET_CAP_USD`, `MIN_VOLUME_24H_USD`, `SNAPSHOT_WINDOW`, `STALE_A
 
 - REST (`/api`): `overview`, `config`, `scan?sheet=queue|eligible|needs_review|excluded|all`,
   `assets`, `assets/:cmcId/trace`, `assets/:cmcId/snapshots`, `batches`, `health`, `runs`,
-  `deliveries`, `mapping-tasks`, `exports`, `exports/:batchId/:file`, `reviews` (GET/POST),
+  `deliveries`, `mapping-tasks`, `reviews` (GET/POST),
   `reviews/:id/export`, `venue-decisions` (POST), `scan/rescan` (POST), Telegram access (kept).
   Writes require JSON, same origin and loopback or Basic auth (existing guard).
 - MCP (read only): `get_coverage`, `list_batches`, `get_scan_summary`, `get_scan_results`,
@@ -114,7 +114,7 @@ Removed: `MIN_MARKET_CAP_USD`, `MIN_VOLUME_24H_USD`, `SNAPSHOT_WINDOW`, `STALE_A
   `tier1:export [--batch ID]`, `tier1:trace --id N [--batch ID]`, `tier1:batches`,
   `daily:import-csv`, `telegram:*`, `source:reset`, `config:check`.
 - Dashboard tabs: Overview, Review Queue, All Eligible, Needs Review, Excluded, Batches & health,
-  Exports, Telegram access; asset drawer with the full calculation trace, LBank pairs and
+  Telegram access; asset drawer with the full calculation trace, LBank pairs and
   decisions, venue rows, review history and the Tier 1 / Tier 2 review form.
 
 ## 7. Database preparation (before the schema migration)
