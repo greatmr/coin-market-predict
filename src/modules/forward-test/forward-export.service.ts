@@ -4,7 +4,6 @@ import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:f
 import { join, resolve } from 'node:path';
 
 import { type Cell, toCsv } from '../../common/files/csv.js';
-import { buildXlsx } from '../../common/files/xlsx.js';
 
 import { APP_CONFIG, type AppConfig } from '../../config/index.js';
 
@@ -139,32 +138,6 @@ export const FORWARD_SHEETS = [
 ] as const;
 export type ForwardSheet = (typeof FORWARD_SHEETS)[number];
 
-/** Columns whose decimal text becomes a numeric workbook cell; the CSV keeps full precision. */
-const NUMERIC = new Set<string>([
-  'cmc_id',
-  'detection_hour_utc',
-  'star_count',
-  'reference_price_usd',
-  'multiple_3d',
-  'multiple_7d',
-  'multiple_30d',
-  'weighted_pass_points',
-  'weighted_strength',
-  'current_vmc',
-  'effective_horizon_hours',
-  'highest_future_high_usd',
-  'peak_return_pct',
-  'completed_days',
-  'covered_days',
-  'expected_days',
-  'result_version',
-  'day0_high_usd',
-  'asset_event_count',
-  ...COHORT_COLUMNS.filter((c) => c !== 'group' && c !== 'dimension'),
-  'count',
-  'price_usd',
-]);
-
 export interface ForwardExportFile {
   name: string;
   rows: number;
@@ -237,20 +210,11 @@ function eventCells(e: ForwardEventRow, label: string): Cell[] {
   ];
 }
 
-function xlsxRow(header: readonly string[], row: Cell[]): Array<string | number | null> {
-  return row.map((v, i) => {
-    if (v === null || v === undefined) return null;
-    if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
-    if (typeof v === 'number') return v;
-    return NUMERIC.has(header[i] ?? '') && /^-?\d+(\.\d+)?$/.test(v) ? Number(v) : v;
-  });
-}
-
 const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 
 /**
- * Event-level export and star-group report (PDF p.9): CSV per sheet, an XLSX workbook and a
- * SHA-256 manifest under `TIER1_EXPORT_DIR/<provider>/<time>Z_forward-test[_SYNTHETIC]/`. Written
+ * Event-level export and star-group report (PDF p.9): CSV per sheet and a SHA-256
+ * manifest under `TIER1_EXPORT_DIR/<provider>/<time>Z_forward-test[_SYNTHETIC]/`. Written
  * to a temporary directory and renamed only when complete; pruned with the batch exports after
  * EXPORT_RETENTION_DAYS (the database keeps everything, so it can be regenerated at any time).
  */
@@ -392,30 +356,13 @@ export class ForwardExportService {
     };
   }
 
-  /** One sheet as CSV, or the whole workbook (dashboard downloads; nothing is written to disk). */
+  /** One sheet as CSV (dashboard downloads; nothing is written to disk). */
   async render(file: string, now = new Date()): Promise<{ body: Buffer; type: string } | null> {
     const data = await this.sheets(now);
-    if (file === 'workbook.xlsx')
-      return {
-        body: this.workbook(data.sheets),
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      };
     const sheet = FORWARD_SHEETS.find((s) => `${s.toLowerCase()}.csv` === file);
     if (!sheet) return null;
     const s = data.sheets[sheet];
     return { body: Buffer.from(toCsv(s.header, s.rows), 'utf8'), type: 'text/csv; charset=utf-8' };
-  }
-
-  private workbook(sheets: Awaited<ReturnType<ForwardExportService['sheets']>>['sheets']) {
-    return buildXlsx(
-      FORWARD_SHEETS.map((name) => ({
-        name,
-        rows: [
-          sheets[name].header,
-          ...sheets[name].rows.map((r) => xlsxRow(sheets[name].header, r)),
-        ],
-      })),
-    );
   }
 
   async write(now = new Date()): Promise<{ path: string; files: ForwardExportFile[] }> {
@@ -439,11 +386,6 @@ export class ForwardExportService {
           s.rows.length,
         );
       }
-      put(
-        'workbook.xlsx',
-        this.workbook(data.sheets),
-        FORWARD_SHEETS.reduce((n, s) => n + data.sheets[s].rows.length, 0),
-      );
       const manifest = {
         kind: 'forward-test',
         providerId: data.providerId,

@@ -35,7 +35,7 @@ daily    (hourly)     ─► DailyMetricRevision (every version) → DailyMetric
 scan                  ─► ScanRun (one per batch) + ScanResult (one per coin per batch)
 venues                ─► VenueCrawl (asset_markets, one per review candidate)
                          VenueCrawl (lbank_futures_pairs, bithumb_spot_pairs, every 24 h; ADR-0007)
-export / notify       ─► CSV + XLSX files on disk, TelegramDelivery
+export / notify       ─► CSV files on disk, TelegramDelivery
 human review          ─► Review, VenueDecision (append-only)
 run bookkeeping       ─► PipelineRun, PipelineStage, JobLease, SourceHealth, AppState
 ```
@@ -130,12 +130,12 @@ run bookkeeping       ─► PipelineRun, PipelineStage, JobLease, SourceHealth,
 
 ## Retention
 
-| Data | Policy |
-|---|---|
+| Data             | Policy                                                                                                                                                                                                                                                                                                                                           |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `MarketSnapshot` | Every hour for `RETENTION_DETAIL_DAYS` (default 30). Afterwards, coins outside the Tier 1 band (rank 101–1200, or unranked with cap ≥ $15M) for the whole day ±72 h keep only their first snapshot of each UTC day; band coins keep every hour. `RETENTION_SNAPSHOT_DAYS` > 0 additionally deletes snapshots older than that (default 0 = keep). |
-| `ScanResult` | Every batch for `RETENTION_DETAIL_DAYS`. Afterwards, rows excluded **only** by `RANK_OUT_OF_RANGE` / `MARKET_CAP_BELOW_MIN` keep the first batch of each UTC day; all other rows are kept. |
-| Export files | Removed from disk after `EXPORT_RETENTION_DAYS` (default 7); the database keeps the history. |
-| Everything else | Never pruned: batches, runs, stages, daily rows and revisions, fetch state, venue crawls and events, identity and change log, reviews, decisions, Telegram deliveries, and every forward-test table (watchlist, events, Highs, outcomes, trigger runs, rejections, update runs; added 2026-11-10, M008). |
+| `ScanResult`     | Every batch for `RETENTION_DETAIL_DAYS`. Afterwards, rows excluded **only** by `RANK_OUT_OF_RANGE` / `MARKET_CAP_BELOW_MIN` keep the first batch of each UTC day; all other rows are kept.                                                                                                                                                       |
+| Export files     | Removed from disk after `EXPORT_RETENTION_DAYS` (default 7); the database keeps the history.                                                                                                                                                                                                                                                     |
+| Everything else  | Never pruned: batches, runs, stages, daily rows and revisions, fetch state, venue crawls and events, identity and change log, reviews, decisions, Telegram deliveries, and every forward-test table (watchlist, events, Highs, outcomes, trigger runs, rejections, update runs; added 2026-11-10, M008).                                         |
 
 Thinning works through whole UTC days older than the cutoff, at most three days per run,
 resuming from the `retention.detailThinnedUntil.<provider>` watermark. It has not run yet: the
@@ -145,22 +145,22 @@ oldest live data is from 2026-11-05, so the first day becomes eligible around 20
 
 Database size: **418 MB**.
 
-| Table | Total size | Rows | Notes |
-|---|---|---|---|
-| `MarketSnapshot` | 179 MB | 184,588 live + 1,301 fixture | ~800 B per row; 8,022–8,028 rows per slot |
-| `ScanResult` | 177 MB | 184,588 live + 1,301 fixture | ~700 B per row |
-| `DailyMetricRevision` | 22 MB | 20,529 live + 7,489 fixture | all `first`; no source revisions yet |
-| `DailyMetric` | 7.9 MB | 20,529 live (579 coins) | 2026-10-01 … 2026-11-05, median 36 days per coin; 24 invalid |
-| `CmcAsset` / `Asset` / `AssetIdentity` | 6.3 / 5.4 / 6.2 MB | 9,333 each | includes 1,301 fixture coins; none delisted |
-| `AssetContract` | 2.7 MB | 7,022 | |
-| `VenueCrawl` | 1.6 MB | 197 | 136 asset-markets and 5 LBank-list crawls live |
-| `VenuePairEvent` | 0.3 MB | 1,172 | 1,170 LISTED, 2 ABSENT |
-| `CrawlBatch` | < 0.1 MB | 24 | live: 14 COMPLETE, 9 INCOMPLETE |
-| `PipelineRun` / `PipelineStage` | 0.3 / 0.2 MB | 24 / 192 | live: 13 succeeded, 10 partial |
-| `TelegramDelivery` | 0.3 MB | 120 | 117 sent live, 3 dry-run |
-| `VenueMappingTask` | 0.1 MB | 38 | all OPEN |
-| `CmcAssetChange` | < 0.1 MB | 5 | 4 tag changes, 1 listing-date change |
-| `Review`, `VenueDecision` | — | 0 | |
+| Table                                  | Total size         | Rows                         | Notes                                                        |
+| -------------------------------------- | ------------------ | ---------------------------- | ------------------------------------------------------------ |
+| `MarketSnapshot`                       | 179 MB             | 184,588 live + 1,301 fixture | ~800 B per row; 8,022–8,028 rows per slot                    |
+| `ScanResult`                           | 177 MB             | 184,588 live + 1,301 fixture | ~700 B per row                                               |
+| `DailyMetricRevision`                  | 22 MB              | 20,529 live + 7,489 fixture  | all `first`; no source revisions yet                         |
+| `DailyMetric`                          | 7.9 MB             | 20,529 live (579 coins)      | 2026-10-01 … 2026-11-05, median 36 days per coin; 24 invalid |
+| `CmcAsset` / `Asset` / `AssetIdentity` | 6.3 / 5.4 / 6.2 MB | 9,333 each                   | includes 1,301 fixture coins; none delisted                  |
+| `AssetContract`                        | 2.7 MB             | 7,022                        |                                                              |
+| `VenueCrawl`                           | 1.6 MB             | 197                          | 136 asset-markets and 5 LBank-list crawls live               |
+| `VenuePairEvent`                       | 0.3 MB             | 1,172                        | 1,170 LISTED, 2 ABSENT                                       |
+| `CrawlBatch`                           | < 0.1 MB           | 24                           | live: 14 COMPLETE, 9 INCOMPLETE                              |
+| `PipelineRun` / `PipelineStage`        | 0.3 / 0.2 MB       | 24 / 192                     | live: 13 succeeded, 10 partial                               |
+| `TelegramDelivery`                     | 0.3 MB             | 120                          | 117 sent live, 3 dry-run                                     |
+| `VenueMappingTask`                     | 0.1 MB             | 38                           | all OPEN                                                     |
+| `CmcAssetChange`                       | < 0.1 MB           | 5                            | 4 tag changes, 1 listing-date change                         |
+| `Review`, `VenueDecision`              | —                  | 0                            |                                                              |
 
 No tables are left over from the retired features (surge screen, agents, paper trading).
 
@@ -168,11 +168,11 @@ No tables are left over from the retired features (surge screen, agents, paper t
 
 Both large tables grow by about 15.5 MB per hour together (about 370 MB per day).
 
-| Period | `MarketSnapshot` | `ScanResult` (current rule) | `ScanResult` (proposed rule, Finding 1) |
-|---|---|---|---|
-| First 30 days | ~5.6 GB | ~5.6 GB | ~5.6 GB |
-| Per day afterwards | ~33 MB (1,100 band coins × 24 + ~6,900 daily rows) | ~177 MB (only 274 rows per batch thinned) | ~32 MB |
-| Per year afterwards | ~12 GB | ~65 GB | ~12 GB |
+| Period              | `MarketSnapshot`                                   | `ScanResult` (current rule)               | `ScanResult` (proposed rule, Finding 1) |
+| ------------------- | -------------------------------------------------- | ----------------------------------------- | --------------------------------------- |
+| First 30 days       | ~5.6 GB                                            | ~5.6 GB                                   | ~5.6 GB                                 |
+| Per day afterwards  | ~33 MB (1,100 band coins × 24 + ~6,900 daily rows) | ~177 MB (only 274 rows per batch thinned) | ~32 MB                                  |
+| Per year afterwards | ~12 GB                                             | ~65 GB                                    | ~12 GB                                  |
 
 Deleted rows free space inside PostgreSQL for reuse, so files level off rather than shrink;
 returning space to the disk needs `VACUUM FULL` (locks the table), which is only worth running
@@ -187,12 +187,12 @@ carries `RANK_OUT_OF_RANGE` together with `NO_LBANK_SPOT_PAIR`, `MARKET_CAP_MISS
 `TOKENIZED_ASSET` and others. The rule only thins rows whose reasons are a subset of
 {`RANK_OUT_OF_RANGE`, `MARKET_CAP_BELOW_MIN`}. In the latest batch:
 
-| Class | Rows |
-|---|---|
+| Class                             | Rows  |
+| --------------------------------- | ----- |
 | Kept: excluded with other reasons | 7,449 |
-| Kept: ELIGIBLE | 288 |
-| Thinned (rank/cap only) | 274 |
-| Kept: NEEDS_REVIEW | 12 |
+| Kept: ELIGIBLE                    | 288   |
+| Thinned (rank/cap only)           | 274   |
+| Kept: NEEDS_REVIEW                | 12    |
 
 Most common reason sets among the kept rows outside rank 101–1200: `RANK_OUT_OF_RANGE +
 NO_LBANK_SPOT_PAIR + MARKET_CAP_MISSING` (3,197) and `RANK_OUT_OF_RANGE + MARKET_CAP_BELOW_MIN +

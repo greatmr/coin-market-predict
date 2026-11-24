@@ -63,7 +63,7 @@ const STAGE_LABELS: Record<string, string> = {
   daily: 'Refreshing completed daily rows for screen candidates',
   scan: 'Running the Tier 1 scan',
   venues: 'Reading CMC Markets venues for review candidates',
-  export: 'Writing CSV and XLSX exports',
+  export: 'Writing CSV exports',
   notify: 'Preparing the Telegram summary',
   forward: 'Forward test: recording star events and updating Highs',
 };
@@ -856,6 +856,8 @@ export class ReadModelService {
     return plain<Array<Record<string, unknown>>>(
       rows.map((r) => ({
         ...r,
+        // Exports written before the Excel workbook was removed still list it; it is not served.
+        exportFiles: (r.exportFiles ?? []).filter((f) => !f.name.endsWith('.xlsx')),
         exportPath: r.exportPath
           ? r.exportPath.replace(resolve(this.cfg.TIER1_EXPORT_DIR), this.cfg.TIER1_EXPORT_DIR)
           : null,

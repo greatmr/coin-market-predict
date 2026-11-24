@@ -12,17 +12,17 @@ the strategy document §9; conflict ids (C1…) to §10; gap ids (G1…) to the 
 
 ## 1. Target flow (hourly pipeline)
 
-| Stage | Responsibility | New / changed | PDF |
-|---|---|---|---|
-| `discover` | Listing sweep when due (unchanged) | — | — |
-| `collect` | Existing crawler batch; parser keeps `cmcRank`, `dateAdded`, raw tags; writes `CrawlBatch` (completeness, field counts, rank continuity) and `CmcAsset` (+ change log) | changed (G1–G3, G8) | p.8, p.10, p.16 |
-| `lbank` | LBank Spot pairs from CMC's LBank markets data via the shared website client; `VenueCrawl` + listing events | new (G6) | p.10 |
-| `daily` | Completed UTC daily rows for screen candidates lacking T−1 (35-day window, bounded, budget reserve) → `DailyMetricRevision` / `DailyMetric` | reused route, new scope (G4, G5) | p.5, p.11 |
-| `scan` | Deterministic Tier 1 evaluation for every asset of the batch → `ScanResult` upsert per (batch, CMC id); `ScanRun` counts, warnings, queue status | new | p.9–14, p.18 |
-| `venues` | CMC Markets spot pairs for review candidates (≤ daily per asset) → venue flags on the batch's scan rows | new (G7) | p.15 |
-| `export` | CSV per sheet + XLSX workbook + manifest with SHA-256; previous export stays current on failure | new | p.17, p.18 |
-| `notify` | Telegram Review Queue summary (dry run unless live; withheld queue → reason only) | changed (C6) | p.18 |
-| retention | Snapshot thinning by Tier 1 band; thin rank/cap-only excluded scan rows; prune old export files | changed (A20) | — |
+| Stage      | Responsibility                                                                                                                                                         | New / changed                    | PDF             |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- | --------------- |
+| `discover` | Listing sweep when due (unchanged)                                                                                                                                     | —                                | —               |
+| `collect`  | Existing crawler batch; parser keeps `cmcRank`, `dateAdded`, raw tags; writes `CrawlBatch` (completeness, field counts, rank continuity) and `CmcAsset` (+ change log) | changed (G1–G3, G8)              | p.8, p.10, p.16 |
+| `lbank`    | LBank Spot pairs from CMC's LBank markets data via the shared website client; `VenueCrawl` + listing events                                                            | new (G6)                         | p.10            |
+| `daily`    | Completed UTC daily rows for screen candidates lacking T−1 (35-day window, bounded, budget reserve) → `DailyMetricRevision` / `DailyMetric`                            | reused route, new scope (G4, G5) | p.5, p.11       |
+| `scan`     | Deterministic Tier 1 evaluation for every asset of the batch → `ScanResult` upsert per (batch, CMC id); `ScanRun` counts, warnings, queue status                       | new                              | p.9–14, p.18    |
+| `venues`   | CMC Markets spot pairs for review candidates (≤ daily per asset) → venue flags on the batch's scan rows                                                                | new (G7)                         | p.15            |
+| `export`   | CSV per sheet + manifest with SHA-256; previous export stays current on failure                                                                                        | new                              | p.17, p.18      |
+| `notify`   | Telegram Review Queue summary (dry run unless live; withheld queue → reason only)                                                                                      | changed (C6)                     | p.18            |
+| retention  | Snapshot thinning by Tier 1 band; thin rank/cap-only excluded scan rows; prune old export files                                                                        | changed (A20)                    | —               |
 
 Removed stages: `history` (72 h chart backfill, C5), `features`, `screen`, `vmc` (six-month baseline,
 C1), `analyze` (agents, C2), `publish` (signals/paper trading, C2).
@@ -33,22 +33,22 @@ on (batch, CMC id); reviews and venue decisions are append-only; exports are per
 
 ## 2. Requirement → component map
 
-| Requirement (page) | Code | Data | API / UI | Tests |
-|---|---|---|---|---|
-| CMC id identity, symbol changes (p.4, p.10) | `ingestion.service.ts` (CmcAsset upsert) | `CmcAsset`, `CmcAssetChange` | asset trace | db: symbol change keeps one asset |
-| Field mapping + gaps (p.8) | parser fix `coinmarketcap-web/parse.ts` | `MarketSnapshot.rank/dateAdded/tags` | — | unit: listing parse keeps rank/date/tags |
-| Eligibility (p.3, p.9) | `tier1/eligibility.ts` `evaluateEligibility`, `classify` | `ScanResult.eligibility*` | sheets | unit: F boundaries, classes, overrides |
-| Class overrides (p.9) | `tier1/overrides.ts` | `config/tier1-overrides.json` (versioned) | config view | unit: override wins, version recorded |
-| LBank status (p.10) | `tier1/lbank.ts` + `tier1/venues.service.ts` | `VenueCrawl`, `VenuePairEvent`, `VenueDecision`, `VenueMappingTask` | LBank panel, decisions | unit: statuses; db: disappearance, verification voided |
-| Daily rows (p.5, p.11) | `tier1/daily.service.ts` | `DailyMetricRevision`, `DailyMetric`, `DailyFetchState` | 30-day trace table | unit: parser; db: revision upsert, no duplicates |
-| VMC arithmetic (p.13) | `tier1/vmc.ts` (exact decimals) | `ScanResult` means/multiples | trace formulas | unit: A, B, C, D, E |
-| Current observation (p.12) | `tier1/vmc.ts` `currentObservation` | `ScanResult.currentStatus` | current panel | unit: stale, missing time, mismatched, invalid |
-| Stars, sort, queue (p.14) | `tier1/queue.ts` `compareQueue`, `inReviewQueue` | `ScanResult.inQueue/queueOrder` | Review Queue | unit: sort keys incl. N/A after NO |
-| Venue concentration (p.15) | `tier1/venues.ts` flags | `VenueCrawl` (asset markets) | venue panel | unit: Upbit top, single venue, pending |
-| Exports (p.17) | `tier1/export.service.ts`, `common/csv.ts`, `common/xlsx.ts` | `ScanRun.export*`, files under `var/exports/<provider>/<slot>Z_<batch>[_SYNTHETIC]/` | Exports tab, download | unit: columns, N/A blank, zip/xlsx structure |
-| Observability (p.18) | `ScanRun.counts/warnings` | `ScanRun` | Overview, Batches | db: incomplete batch withholds queue |
-| Reviews Tier 1 + Tier 2 (p.15, p.24–27) | `tier1/review-rules.ts`, `tier1/review.service.ts` | `Review` (append-only revisions, Tier 1 snapshot) | asset drawer forms | unit: plan validation, deadline; db: revisions preserved |
-| Demonstration (p.20) | fixture market `sources/fixture/fixture-cmc.ts` | synthetic batch | CLI `tier1:trace`, dashboard | db: end-to-end demo cases, replay idempotency |
+| Requirement (page)                          | Code                                                     | Data                                                                                 | API / UI                     | Tests                                                    |
+| ------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------ | ---------------------------- | -------------------------------------------------------- |
+| CMC id identity, symbol changes (p.4, p.10) | `ingestion.service.ts` (CmcAsset upsert)                 | `CmcAsset`, `CmcAssetChange`                                                         | asset trace                  | db: symbol change keeps one asset                        |
+| Field mapping + gaps (p.8)                  | parser fix `coinmarketcap-web/parse.ts`                  | `MarketSnapshot.rank/dateAdded/tags`                                                 | —                            | unit: listing parse keeps rank/date/tags                 |
+| Eligibility (p.3, p.9)                      | `tier1/eligibility.ts` `evaluateEligibility`, `classify` | `ScanResult.eligibility*`                                                            | sheets                       | unit: F boundaries, classes, overrides                   |
+| Class overrides (p.9)                       | `tier1/overrides.ts`                                     | `config/tier1-overrides.json` (versioned)                                            | config view                  | unit: override wins, version recorded                    |
+| LBank status (p.10)                         | `tier1/lbank.ts` + `tier1/venues.service.ts`             | `VenueCrawl`, `VenuePairEvent`, `VenueDecision`, `VenueMappingTask`                  | LBank panel, decisions       | unit: statuses; db: disappearance, verification voided   |
+| Daily rows (p.5, p.11)                      | `tier1/daily.service.ts`                                 | `DailyMetricRevision`, `DailyMetric`, `DailyFetchState`                              | 30-day trace table           | unit: parser; db: revision upsert, no duplicates         |
+| VMC arithmetic (p.13)                       | `tier1/vmc.ts` (exact decimals)                          | `ScanResult` means/multiples                                                         | trace formulas               | unit: A, B, C, D, E                                      |
+| Current observation (p.12)                  | `tier1/vmc.ts` `currentObservation`                      | `ScanResult.currentStatus`                                                           | current panel                | unit: stale, missing time, mismatched, invalid           |
+| Stars, sort, queue (p.14)                   | `tier1/queue.ts` `compareQueue`, `inReviewQueue`         | `ScanResult.inQueue/queueOrder`                                                      | Review Queue                 | unit: sort keys incl. N/A after NO                       |
+| Venue concentration (p.15)                  | `tier1/venues.ts` flags                                  | `VenueCrawl` (asset markets)                                                         | venue panel                  | unit: Upbit top, single venue, pending                   |
+| Exports (p.17)                              | `tier1/export.service.ts`, `common/csv.ts`               | `ScanRun.export*`, files under `var/exports/<provider>/<slot>Z_<batch>[_SYNTHETIC]/` | Exports tab, download        | unit: columns, N/A blank                                 |
+| Observability (p.18)                        | `ScanRun.counts/warnings`                                | `ScanRun`                                                                            | Overview, Batches            | db: incomplete batch withholds queue                     |
+| Reviews Tier 1 + Tier 2 (p.15, p.24–27)     | `tier1/review-rules.ts`, `tier1/review.service.ts`       | `Review` (append-only revisions, Tier 1 snapshot)                                    | asset drawer forms           | unit: plan validation, deadline; db: revisions preserved |
+| Demonstration (p.20)                        | fixture market `sources/fixture/fixture-cmc.ts`          | synthetic batch                                                                      | CLI `tier1:trace`, dashboard | db: end-to-end demo cases, replay idempotency            |
 
 ## 3. Data model changes (one versioned migration)
 
@@ -71,18 +71,18 @@ Kept unchanged: `Provider`, `Asset`, `AssetIdentity`, `AssetContract`, `Discover
 
 ## 4. Data semantics
 
-| Concept | Definition |
-|---|---|
-| Coin identity | (`providerId`, CMC numeric id). Symbols/names/slugs are metadata with a change log; venue rows join by CMC `baseCurrencyId` |
-| Crawl batch | One `CrawlBatch` per (provider, UTC hour slot); `crawledAt` is the batch's as-of time (A1) |
-| Provider update time | Listing `quotes[USD].lastUpdated` → `observedAt` |
-| Quote currency | USD only (`convertId=2781`); every money value is USD |
-| Current volume | CMC rolling 24 h volume at `observedAt` — never hourly volume, never derived |
-| Market cap | CMC circulating cap; null/0 = missing (FDV never used; a cap calculated from supply is treated as not provider-reported) |
-| Daily row | One completed UTC day: volume of that day, cap at that day's close, close timestamp; open day never stored |
-| Missing values | NULL plus a reason code; never 0, never forward-filled |
-| Freshness | quote age = `collectedAt − observedAt`; stale beyond `MAX_QUOTE_AGE_MINUTES` (2 × 60) |
-| Historical coverage | Windows need every date T−1…T−N valid; coverage shown per window with dates and revision ids |
+| Concept              | Definition                                                                                                                  |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Coin identity        | (`providerId`, CMC numeric id). Symbols/names/slugs are metadata with a change log; venue rows join by CMC `baseCurrencyId` |
+| Crawl batch          | One `CrawlBatch` per (provider, UTC hour slot); `crawledAt` is the batch's as-of time (A1)                                  |
+| Provider update time | Listing `quotes[USD].lastUpdated` → `observedAt`                                                                            |
+| Quote currency       | USD only (`convertId=2781`); every money value is USD                                                                       |
+| Current volume       | CMC rolling 24 h volume at `observedAt` — never hourly volume, never derived                                                |
+| Market cap           | CMC circulating cap; null/0 = missing (FDV never used; a cap calculated from supply is treated as not provider-reported)    |
+| Daily row            | One completed UTC day: volume of that day, cap at that day's close, close timestamp; open day never stored                  |
+| Missing values       | NULL plus a reason code; never 0, never forward-filled                                                                      |
+| Freshness            | quote age = `collectedAt − observedAt`; stale beyond `MAX_QUOTE_AGE_MINUTES` (2 × 60)                                       |
+| Historical coverage  | Windows need every date T−1…T−N valid; coverage shown per window with dates and revision ids                                |
 
 ## 5. Configuration
 
@@ -125,19 +125,20 @@ Removed: `MIN_MARKET_CAP_USD`, `MIN_VOLUME_24H_USD`, `SNAPSHOT_WINDOW`, `STALE_A
 3. **Clear** (one transaction, explicit `DELETE` per table, children first, no `TRUNCATE … CASCADE`;
    foreign keys are `RESTRICT`, so a missed dependent aborts the transaction):
 
-   | Order | Tables cleared | Why coin-related |
-   |---|---|---|
-   | 1 | `VmcBaselineMember`, `VmcBaseline`, `VmcAssetResult`, `VmcRawResponse`, `VmcRun`, `VmcDailyCurrent`, `VmcDailyObservation`, `VmcHourlyCurrent`, `VmcHourlySnapshot`, `VmcAssetMetadataChange`, `VmcAsset` | six-month VMC observations and results |
-   | 2 | `PaperPosition`, `SignalOutcome`, `Signal`, `AgentExecution`, `ScreeningResult`, `FeatureValue`, `BacktestReport`, `StrategyVersion`, `FeatureSetVersion` | predictions, features, research results |
-   | 3 | `TelegramDelivery`, `PipelineStage`, `PipelineRun`, `DiscoveryRun` | coin report deliveries and run records |
-   | 4 | `MarketSnapshot` | coin observations |
-   | 5 | `AssetContract`, `AssetIdentity`, `Asset` | coin identities (rebuilt by the next discovery) |
-   | 6 | `AppState` keys `vmc.capabilities`, `fixture.anchorSlot` | state of the removed VMC module and old fixture market |
+   | Order | Tables cleared                                                                                                                                                                                            | Why coin-related                                       |
+   | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+   | 1     | `VmcBaselineMember`, `VmcBaseline`, `VmcAssetResult`, `VmcRawResponse`, `VmcRun`, `VmcDailyCurrent`, `VmcDailyObservation`, `VmcHourlyCurrent`, `VmcHourlySnapshot`, `VmcAssetMetadataChange`, `VmcAsset` | six-month VMC observations and results                 |
+   | 2     | `PaperPosition`, `SignalOutcome`, `Signal`, `AgentExecution`, `ScreeningResult`, `FeatureValue`, `BacktestReport`, `StrategyVersion`, `FeatureSetVersion`                                                 | predictions, features, research results                |
+   | 3     | `TelegramDelivery`, `PipelineStage`, `PipelineRun`, `DiscoveryRun`                                                                                                                                        | coin report deliveries and run records                 |
+   | 4     | `MarketSnapshot`                                                                                                                                                                                          | coin observations                                      |
+   | 5     | `AssetContract`, `AssetIdentity`, `Asset`                                                                                                                                                                 | coin identities (rebuilt by the next discovery)        |
+   | 6     | `AppState` keys `vmc.capabilities`, `fixture.anchorSlot`                                                                                                                                                  | state of the removed VMC module and old fixture market |
 
    **Preserved**: `Provider` (source registry), `SourceHealth` (request budget and circuit state),
    `JobLease`, `AppState` keys `telegram.access` (owner-approved members — permissions) and
    `telegram.updateOffset` (bot state), `_prisma_migrations`. No users/credentials live in other
    tables; secrets stay in `.env`/`secrets/`.
+
 4. **Verify**: cleared tables are empty; preserved rows byte-identical (row counts and MD5 of the
    rows taken before and after).
 5. **Migrate**: generate SQL with `prisma migrate diff --from-config-datasource --to-schema …`,
@@ -145,6 +146,7 @@ Removed: `MIN_MARKET_CAP_USD`, `MIN_VOLUME_24H_USD`, `SNAPSHOT_WINDOW`, `STALE_A
    never `migrate reset`). Re-verify the preserved rows and `prisma migrate status`.
 
 ### 7a. As executed (2026-11-05, UTC)
+
 - **Backup**: `backups/coins-pre-two-tier-vmc-2026-11-05.dump` (`pg_dump -Fc`, 17.6 MB),
   SHA-256 `b132d7b6f7697a1e882c216b82319f8fc22cdc585dc19b4f317cace48e64073b`.
 - **Restore check** (06:49): full restore into `coins_restore_check` exited 0; row counts of all
@@ -155,13 +157,13 @@ Removed: `MIN_MARKET_CAP_USD`, `MIN_VOLUME_24H_USD`, `SNAPSHOT_WINDOW`, `STALE_A
   assertions confirmed every cleared table empty and the preserved fingerprints unchanged.
   Rows removed (the backup's counts; no writes occurred between backup and clear):
 
-  | Group | Rows |
-  |---|---|
-  | VMC module | `VmcBaselineMember` 9,857 · `VmcDailyCurrent` 9,857 · `VmcDailyObservation` 9,857 · `VmcAssetResult` 330 · `VmcHourlySnapshot` 316 · `VmcHourlyCurrent` 291 · `VmcRawResponse` 186 · `VmcRun` 82 · `VmcBaseline` 65 · `VmcAsset` 62 · `VmcAssetMetadataChange` 0 |
-  | Predictions / research | `FeatureValue` 11,240 · `ScreeningResult` 10,375 · `Signal` 56 · `SignalOutcome` 43 · `AgentExecution` 40 · `StrategyVersion` 2 · `BacktestReport` 2 · `FeatureSetVersion` 1 · `PaperPosition` 0 |
-  | Runs and deliveries | `PipelineStage` 145 · `PipelineRun` 34 · `TelegramDelivery` 26 · `DiscoveryRun` 6 |
-  | Observations and identities | `MarketSnapshot` 144,617 · `AssetIdentity` 8,070 · `Asset` 8,069 · `AssetContract` 1,724 |
-  | App state | `AppState` keys `vmc.capabilities`, `fixture.anchorSlot` (2) |
+  | Group                       | Rows                                                                                                                                                                                                                                                             |
+  | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | VMC module                  | `VmcBaselineMember` 9,857 · `VmcDailyCurrent` 9,857 · `VmcDailyObservation` 9,857 · `VmcAssetResult` 330 · `VmcHourlySnapshot` 316 · `VmcHourlyCurrent` 291 · `VmcRawResponse` 186 · `VmcRun` 82 · `VmcBaseline` 65 · `VmcAsset` 62 · `VmcAssetMetadataChange` 0 |
+  | Predictions / research      | `FeatureValue` 11,240 · `ScreeningResult` 10,375 · `Signal` 56 · `SignalOutcome` 43 · `AgentExecution` 40 · `StrategyVersion` 2 · `BacktestReport` 2 · `FeatureSetVersion` 1 · `PaperPosition` 0                                                                 |
+  | Runs and deliveries         | `PipelineStage` 145 · `PipelineRun` 34 · `TelegramDelivery` 26 · `DiscoveryRun` 6                                                                                                                                                                                |
+  | Observations and identities | `MarketSnapshot` 144,617 · `AssetIdentity` 8,070 · `Asset` 8,069 · `AssetContract` 1,724                                                                                                                                                                         |
+  | App state                   | `AppState` keys `vmc.capabilities`, `fixture.anchorSlot` (2)                                                                                                                                                                                                     |
 
 - **Preserved** (fingerprints identical before the clear, after it, and after the migration):
   `Provider` 2 rows (`26e4f71c721a4b298f2e1dd7a692e91f`), `SourceHealth` 1

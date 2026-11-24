@@ -214,7 +214,7 @@ export function formatTier1Report(r: Tier1ReportInput): string[] {
     blocks.push(r.rows.map((row) => queueCard(row, bot)).join('\n'));
     const more = r.counts.queue - r.rows.length;
     blocks.push(
-      `<i>Bold = at least 1.5× the coin's own mean (YES). ${r.botUsername ? 'Tap a coin for its details.' : 'Tap a /coin link for details.'}${more > 0 ? ` ${plural(more, 'more coin')} in the workbook and on the dashboard.` : ''}</i>`,
+      `<i>Bold = at least 1.5× the coin's own mean (YES). ${r.botUsername ? 'Tap a coin for its details.' : 'Tap a /coin link for details.'}${more > 0 ? ` ${plural(more, 'more coin')} on the dashboard.` : ''}</i>`,
     );
   }
   if (r.needsReviewWithYes)

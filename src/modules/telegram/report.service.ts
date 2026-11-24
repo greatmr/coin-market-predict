@@ -1,7 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { type DataSource, MoreThan } from 'typeorm';
 
 import { APP_CONFIG, type AppConfig } from '../../config/index.js';
@@ -12,7 +10,6 @@ import { ScanResult } from '../scan/entities/scan-result.entity.js';
 import { ScanRun } from '../scan/entities/scan-run.entity.js';
 import { Provider } from '../sources/entities/provider.entity.js';
 
-import { XLSX_MIME, documentPart } from './attachment.js';
 import { type QueueRow, type Tier1ReportInput, formatTier1Report } from './format.js';
 import { TelegramService } from './telegram.service.js';
 
@@ -91,40 +88,7 @@ export class ReportService {
   }
 
   async build(batchId: string): Promise<string[]> {
-    const input = await this.buildInput(batchId);
-    const parts = formatTier1Report(input);
-    const attachment = await this.workbookPart(batchId, input);
-    return attachment ? [...parts, attachment] : parts;
-  }
-
-  /**
-   * The batch's Excel workbook as a final report part (TELEGRAM_ATTACH_EXPORT=xlsx). Not attached
-   * when the queue is withheld (an incomplete batch or LBank list must not look complete, p.18)
-   * or when the export failed or its files were pruned.
-   */
-  private async workbookPart(batchId: string, input: Tier1ReportInput): Promise<string | null> {
-    if (this.cfg.TELEGRAM_ATTACH_EXPORT !== 'xlsx' || input.queueStatus.startsWith('WITHHELD'))
-      return null;
-    const run = await this.db.getRepository(ScanRun).findOne({
-      where: { batchId },
-      select: { batchId: true, exportStatus: true, exportPath: true },
-    });
-    if (run?.exportStatus !== 'succeeded' || !run.exportPath) return null;
-    const path = resolve(run.exportPath, 'workbook.xlsx');
-    if (!existsSync(path)) return null;
-    const slot = input.slotTime.toISOString().slice(0, 16).replace(':', '-');
-    const k = (x: number) => x.toLocaleString('en-US');
-    const caption = [
-      `📎 <b>Full workbook</b> · batch ${input.slotTime.toISOString().slice(11, 16)} UTC${input.isLive ? '' : ' · 🧪 test data'}`,
-      `🎯 Queue ${k(input.counts.queue)} · ✅ eligible ${k(input.counts.eligible)} · 🔎 needs review ${k(input.counts.needsReview)} · ⛔ excluded ${k(input.counts.excluded)}`,
-      '<i>One sheet each, plus run metadata · research screen only</i>',
-    ].join('\n');
-    return documentPart({
-      path,
-      filename: `coins-tier1_${slot}Z${input.isLive ? '' : '_SYNTHETIC'}.xlsx`,
-      caption,
-      mimeType: XLSX_MIME,
-    });
+    return formatTier1Report(await this.buildInput(batchId));
   }
 
   /** Crawl batch of a pipeline run (for re-sending a run's report). */

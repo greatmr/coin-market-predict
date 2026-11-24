@@ -110,7 +110,7 @@ export const ROLE_TEXT: Record<Role, readonly [string, string]> = {
 export const PERMISSION_TEXT: Record<Permission, string> = {
   'data:read': 'See the overview, lists and coin details',
   'health:read': 'See runs, batches and source health',
-  'exports:read': 'Download CSV and Excel exports',
+  'exports:read': 'Download CSV exports',
   'review:write': 'Record reviews and LBank decisions',
   'scan:operate': 'Reprocess a batch, refresh the LBank list and retry a failed crawl',
   'telegram:manage': 'Manage Telegram members and re-send reports',

@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 
 import { NestFactory } from '@nestjs/core';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { DataSource } from 'typeorm';
 
@@ -31,7 +31,6 @@ import { PipelineService } from './modules/pipeline/pipeline.service.js';
 import { ReadModelService } from './modules/read-model/read-model.service.js';
 import { isCmcIdProvider } from './modules/sources/cmc-id-providers.js';
 import { SourceHealthService } from './modules/sources/source-health.service.js';
-import { parseDocumentPart } from './modules/telegram/attachment.js';
 import { formatTier1Report } from './modules/telegram/format.js';
 import { ReportService } from './modules/telegram/report.service.js';
 import { TelegramService } from './modules/telegram/telegram.service.js';
@@ -52,7 +51,7 @@ const HELP = `Coins Predicts CLI — Two-Tier VMC strategy (docs/strategy-two-ti
   tier1:scan [--batch ID] [--no-export]
                                Reprocess a saved crawl batch (default: latest) without crawling,
                                then export it (PDF p.18 dry run over saved data)
-  tier1:export [--batch ID]    Re-export a scanned batch (CSV per sheet + XLSX + manifest)
+  tier1:export [--batch ID]    Re-export a scanned batch (CSV per sheet + manifest)
   tier1:trace --id CMC_ID [--batch ID] [--json]
                                Full calculation trace for one asset (30 daily rows, windows, rules)
   tier1:batches                Recent crawl batches with scan and export status
@@ -72,7 +71,7 @@ const HELP = `Coins Predicts CLI — Two-Tier VMC strategy (docs/strategy-two-ti
   forward:events [--view active|final|incomplete|all] [--stars 1|2|3] [--json]
                                Events with their latest outcome (provisional or final)
   forward:update               Run the daily High update now (under the pipeline lease), then export
-  forward:export               Write the event export and star-group report (CSV + XLSX + manifest)
+  forward:export               Write the event export and star-group report (CSV + manifest)
   telegram:preview [--batch ID] [--fake]
                                Print the Telegram summary (latest batch, or a fake-data layout)
   telegram:test [--sample]     Verify bot token + chat and send one test message
@@ -305,12 +304,7 @@ async function main() {
           );
         // Same coin links as the running bot uses (needs the bot token; falls back to /coin_<id>).
         await ctx.get(TelegramService).loadBotUsername();
-        const parts = (await ctx.get(ReportService).build(batchId)).map((p) => {
-          const d = parseDocumentPart(p);
-          return d
-            ? `[attachment] ${d.filename} (${existsSync(d.path) ? `${Math.round(statSync(d.path).size / 1024)} KB` : 'file missing'})\n${d.caption}`
-            : p;
-        });
+        const parts = await ctx.get(ReportService).build(batchId);
         out(parts.join('\n\n----- next message -----\n\n'));
         break;
       }

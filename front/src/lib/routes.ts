@@ -125,7 +125,7 @@ export const SECTIONS: readonly Section[] = [
     path: '/exports',
     label: 'Exports',
     title: 'Exports',
-    sub: 'CSV per sheet and an Excel workbook for each scanned batch, with SHA-256 checksums in the manifest.',
+    sub: 'CSV per sheet for each scanned batch, with SHA-256 checksums in the manifest.',
     permission: 'exports:read',
   },
   {

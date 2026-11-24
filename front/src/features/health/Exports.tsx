@@ -1,4 +1,4 @@
-// Exports: CSV per sheet and an Excel workbook per scanned batch, with the manifest's checksums.
+// Exports: CSV per sheet per scanned batch, with the manifest's checksums.
 // Download links go through apiUrl() (the API may live on another host).
 import { useCallback, useEffect, useState } from 'react';
 

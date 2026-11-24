@@ -32,5 +32,5 @@ export const ForwardRejectionsQuerySchema = z.object({
 });
 export type ForwardRejectionsQueryDto = z.infer<typeof ForwardRejectionsQuerySchema>;
 
-/** A sheet of the forward-test export (`events_final.csv`, …) or `workbook.xlsx`. */
-export const ForwardExportFileSchema = z.string().regex(/^[a-z_]+\.(csv|xlsx)$/);
+/** A sheet of the forward-test export (`events_final.csv`, …). */
+export const ForwardExportFileSchema = z.string().regex(/^[a-z_]+\.csv$/);

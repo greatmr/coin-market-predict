@@ -830,7 +830,7 @@ describe('hourly pipeline integration on the synthetic fixture', () => {
     expect(all.final + all.incomplete).toBe(events.length);
     expect(all.finalReturns.n).toBe(all.final);
 
-    // Export: CSV per sheet, the workbook and a manifest with checksums.
+    // Export: CSV per sheet and a manifest with checksums.
     const out = await ctx.app.get(ForwardExportService).write(after);
     expect(out.path).toMatch(/forward-test_SYNTHETIC$/);
     const manifest = JSON.parse(readFileSync(join(out.path, 'manifest.json'), 'utf8')) as {
@@ -844,10 +844,9 @@ describe('hourly pipeline integration on the synthetic fixture', () => {
       'distributions.csv',
       'rejected_triggers.csv',
       'run_metadata.csv',
-      'workbook.xlsx',
     ]);
     expect(manifest.files.find((f) => f.name === 'events_final.csv')!.rows).toBe(all.final);
-    expect(existsSync(join(out.path, 'workbook.xlsx'))).toBe(true);
+    expect(existsSync(join(out.path, 'workbook.xlsx'))).toBe(false);
     const csv = readFileSync(join(out.path, 'events_final.csv'), 'utf8');
     expect(csv.split('\r\n')[0]).toMatch(/^event_id,cmc_id,symbol,name,detected_at_utc,/);
     expect(csv).toContain('SYNTHETIC');

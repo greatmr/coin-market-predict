@@ -84,12 +84,7 @@ const SORTS: readonly EventSort[] = [
   'multiple7d',
   'multiple30d',
 ];
-const EXPORT_FILES = [
-  'workbook.xlsx',
-  'events_final.csv',
-  'events_active.csv',
-  'cohort_summary.csv',
-];
+const EXPORT_FILES = ['events_final.csv', 'events_active.csv', 'cohort_summary.csv'];
 
 const isStars = (v: string) => STAR_FILTERS.some(([k]) => k === v);
 const statusFilter = (v: string) => STATUS_FILTERS.find(([k]) => k === v) ?? STATUS_FILTERS[0]!;

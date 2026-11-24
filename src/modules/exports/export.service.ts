@@ -14,7 +14,6 @@ import { join, resolve } from 'node:path';
 import type { DataSource } from 'typeorm';
 
 import { type Cell, toCsv } from '../../common/files/csv.js';
-import { buildXlsx } from '../../common/files/xlsx.js';
 import { redact } from '../../common/security/redact.js';
 
 import { APP_CONFIG, type AppConfig } from '../../config/index.js';
@@ -127,7 +126,7 @@ const s = (v: { toString(): string } | null | undefined) =>
   v === null || v === undefined ? null : v.toString();
 
 /**
- * CSV per sheet + an XLSX workbook + a SHA-256 manifest for one crawl batch (PDF p.17, p.18).
+ * CSV per sheet + a SHA-256 manifest for one crawl batch (PDF p.17, p.18).
  * Files are written to a temporary directory and renamed into place, so a failed export never
  * replaces a valid earlier one; the database keeps the full history either way.
  */
@@ -339,17 +338,6 @@ export class ExportService {
           rows.length,
         );
       }
-      const workbook = buildXlsx(
-        SHEETS.map((name) => {
-          const header = name === 'Run_Metadata' ? ['key', 'value'] : data.header;
-          return { name, rows: [header, ...data.sheets[name].map((r) => xlsxRow(header, r))] };
-        }),
-      );
-      write(
-        'workbook.xlsx',
-        workbook,
-        SHEETS.reduce((n, sh) => n + data.sheets[sh].length, 0),
-      );
       const manifest = {
         batchId,
         providerId: data.batch.providerId,
@@ -415,43 +403,4 @@ export class ExportService {
 
 function sha256Buffer(b: Buffer): string {
   return createHash('sha256').update(b).digest('hex');
-}
-
-/** Columns whose decimal strings become numeric workbook cells (display); the CSV keeps full precision. */
-const NUMERIC_COLUMNS: ReadonlySet<string> = new Set([
-  'rank',
-  'age_days',
-  'price_usd',
-  'cap_usd',
-  'volume_24h_usd',
-  'current_vmc',
-  'vmc_3d_avg',
-  'vmc_7d_avg',
-  'vmc_14d_avg',
-  'vmc_30d_avg',
-  'multiple_3d',
-  'multiple_7d',
-  'multiple_30d',
-  'stars',
-  'queue_order',
-  'weighted_pass_points',
-  'weighted_strength',
-  'vol_3d_avg',
-  'vol_7d_avg',
-  'vol_14d_avg',
-  'vol_30d_avg',
-  'vol_ratio_24h_3d',
-  'vol_ratio_24h_7d',
-  'vol_ratio_24h_14d',
-  'vol_ratio_24h_30d',
-  'quote_age_seconds',
-]);
-
-function xlsxRow(header: readonly string[], row: Cell[]): Array<string | number | null> {
-  return row.map((v, i) => {
-    if (v === null || v === undefined) return null;
-    if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
-    if (typeof v === 'number') return v;
-    return NUMERIC_COLUMNS.has(header[i] ?? '') && /^-?\d+(\.\d+)?$/.test(v) ? Number(v) : v;
-  });
 }

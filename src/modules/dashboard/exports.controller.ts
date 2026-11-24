@@ -11,7 +11,7 @@ import { ReadModelService } from '../read-model/read-model.service.js';
 import { UuidSchema } from './dto/common.dto.js';
 import { ExportFileNameSchema } from './dto/exports.dto.js';
 
-/** Per-batch export files (CSV per sheet, XLSX workbook, SHA-256 manifest). */
+/** Per-batch export files (CSV per sheet, SHA-256 manifest). */
 @Controller('exports')
 @RequirePermission('exports:read')
 export class ExportsController {

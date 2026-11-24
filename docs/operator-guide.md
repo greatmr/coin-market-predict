@@ -29,32 +29,32 @@ exports and the Telegram summary. Missed hours are recorded, never invented.
 
 ## 2. Read the dashboard
 
-| Section (left rail) | Shows                                                                                                                                                                                                                                                                                                                                                                            |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Overview            | Run ring (progress while a run is going, otherwise a countdown to the next run) with the stage list; a funnel from every listed coin to evaluated, eligible and the review queue; review-queue cards; the forward test at a glance (results by stars, the last High check, a link to the full table); window results (YES / NO / N/A per window), eligibility donut, stars and the rule list |
+| Section (left rail) | Shows                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Overview            | Run ring (progress while a run is going, otherwise a countdown to the next run) with the stage list; a funnel from every listed coin to evaluated, eligible and the review queue; review-queue cards; the forward test at a glance (results by stars, the last High check, a link to the full table); window results (YES / NO / N/A per window), eligibility donut, stars and the rule list                 |
 | Review queue        | ELIGIBLE coins with at least one YES among 3d / 7d / 30d, ranked by stars, then weighted points (3d 60 · 7d 25 · 30d 15 per YES; `≥ n` = lower bound because a window is N/A), complete scores first, weighted strength, the 3-day multiple and CMC id ([strategy § 6a](strategy-two-tier-vmc.md#6a-weighted-star-ranking-weighted_star_v1-operator-decision-d3)). A 2-star row always precedes a 1-star row |
-| Eligible            | Every coin passing all hard filters, including 0-star rows                                                                                                                                                                                                                                                                                                                       |
-| Needs review        | Coins with missing or ambiguous inputs (no rank / cap / listing date, ambiguous class, unverified or ambiguous LBank pair, LBank feed down). Windows are still computed                                                                                                                                                                                                          |
-| Excluded            | Coins with a known failed filter, with every reason                                                                                                                                                                                                                                                                                                                              |
-| Forward test        | Star Event Forward Test: results by stars, every event with its High-check status, window progress and notes ([§ 5a](#5a-star-event-forward-test))                                                                                                                                                                                                                               |
-| Data                | Data quality of the latest batch (quote and LBank status, LBank list age and _Refresh LBank list now_, scan warnings, last export) and why coins are left out (exclusion reasons)                                                                                                                                                                                                |
-| Runs & health       | Source, circuit and request budget; the latest run's stages on a timeline; hourly crawl batches (missing / duplicate ranks); runs; open LBank mapping tasks                                                                                                                                                                                                                      |
-| Exports             | Per-batch CSV / XLSX files with checksums                                                                                                                                                                                                                                                                                                                                        |
-| Telegram            | Missed reports, pending requests, members                                                                                                                                                                                                                                                                                                                                        |
+| Eligible            | Every coin passing all hard filters, including 0-star rows                                                                                                                                                                                                                                                                                                                                                   |
+| Needs review        | Coins with missing or ambiguous inputs (no rank / cap / listing date, ambiguous class, unverified or ambiguous LBank pair, LBank feed down). Windows are still computed                                                                                                                                                                                                                                      |
+| Excluded            | Coins with a known failed filter, with every reason                                                                                                                                                                                                                                                                                                                                                          |
+| Forward test        | Star Event Forward Test: results by stars, every event with its High-check status, window progress and notes ([§ 5a](#5a-star-event-forward-test))                                                                                                                                                                                                                                                           |
+| Data                | Data quality of the latest batch (quote and LBank status, LBank list age and _Refresh LBank list now_, scan warnings, last export) and why coins are left out (exclusion reasons)                                                                                                                                                                                                                            |
+| Runs & health       | Source, circuit and request budget; the latest run's stages on a timeline; hourly crawl batches (missing / duplicate ranks); runs; open LBank mapping tasks                                                                                                                                                                                                                                                  |
+| Exports             | Per-batch CSV files with checksums                                                                                                                                                                                                                                                                                                                                                                           |
+| Telegram            | Missed reports, pending requests, members                                                                                                                                                                                                                                                                                                                                                                    |
 
 The queue, eligible and needs-review lists switch between **Table** and **Scatter** (current VMC
 against the coin's own 30-day mean on log scales, with the 1.5× line; click a dot to open the
 coin). **Find a coin** — the search at the top centre of every page (⌘K / Ctrl K, or `/`) —
 searches every known coin by symbol, name or CMC id.
 
-The sidebar groups the sections into *Screen*, *Data & operations* and *Settings* (Telegram,
-users, and *Preferences*, which shows your avatar with an online / offline dot); *Sign out* is at
+The sidebar groups the sections into _Screen_, _Data & operations_ and _Settings_ (Telegram,
+users, and _Preferences_, which shows your avatar with an online / offline dot); _Sign out_ is at
 its foot. The round button on the sidebar's edge collapses it to icons on desktop (remembered) and
 opens it over the page on tablet; collapsed items show their name on hover or touch.
 **Preferences** holds your sign-in details, what your role allows, the colour theme (auto / light /
 dark) and whether the desktop sidebar starts collapsed. On phones the bottom bar keeps Overview,
 Review queue, Forward test and Data; **More** opens the other sections (Preferences included) and
-*Sign out*. A *Back to top* button appears on every device once a page is scrolled down.
+_Sign out_. A _Back to top_ button appears on every device once a page is scrolled down.
 
 Window cells show the multiple and a bar against the 1.5× tick (YES in amber), or `N/A`. Hover an N/A for its reason:
 `DAILY_ROW_MISSING` / `DAILY_ROW_INVALID` (a day in that window is missing or invalid — other
@@ -87,11 +87,11 @@ of tappable choices.
 
 ### When the queue is withheld
 
-| Banner / status                  | Meaning                                                                                                   | What to do                                                                                                                                                       |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Banner / status                  | Meaning                                                                                                   | What to do                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Withheld: incomplete batch       | Ranks 1–1200 had a gap or duplicate, or not every listed coin was stored                                  | Check _Runs & health_ (the batch notes list every listing read). A website listing in which CMC gives one rank to two coins (its rank cache caught mid-refresh) is read again automatically, up to 3 times 60 s apart, so this remains only when every read was inconsistent. A stored hour cannot be crawled again (first write wins); the next hourly batch usually recovers. Rows remain inspectable but are not a complete queue, and no forward-test events open from it |
-| Withheld: LBank feed unavailable | No complete LBank Spot markets list yet, or the stored list is older than `LBANK_PAIRS_MAX_AGE_DAYS` (35) | Press _Refresh LBank list now_ on _Data_ (or `lbank:refresh`); check source health if it fails. Every LBank status is UNKNOWN until a complete list exists |
-| Empty                            | No eligible coin met any window                                                                           | Nothing to review this hour; no rule is relaxed to fill it                                                                                                       |
+| Withheld: LBank feed unavailable | No complete LBank Spot markets list yet, or the stored list is older than `LBANK_PAIRS_MAX_AGE_DAYS` (35) | Press _Refresh LBank list now_ on _Data_ (or `lbank:refresh`); check source health if it fails. Every LBank status is UNKNOWN until a complete list exists                                                                                                                                                                                                                                                                                                                    |
+| Empty                            | No eligible coin met any window                                                                           | Nothing to review this hour; no rule is relaxed to fill it                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 ## 3. Review workflow
 
@@ -128,11 +128,11 @@ Reviewer role, and the signed-in username is recorded as the reviewer.
 
 Every page and API call needs a signed-in user. There are three roles:
 
-| Role     | Can see                                                   | Can do                                             |
-| -------- | --------------------------------------------------------- | -------------------------------------------------- |
-| Owner    | Everything, including the coin's _Agent_ tab               | Everything, including _Users_, _Telegram_ and the Claude agent |
-| Analyzer | Overview, lists, coin details, _Runs & health_, _Exports_ | Reprocess the latest batch, refresh the LBank list |
-| Reviewer | Overview, lists, coin details                             | Save reviews and LBank decisions                   |
+| Role     | Can see                                                   | Can do                                                         |
+| -------- | --------------------------------------------------------- | -------------------------------------------------------------- |
+| Owner    | Everything, including the coin's _Agent_ tab              | Everything, including _Users_, _Telegram_ and the Claude agent |
+| Analyzer | Overview, lists, coin details, _Runs & health_, _Exports_ | Reprocess the latest batch, refresh the LBank list             |
+| Reviewer | Overview, lists, coin details                             | Save reviews and LBank decisions                               |
 
 Everyone can change their own username and password under _My account_ (the current password is
 always required). Owners manage people under _Users_: add someone with a temporary password, change
@@ -226,11 +226,11 @@ fetched and when it refreshes next.
 - `npm run cli -- lbank:status` prints the stored list's age, next refresh and last attempt.
 
 **LBank Futures and Bithumb lists** ([ADR-0007](adr/0007-exchange-listings.md)). For the
-forward-test tab's *LBank Futures* and *Bithumb* listings, the hourly run also reads LBank's Futures
+forward-test tab's _LBank Futures_ and _Bithumb_ listings, the hourly run also reads LBank's Futures
 markets (`?type=perpetual`, ~740 pairs) and Bithumb's Spot markets (~500 KRW / BTC pairs) from the
 same CMC exchange pages when the stored list is `EXCHANGE_LISTS_REFRESH_HOURS` (24) old, about 4
 requests. A failed fetch is retried after at most 6 hours; a list older than
-`EXCHANGE_LISTS_MAX_AGE_HOURS` (72) no longer counts, and its listings show *Unknown*. They are not
+`EXCHANGE_LISTS_MAX_AGE_HOURS` (72) no longer counts, and its listings show _Unknown_. They are not
 Tier 1 inputs: refreshing them never rescans and never changes eligibility, stars, points or the
 queue. `npm run cli -- exchange-lists:status` shows all three lists; `exchange-lists:refresh` fetches
 the two new ones now.
@@ -239,10 +239,9 @@ the two new ones now.
 
 Each scanned batch is written to `var/exports/<provider>/<slot>Z_<batch>[_SYNTHETIC]/`:
 `all_eligible.csv`, `review_queue.csv`, `needs_review.csv`, `excluded.csv`, `run_metadata.csv`,
-`workbook.xlsx` with the same five sheets, and `manifest.json` (SHA-256 per file). Values are full
-precision; an N/A value is blank with its reason code; `data_label` says LIVE or SYNTHETIC.
-The workbook is also sent to Telegram after each summary (renamed `coins-tier1_<slot>Z.xlsx`),
-except when the queue is withheld; set `TELEGRAM_ATTACH_EXPORT=none` for text only.
+and `manifest.json` (SHA-256 per file). Values are full precision; an N/A value is blank with
+its reason code; `data_label` says LIVE or SYNTHETIC. (The Excel workbook was removed on
+2026-11-24; exports are CSV only and Telegram sends text only.)
 A failed export never replaces the previous one. Files are pruned after
 `EXPORT_RETENTION_DAYS`; the database keeps every result, so `npm run cli -- tier1:export
 --batch <id>` regenerates them.
@@ -261,8 +260,8 @@ the UTC day containing detection + 168 h. Rules, statuses, fields and gaps:
   distribution, identification hours, the event list (filters by status, result, LBank market,
   Bithumb and stars; sort by Return, stars, points, identification time or a 3d / 7d / 30d ratio),
   rejected triggers, downloads
-  (needs `exports:read`) and *Update Highs now* (needs `scan:operate`). *How to read the forward
-  test* on the page defines every column.
+  (needs `exports:read`) and _Update Highs now_ (needs `scan:operate`). _How to read the forward
+  test_ on the page defines every column.
 - **Return** is the peak return: the highest High confirmed after identification against the CMC
   price recorded at identification — the maximum increase, not a trade or realized profit (a stop
   could have been hit first), and no "pumped" threshold exists. `≥ x %` is so far (window open,
@@ -270,28 +269,28 @@ the UTC day containing detection + 168 h. Rules, statuses, fields and gaps:
 - **Days and time zones:** a day is a UTC calendar day; day 0 is the UTC date of identification and
   day 7 the UTC date of identification + 168 h, included to its end. Times are shown in the display
   timezone (`DISPLAY_TIMEZONE`, Asia/Tehran: a UTC day starts at 03:30 there).
-- **High check** column: *Not checked yet*, *New record found*, *Checked; record unchanged*, *Data
-  unavailable* or *Data retrieval error*, the UTC date every closed day is checked through, and when
+- **High check** column: _Not checked yet_, _New record found_, _Checked; record unchanged_, _Data
+  unavailable_ or _Data retrieval error_, the UTC date every closed day is checked through, and when
   the last successful check ran (hover for the note). Highs are checked once per closed UTC day by
-  the first hourly run after 00:00 UTC, retried while a day is missing, and on *Update Highs now* —
-  never when the page opens. *Update Highs now* runs in the background: the page shows its
+  the first hourly run after 00:00 UTC, retried while a day is missing, and on _Update Highs now_ —
+  never when the page opens. _Update Highs now_ runs in the background: the page shows its
   progress, then how many events were checked, got a new highest High, stayed unchanged, had no
   data or failed.
 - A yellow **Day 0 High** is the identification day's High that CMC dates before identification
   (or without a time): it is shown but never counted in Return or any statistic. Click it, or the
-  *day 0 unconfirmed* note, for the times. *N overlapping* lists the same coin's other events whose
+  _day 0 unconfirmed_ note, for the times. _N overlapping_ lists the same coin's other events whose
   windows overlap this one (this row not included); the dialog opens with the coin's Average Return.
-- **Average Return (coin)**: the mean of the Returns of *all* stored events of the coin (same CMC
+- **Average Return (coin)**: the mean of the Returns of _all_ stored events of the coin (same CMC
   id, any status and star count, whatever the filters), with "k of n events with a Return". Events
-  without a Return are left out, never counted as 0 %. `≥ x %` with *lower bound · n not final*
+  without a Return are left out, never counted as 0 %. `≥ x %` with _lower bound · n not final_
   means some of those Returns are still so far: the average can rise and is not a final result;
-  *all final* means every one is FINAL. A peak return, not profit.
-- **LBank** (*Spot*, *Futures*) and **Bithumb**: whether the coin is listed now in LBank's Spot
+  _all final_ means every one is FINAL. A peak return, not profit.
+- **LBank** (_Spot_, _Futures_) and **Bithumb**: whether the coin is listed now in LBank's Spot
   markets, LBank's Futures (perpetual) markets and Bithumb's Spot markets, each from its own list on
-  CMC, by CMC id (section 4). *Unknown* means that list is not verified — not fetched yet, failed,
-  incomplete or too old — and is never shown as *No*. The line above the table says when each list
-  was fetched; filter with *LBank* (Spot and Futures, Spot only, Futures only, …, Unknown) and
-  *Bithumb* (listed, not listed, unknown).
+  CMC, by CMC id (section 4). _Unknown_ means that list is not verified — not fetched yet, failed,
+  incomplete or too old — and is never shown as _No_. The line above the table says when each list
+  was fetched; filter with _LBank_ (Spot and Futures, Spot only, Futures only, …, Unknown) and
+  _Bithumb_ (listed, not listed, unknown).
 - Warnings: `FRESHNESS` / `UPDATE_FAILED` — the daily update has not run successfully; check the
   run's `forward` stage and the source health. `UPDATE_PARTIAL` — some Highs are not published
   yet; retried automatically. `INCOMPLETE_DAY0` — the signal day's High came before detection and no
@@ -301,42 +300,42 @@ the UTC day containing detection + 168 h. Rules, statuses, fields and gaps:
 - Outcomes are also compared by the pass pattern and the weighted points the coin had at detection
   (both stored with the event, never recalculated): use them to judge the 60 / 25 / 15 weights on
   later data, not as a forecast.
-- Reprocessing a batch, *Reprocess latest batch* and the LBank refresh never create events, and
+- Reprocessing a batch, _Reprocess latest batch_ and the LBank refresh never create events, and
   signals from before deployment are not backfilled.
 
 ## 6. Command reference
 
-| Command                                         | Purpose                                                                            |
-| ----------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `run-once`                                      | Run the current hour now                                                           |
-| `tier1:scan [--batch ID] [--no-export]`         | Recompute a stored batch from saved data (no crawling)                             |
-| `tier1:export [--batch ID]`                     | Re-export a scanned batch                                                          |
-| `tier1:trace --id CMC_ID [--batch ID] [--json]` | Calculation trace for one coin                                                     |
-| `tier1:batches`                                 | Recent crawl batches and scans                                                     |
-| `lbank:status`                                  | Stored LBank Spot markets list: fetched when, next automatic refresh, last attempt |
-| `lbank:refresh`                                 | Fetch the LBank list now, then recompute and re-export the latest batch            |
-| `exchange-lists:status`                         | LBank Spot, LBank Futures and Bithumb lists behind the forward-test listings       |
-| `exchange-lists:refresh`                        | Fetch the LBank Futures and Bithumb lists now (no rescan; not Tier 1 inputs)       |
-| `daily:import-csv --id CMC_ID --file F`         | Import a CMC "Download CSV" history file as completed daily rows                   |
-| `telegram:preview [--batch ID] [--fake]`        | Print the Telegram summary without sending                                         |
-| `source:reset --provider coinmarketcap_web`     | Clear a suspended source after fixing the cause                                    |
-| `forward:status [--json]`                       | Forward test: star groups, High coverage, last trigger and daily update, warnings  |
+| Command                                          | Purpose                                                                                |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------- |
+| `run-once`                                       | Run the current hour now                                                               |
+| `tier1:scan [--batch ID] [--no-export]`          | Recompute a stored batch from saved data (no crawling)                                 |
+| `tier1:export [--batch ID]`                      | Re-export a scanned batch                                                              |
+| `tier1:trace --id CMC_ID [--batch ID] [--json]`  | Calculation trace for one coin                                                         |
+| `tier1:batches`                                  | Recent crawl batches and scans                                                         |
+| `lbank:status`                                   | Stored LBank Spot markets list: fetched when, next automatic refresh, last attempt     |
+| `lbank:refresh`                                  | Fetch the LBank list now, then recompute and re-export the latest batch                |
+| `exchange-lists:status`                          | LBank Spot, LBank Futures and Bithumb lists behind the forward-test listings           |
+| `exchange-lists:refresh`                         | Fetch the LBank Futures and Bithumb lists now (no rescan; not Tier 1 inputs)           |
+| `daily:import-csv --id CMC_ID --file F`          | Import a CMC "Download CSV" history file as completed daily rows                       |
+| `telegram:preview [--batch ID] [--fake]`         | Print the Telegram summary without sending                                             |
+| `source:reset --provider coinmarketcap_web`      | Clear a suspended source after fixing the cause                                        |
+| `forward:status [--json]`                        | Forward test: star groups, High coverage, last trigger and daily update, warnings      |
 | `forward:events [--view V] [--stars N] [--json]` | Forward-test events (`active`, `final`, `incomplete`, `all`) with their latest outcome |
-| `forward:update`                                | Run the daily High update now (normally automatic), then write its export          |
-| `forward:export`                                | Write the forward-test CSVs, workbook and manifest                                 |
+| `forward:update`                                 | Run the daily High update now (normally automatic), then write its export              |
+| `forward:export`                                 | Write the forward-test CSVs and manifest                                               |
 
 ## 7. Troubleshooting
 
-| Symptom                                  | Likely cause                                                                                            | Action                                                                                                                                                                                                                                                                                                                                               |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Many `DAILY_ROW_MISSING`                 | Cold start, the daily stage hit its time / asset / budget bound, or CMC has not published yesterday yet | Wait for the next runs (retries after `TIER1_DAILY_RETRY_HOURS`); check `metrics.daily` on the run and the budget on _Runs & health_                                                                                                                                                                                                                 |
-| Many `CURRENT_STALE`                     | The listing returned old provider timestamps                                                            | Compare provider update time and crawl time in the trace; persistent staleness means a source problem                                                                                                                                                                                                                                                |
-| Source circuit `open` / `suspended`      | Repeated errors or 401/403 denials                                                                      | Stop and investigate (network, blocking, route change) before `source:reset`                                                                                                                                                                                                                                                                         |
-| "The latest crawl batch … failed" banner | Network loss (e.g. the host slept), timeouts or server errors opened the circuit (15-minute cooldown)   | Once the cause is gone, press _Retry crawl now_ in the banner (needs `scan:operate`): it closes an `open` circuit, skipping the cooldown, and crawls the current hour again. It refuses while a run holds the lease, when this hour already completed, when the source is `suspended` (use `source:reset`) or while a provider Retry-After is active |
-| Budget nearly used                       | Daily refresh volume above the monthly budget                                                           | Raise `CMC_WEB_MONTHLY_REQUEST_BUDGET` deliberately or reduce `TIER1_DAILY_MAX_ASSETS_PER_RUN`; the hourly listing keeps a reserve                                                                                                                                                                                                                   |
-| A `failed` / `missed` row in Pipeline runs | The app was down, or a stage failed | As owner, press _Recover_ on the row. The current hour is crawled again; a past hour with a stored crawl is rescanned and re-exported; a past hour with nothing stored stays a gap (CMC serves only current quotes), and recovery fetches what is still available instead: the current hour, or daily history plus a rescan of the latest batch. The result shows in the row's Recovery column |
-| Export failed banner                     | Disk or permission problem in `TIER1_EXPORT_DIR`                                                        | Fix and run `tier1:export`; the previous export is still valid                                                                                                                                                                                                                                                                                       |
-| Missed Telegram reports                  | Recipient blocked the bot or Telegram errors                                                            | _Telegram access_ → Retry                                                                                                                                                                                                                                                                                                                            |
+| Symptom                                    | Likely cause                                                                                            | Action                                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Many `DAILY_ROW_MISSING`                   | Cold start, the daily stage hit its time / asset / budget bound, or CMC has not published yesterday yet | Wait for the next runs (retries after `TIER1_DAILY_RETRY_HOURS`); check `metrics.daily` on the run and the budget on _Runs & health_                                                                                                                                                                                                                                                           |
+| Many `CURRENT_STALE`                       | The listing returned old provider timestamps                                                            | Compare provider update time and crawl time in the trace; persistent staleness means a source problem                                                                                                                                                                                                                                                                                          |
+| Source circuit `open` / `suspended`        | Repeated errors or 401/403 denials                                                                      | Stop and investigate (network, blocking, route change) before `source:reset`                                                                                                                                                                                                                                                                                                                   |
+| "The latest crawl batch … failed" banner   | Network loss (e.g. the host slept), timeouts or server errors opened the circuit (15-minute cooldown)   | Once the cause is gone, press _Retry crawl now_ in the banner (needs `scan:operate`): it closes an `open` circuit, skipping the cooldown, and crawls the current hour again. It refuses while a run holds the lease, when this hour already completed, when the source is `suspended` (use `source:reset`) or while a provider Retry-After is active                                           |
+| Budget nearly used                         | Daily refresh volume above the monthly budget                                                           | Raise `CMC_WEB_MONTHLY_REQUEST_BUDGET` deliberately or reduce `TIER1_DAILY_MAX_ASSETS_PER_RUN`; the hourly listing keeps a reserve                                                                                                                                                                                                                                                             |
+| A `failed` / `missed` row in Pipeline runs | The app was down, or a stage failed                                                                     | As owner, press _Recover_ on the row. The current hour is crawled again; a past hour with a stored crawl is rescanned and re-exported; a past hour with nothing stored stays a gap (CMC serves only current quotes), and recovery fetches what is still available instead: the current hour, or daily history plus a rescan of the latest batch. The result shows in the row's Recovery column |
+| Export failed banner                       | Disk or permission problem in `TIER1_EXPORT_DIR`                                                        | Fix and run `tier1:export`; the previous export is still valid                                                                                                                                                                                                                                                                                                                                 |
+| Missed Telegram reports                    | Recipient blocked the bot or Telegram errors                                                            | _Telegram access_ → Retry                                                                                                                                                                                                                                                                                                                                                                      |
 
 ## 8. Overrides
 

@@ -138,8 +138,6 @@ const schema = z
     TELEGRAM_COMMANDS_ENABLED: bool.default(true),
     /** Review Queue rows in the Telegram report. */
     TELEGRAM_QUEUE_ROWS: z.coerce.number().int().min(1).max(30).default(10),
-    /** xlsx: attach the batch's Excel workbook to each Telegram report (not for withheld queues); none: text only. */
-    TELEGRAM_ATTACH_EXPORT: z.enum(['none', 'xlsx']).default('xlsx'),
 
     MCP_HTTP_ENABLED: bool.default(true),
     MCP_READ_TOKEN: optionalSecret,

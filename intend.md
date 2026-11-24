@@ -1,6 +1,7 @@
 # Coins Predicts — intent
 
 ## Purpose
+
 Implement the **Two-Tier VMC strategy** (LBank Spot developer handoff, 05 Nov 2026;
 specification: `docs/strategy-two-tier-vmc.md`). Every hour, Tier 1 screens CoinMarketCap assets
 for unusual trading activity — current rolling-24h volume ÷ circulating market cap (VMC) against
@@ -29,6 +30,7 @@ that exchange's own markets list on CMC by CMC id (Unknown when the list is not 
 filters. Descriptive attributes: no Tier 1 rule, star or point reads them.
 
 ## Requirements
+
 1. **Sources**: no paid market-data subscriptions. Use the existing, explicitly selected CMC
    website collector (no new API client, PDF p.2); no CAPTCHA bypass or evasive proxies. Free
    official APIs only as an explicit, opt-in alternative.
@@ -45,7 +47,7 @@ filters. Descriptive attributes: no Tier 1 rule, star or point reads them.
    reasons; daily revisions preserved.
 5. **Pipeline**: hourly, non-overlapping across instances, bounded retries, idempotent writes,
    restart recovery, no backfill of missed hours, Telegram retries independent of collection.
-6. **Outputs**: All Eligible, Review Queue, Needs Review, Excluded and Run Metadata as CSV + XLSX
+6. **Outputs**: All Eligible, Review Queue, Needs Review, Excluded and Run Metadata as CSV
    with checksums (p.17); queue withheld when the batch is incomplete or the LBank feed is
    unavailable (p.18); dashboard with per-coin calculation traces; read-only MCP; Telegram
    compact summary with dry-run mode.
@@ -55,18 +57,20 @@ filters. Descriptive attributes: no Tier 1 rule, star or point reads them.
    pair, which TradingView does not carry) that fills the Tier 2 chart fields on request; and the
    Claude coin agent for owners only, at most 5 runs per rolling 12 hours, authenticated with the
    operator's subscription OAuth token, with every run and its inputs stored.
-8. **Forward test** (add-on): automatic events from the published Review Queue (no approval),
+9. **Forward test** (add-on): automatic events from the published Review Queue (no approval),
    unique per (CMC id, UTC date, stars), immutable reference price, daily Highs of the same
    coin's CMC USD series only, never a pre-signal High or Close, FINAL only after the final day's
    High; versioned outcomes and a star-group report on FINAL events.
 
 ## Assumptions
+
 - Single operator, personal research use; one deployment.
 - Hourly cadence is acceptable; minute-scale moves are out of reach.
 - Implementation assumptions A1–A20 are listed with reasons in `docs/strategy-two-tier-vmc.md` § 9.
 - Display timezone Asia/Tehran (configurable).
 
 ## Constraints
+
 - The CMC website collector uses website JSON endpoints with no supported API contract. It is
   explicitly selected by the operator and may break if CMC changes access.
 - CMC's LBank markets data has no trading status. Operator decision (2026-11-05): a pair in the
@@ -75,6 +79,7 @@ filters. Descriptive attributes: no Tier 1 rule, star or point reads them.
 - Free official API tiers supply listings only (no daily history or LBank pairs).
 
 ## Non-goals
+
 - Real order placement, brokerage integration, position sizing or portfolio management.
 - Automatic buy/sell signals, predicted returns, profit claims or calibrated probabilities. The
   coin agent's outlook is an on-request qualitative opinion with a confidence level, not a
@@ -83,6 +88,7 @@ filters. Descriptive attributes: no Tier 1 rule, star or point reads them.
 - Multi-tenant SaaS.
 
 ## Acceptance criteria
+
 - `npm test` and `npm run test:db` pass offline, including the PDF's acceptance cases (p.19:
   A exact 1.5 boundary, B ranks / cap / age boundaries, C mean of ratios, D missing day,
   E zero / stale / unverified inputs; F queue order, superseded by the weighted star ranking's own
@@ -94,16 +100,16 @@ filters. Descriptive attributes: no Tier 1 rule, star or point reads them.
 - Telegram live delivery only with `TELEGRAM_MODE=live` and valid credentials.
 
 ## Unresolved decisions (owner: operator)
+
 1. **Live data source.** Implemented choices: fixture, the CMC website collector
    (`DATA_SOURCE=coinmarketcap_web`, no key — the only live source with daily rows and LBank
    pairs), or official keyed APIs (listings only). Website routes verified 2026-11-03 / 2026-11-05.
 2. **Request budget.** `CMC_WEB_MONTHLY_REQUEST_BUDGET=30000` covers the hourly listing, LBank
    pairs and about one daily-history request per screen candidate per UTC day; confirm this is an
    acceptable load for the website.
-3. **Redistribution in Telegram.** Summary rows are lower-risk than bulk data tables, and each
-   report now also attaches the full workbook (CMC-derived values for every listed coin) at the
-   operator's request (2026-11-05; `TELEGRAM_ATTACH_EXPORT`). Confirm the provider's terms for the
-   recipients (private members vs a public channel).
+3. **Redistribution in Telegram.** Summary rows are lower-risk than bulk data tables (the full
+   Excel workbook attachment was removed on 2026-11-24 with the XLSX export). Confirm the
+   provider's terms for the recipients (private members vs a public channel).
 4. **LBank list cadence.** Decided: listed pairs count as tradable, list refreshed every 30 days
    or manually (D1, D2). Revisit if suspended LBank pairs keep reaching the queue
    (`LBANK_REQUIRE_MANUAL_VERIFICATION=true` restores a human check per pair).

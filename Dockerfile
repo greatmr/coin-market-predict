@@ -27,7 +27,7 @@ COPY --chown=node:node package.json ./
 # Versioned Tier 1 classification / LBank mapping overrides (TIER1_OVERRIDES_FILE).
 COPY --chown=node:node config ./config
 COPY --chown=node:node docker/entrypoint.sh ./docker/entrypoint.sh
-# var/exports holds the per-batch CSV/XLSX exports (TIER1_EXPORT_DIR); mount a volume to keep them.
+# var/exports holds the per-batch CSV exports (TIER1_EXPORT_DIR); mount a volume to keep them.
 # var/agent is the Claude coin agent's HOME and configuration (AGENT_STATE_DIR), private to node.
 RUN mkdir -p /app/var/exports /app/var/agent && chown -R node:node /app/var \
     && chmod 0700 /app/var/agent && chmod 0755 /app/docker/entrypoint.sh

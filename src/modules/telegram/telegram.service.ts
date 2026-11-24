@@ -1,8 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import { basename } from 'node:path';
 import { type DataSource, In, LessThanOrEqual } from 'typeorm';
 
 import { insertRows } from '../../common/entities/insert.js';
@@ -12,12 +10,13 @@ import { type Clock, sleep as realSleep, systemClock } from '../../common/utils/
 import { APP_CONFIG, type AppConfig } from '../../config/index.js';
 
 import { TelegramAccessService } from './access.service.js';
-import { TELEGRAM_DOCUMENT_LIMIT_BYTES, parseDocumentPart } from './attachment.js';
 import { TelegramDelivery } from './entities/telegram-delivery.entity.js';
 
 export const TELEGRAM_FETCH = Symbol('TELEGRAM_FETCH');
 export const MAX_DELIVERY_ATTEMPTS = 6;
 const MIN_SPACING_MS = 1_500;
+/** Prefix of the removed workbook-attachment report part (older deliveries may still hold it). */
+const LEGACY_DOCUMENT_MARKER = '[[telegram-document]]';
 /** A network outage (fetch failed, timeout) is retried for this long before a report is given up on. */
 export const NETWORK_RETRY_WINDOW_MS = 24 * 3_600_000;
 const NETWORK_BACKOFF_CAP_MS = 15 * 60_000;
@@ -339,61 +338,27 @@ export class TelegramService {
   }
 
   private async sendOne(chatId: string, text: string): Promise<SendResult> {
-    const doc = parseDocumentPart(text);
-    let upload: FormData | null = null;
-    if (doc) {
-      // Read the file before spacing/sending: a pruned or oversized export is a permanent failure.
-      let data: Buffer;
-      try {
-        data = await readFile(doc.path);
-      } catch {
-        return {
-          ok: false,
-          error: `export file ${basename(doc.path)} is no longer available (pruned after EXPORT_RETENTION_DAYS?)`,
-          permanent: true,
-        };
-      }
-      if (data.length > TELEGRAM_DOCUMENT_LIMIT_BYTES)
-        return {
-          ok: false,
-          error: `export file is ${data.length} bytes, above Telegram's 50 MB bot limit`,
-          permanent: true,
-        };
-      upload = new FormData();
-      upload.append('chat_id', chatId);
-      if (doc.caption) {
-        upload.append('caption', doc.caption);
-        upload.append('parse_mode', 'HTML');
-      }
-      upload.append(
-        'document',
-        new Blob([new Uint8Array(data)], { type: doc.mimeType }),
-        doc.filename,
-      );
-    }
+    // A workbook attachment queued before the Excel export was removed: never send it as text.
+    if (text.startsWith(LEGACY_DOCUMENT_MARKER))
+      return { ok: false, error: 'workbook attachments are no longer sent', permanent: true };
     const wait = this.lastSentAt + MIN_SPACING_MS - this.clock.now().getTime();
     if (wait > 0) await this.sleep(wait);
     this.lastSentAt = this.clock.now().getTime();
     try {
-      const res = upload
-        ? await this.fetchImpl(
-            `https://api.telegram.org/bot${this.cfg.TELEGRAM_BOT_TOKEN}/sendDocument`,
-            { method: 'POST', body: upload, signal: AbortSignal.timeout(120_000) },
-          )
-        : await this.fetchImpl(
-            `https://api.telegram.org/bot${this.cfg.TELEGRAM_BOT_TOKEN}/sendMessage`,
-            {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                chat_id: chatId,
-                text,
-                parse_mode: 'HTML',
-                link_preview_options: { is_disabled: true },
-              }),
-              signal: AbortSignal.timeout(20_000),
-            },
-          );
+      const res = await this.fetchImpl(
+        `https://api.telegram.org/bot${this.cfg.TELEGRAM_BOT_TOKEN}/sendMessage`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text,
+            parse_mode: 'HTML',
+            link_preview_options: { is_disabled: true },
+          }),
+          signal: AbortSignal.timeout(20_000),
+        },
+      );
       const body = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
         result?: { message_id?: number };

@@ -17,7 +17,7 @@ export const PERMISSIONS = [
   'data:read',
   /** Crawl batches, pipeline runs, source health, open mapping tasks. */
   'health:read',
-  /** Download the CSV / XLSX exports (bulk data). */
+  /** Download the CSV exports (bulk data). */
   'exports:read',
   /** Save review revisions and LBank venue decisions (append-only human records). */
   'review:write',

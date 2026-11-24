@@ -236,7 +236,7 @@ describe('Telegram Tier 1 summary (mobile)', () => {
         counts: { assets: 8041, eligible: 300, needsReview: 250, excluded: 7491, queue: 12 },
       }),
     ).join('\n');
-    expect(msg).toMatch(/10 more coins in the workbook and on the dashboard/);
+    expect(msg).toMatch(/10 more coins on the dashboard/);
   });
 
   it('withholds the queue for an incomplete batch or an unavailable LBank feed (p.18)', () => {

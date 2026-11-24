@@ -95,7 +95,7 @@ export class ForwardController {
     return this.read.rejections(q.limit);
   }
 
-  /** A sheet as CSV or the whole workbook, generated from the database now (not enveloped). */
+  /** A sheet as CSV, generated from the database now (not enveloped). */
   @RequirePermission('exports:read')
   @Get('export/:file')
   async download(

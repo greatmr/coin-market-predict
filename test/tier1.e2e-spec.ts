@@ -19,7 +19,6 @@ import { ReviewInputError, ReviewService } from '../src/modules/reviews/review.s
 import { ScanResult } from '../src/modules/scan/entities/scan-result.entity.js';
 import { ScanRun } from '../src/modules/scan/entities/scan-run.entity.js';
 import { compareQueue, rankingScore } from '../src/modules/strategy/index.js';
-import { parseDocumentPart } from '../src/modules/telegram/attachment.js';
 import { TelegramDelivery } from '../src/modules/telegram/entities/telegram-delivery.entity.js';
 import { ReportService } from '../src/modules/telegram/report.service.js';
 import { VenueCrawl } from '../src/modules/venues/entities/venue-crawl.entity.js';
@@ -352,7 +351,6 @@ describe('Tier 1 end to end on the synthetic fixture', () => {
       'needs_review.csv',
       'review_queue.csv',
       'run_metadata.csv',
-      'workbook.xlsx',
     ]);
     const csv = readFileSync(join(run.exportPath!, 'review_queue.csv'), 'utf8').split('\r\n');
     const header = csv[0]!.split(',');
@@ -370,8 +368,7 @@ describe('Tier 1 end to end on the synthetic fixture', () => {
     expect(gap[header.indexOf('reason_7d')]).toBe('DAILY_ROW_MISSING');
     expect(needs.length).toBeGreaterThan(3);
     expect(existsSync(join(run.exportPath!, 'manifest.json'))).toBe(true);
-    const xlsx = readFileSync(join(run.exportPath!, 'workbook.xlsx'));
-    expect(xlsx.subarray(0, 2).toString()).toBe('PK');
+    expect(existsSync(join(run.exportPath!, 'workbook.xlsx'))).toBe(false);
   });
 
   it('writes a dry-run Telegram summary labelled as test data', async () => {
@@ -657,14 +654,10 @@ describe('replay, revisions and human records', () => {
     );
   });
 
-  it("the Telegram report ends with the batch's Excel workbook as a document part", async () => {
+  it('the Telegram report is text only (no file attachment)', async () => {
     const parts = await ctx.app.get(ReportService).build(batchId);
-    const doc = parseDocumentPart(parts.at(-1)!);
-    expect(doc).not.toBeNull();
-    expect(existsSync(doc!.path)).toBe(true);
-    expect(doc!.filename).toMatch(/^coins-tier1_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}Z_SYNTHETIC\.xlsx$/);
-    expect(doc!.caption).toMatch(/test data/);
-    expect(parts.slice(0, -1).every((p) => parseDocumentPart(p) === null)).toBe(true);
+    expect(parts.length).toBeGreaterThan(0);
+    expect(parts.some((p) => p.startsWith('[[telegram-document]]'))).toBe(false);
   });
 
   it('an incomplete batch withholds the queue, and the Telegram summary says why (p.18)', async () => {
@@ -676,7 +669,6 @@ describe('replay, revisions and human records', () => {
     const parts = await ctx.app.get(ReportService).build(batchId);
     expect(parts.join('\n')).toMatch(/Review queue withheld/);
     expect(parts.join('\n')).not.toMatch(/<pre>|\/coin_/); // no coin cards for a withheld queue
-    expect(parts.some((p) => parseDocumentPart(p) !== null)).toBe(false); // no workbook for a withheld queue
     await ctx.repo(CrawlBatch).update({ id: batchId }, { status: 'COMPLETE', statusReasons: [] });
   });
 

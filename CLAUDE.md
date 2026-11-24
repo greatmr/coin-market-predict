@@ -6,6 +6,7 @@ with an optional manual LBank Spot trade plan. Output is a review queue — neve
 never real orders. Spec: `docs/strategy-two-tier-vmc.md`. Purpose and open decisions: @intend.md
 
 ## Architecture boundaries
+
 - One NestJS app (`src/main.ts`), CLI (`src/cli.ts`), MCP stdio entry (`src/mcp-stdio.ts`), all
   composing `AppModule`. One module per area in `src/modules/<name>/` (`entities/`, `dto/`);
   shared code in `src/common/`, config in `src/config/`, TypeORM setup and migrations in
@@ -13,7 +14,7 @@ never real orders. Spec: `docs/strategy-two-tier-vmc.md`. Purpose and open decis
 - Pipeline (`src/modules/pipeline/pipeline.service.ts`): discover → collect (crawl batch, every
   listed coin) → lbank (LBank Spot pairs) → daily (completed UTC daily rows for screen
   candidates) → scan (Tier 1) → venues (review candidates' CMC Markets rows; LBank Futures and
-  Bithumb lists, never Tier 1 inputs: `docs/adr/0007-exchange-listings.md`) → export (CSV + XLSX)
+  Bithumb lists, never Tier 1 inputs: `docs/adr/0007-exchange-listings.md`) → export (CSV)
   → notify (Telegram) → forward (Star Event Forward Test) → retention.
 - **The strategy is its own module** (`src/modules/strategy/`, `docs/adr/0002-strategy-module-boundary.md`):
   `strategy.constants.ts` (`RULESET_VERSION`, thresholds, reason codes, status sets), pure
@@ -68,6 +69,7 @@ never real orders. Spec: `docs/strategy-two-tier-vmc.md`. Purpose and open decis
   dashboard.
 
 ## Commands
+
 ```bash
 npm ci && cp .env.example .env         # first time
 docker compose up -d postgres           # DB on 127.0.0.1:5433
@@ -88,6 +90,7 @@ npm run migration:generate -- src/database/migrations/<Name>  # draft from entit
 ```
 
 ## Rules of thumb
+
 - Read `.claude/rules/` before editing the matching area; they are short.
 - Never print, grep, or cat `.env` / `secrets/` values. Check secrets by name and length only.
 - Tests use fixtures (`test/fixtures/`, `FixtureCmcMarket`); never hit live endpoints in `npm test`.
