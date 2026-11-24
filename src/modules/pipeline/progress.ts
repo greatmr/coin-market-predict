@@ -3,7 +3,8 @@ import { CronTime } from 'cron';
 /**
  * discover → collect (existing crawler batch) → lbank (LBank Spot pairs) → daily (completed UTC
  * rows) → scan (Tier 1) → venues (CMC Markets rows for review candidates) → export → notify →
- * forward (forward-test trigger on the published queue; daily High update once per closed day).
+ * forward (forward-test trigger on the published queue; daily High update once per closed day) →
+ * observe (LBank Spot Price Observation intake for batches at or after the cutover).
  */
 export const STAGES = [
   'discover',
@@ -15,6 +16,7 @@ export const STAGES = [
   'export',
   'notify',
   'forward',
+  'observe',
 ] as const;
 export type Stage = (typeof STAGES)[number];
 

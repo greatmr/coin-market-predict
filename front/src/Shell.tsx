@@ -138,6 +138,13 @@ function SignedIn({ me, cfg }: { me: User; cfg: AppConfig }) {
 
   /* ---------- First load and timers ---------- */
 
+  const [legacyRetired, setLegacyRetired] = useState(false);
+  useEffect(() => {
+    api<{ state: string }>('forward/legacy')
+      .then((l) => setLegacyRetired(l.state === 'retired'))
+      .catch(() => undefined);
+  }, []);
+
   useEffect(() => {
     refresh(true).then(
       () => setApiOk(true),
@@ -285,12 +292,14 @@ function SignedIn({ me, cfg }: { me: User; cfg: AppConfig }) {
     const c = overview?.scan?.counts ?? {};
     return {
       queue: c.queue ?? 0,
+      observation: navCounts.observation,
       forward: navCounts.forward,
       access: navCounts.access ?? 0,
     };
   }, [overview, navCounts]);
 
-  const visible = SECTIONS.filter(allowed);
+  // The legacy forward test leaves the navigation once it is retired (its page stays reachable).
+  const visible = SECTIONS.filter(allowed).filter((s) => s.key !== 'forward' || !legacyRetired);
   const onRailKey = (e: React.KeyboardEvent<HTMLElement>) => {
     const dir = ({ ArrowDown: 1, ArrowUp: -1 } as Record<string, number>)[e.key];
     if (!dir) return;

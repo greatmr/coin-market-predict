@@ -83,64 +83,16 @@ export function windowProgress(w: EventWindow, now: Date): WindowProgress {
 
 // ── Trigger (p.3, p.4, p.10) ─────────────────────────────────────────────────────────────────
 
-/** One published Review Queue row as the trigger sees it (adapter: docs/forward-test.md § 3). */
-export interface TriggerCandidate {
-  cmcId: number | null;
-  stars: number;
-  inQueue: boolean;
-  eligibilityStatus: string;
-  lbankStatus: string;
-  /** CMC USD price of the qualifying observation, as stored by the scanner. */
-  price: DValue | null;
-  currentStatus: string;
-  /** Provider update time of the quote. */
-  sourceUpdatedAt: Date | null;
-  /** Crawl time of the observation (becomes detected_at). */
-  observedAt: Date | null;
-  /** Exactly one stored CMC identity and one observation of this id in the batch. */
-  identityUnique: boolean;
-}
-
-export interface TriggerContext {
-  queueStatus: string | null;
-  batchStatus: string;
-  now: Date;
-  /** A batch older than this when the trigger runs is a replay, not a live publication. */
-  maxBatchAgeMs: number;
-  maxQuoteAgeMs: number;
-}
-
 /**
- * Reasons why a queue row must not open a priced event; empty when it may. Stars are taken from
- * the scanner as published, never recalculated (p.3). Every failing check is reported.
+ * The trigger rule (which published queue rows open an event, the event key) is shared with the
+ * LBank Spot Price Observation since the cutover change; it lives in `star-events` and is re-exported
+ * here unchanged (docs/adr/0009-lbank-spot-observation.md).
  */
-export function validateTrigger(c: TriggerCandidate, ctx: TriggerContext): string[] {
-  const reasons: string[] = [];
-  if (ctx.queueStatus !== 'PUBLISHED')
-    reasons.push(`${R.queueNotPublished}:${ctx.queueStatus ?? 'NONE'}`);
-  if (ctx.batchStatus !== 'COMPLETE') reasons.push(`${R.batchNotComplete}:${ctx.batchStatus}`);
-  if (!c.inQueue) reasons.push(R.notInQueue);
-  if (c.eligibilityStatus !== 'ELIGIBLE') reasons.push(`${R.notEligible}:${c.eligibilityStatus}`);
-  if (!Number.isInteger(c.stars) || c.stars < 1 || c.stars > 3)
-    reasons.push(`${R.starsOutOfRange}:${c.stars}`);
-  if (c.lbankStatus !== 'VERIFIED') reasons.push(`${R.lbankNotVerified}:${c.lbankStatus}`);
-  if (c.cmcId === null || !Number.isSafeInteger(c.cmcId) || c.cmcId <= 0)
-    reasons.push(R.cmcIdMissing);
-  else if (!c.identityUnique) reasons.push(R.assetIdAmbiguous);
-  if (c.price === null) reasons.push(R.priceMissing);
-  else if (!c.price.isFinite()) reasons.push(R.priceNotFinite);
-  else if (c.price.lte(0)) reasons.push(R.priceNotPositive);
-  const quoteAgeMs =
-    c.observedAt && c.sourceUpdatedAt ? c.observedAt.getTime() - c.sourceUpdatedAt.getTime() : null;
-  if (c.currentStatus === 'STALE' || (quoteAgeMs !== null && quoteAgeMs > ctx.maxQuoteAgeMs))
-    reasons.push(R.quoteStale);
-  else if (c.currentStatus !== 'OK') reasons.push(`${R.quoteNotOk}:${c.currentStatus}`);
-  if (!c.sourceUpdatedAt) reasons.push(R.sourceTimeMissing);
-  if (!c.observedAt) reasons.push(R.observedAtMissing);
-  else if (ctx.now.getTime() - c.observedAt.getTime() > ctx.maxBatchAgeMs)
-    reasons.push(R.batchNotCurrent);
-  return reasons;
-}
+export {
+  type TriggerCandidate,
+  type TriggerContext,
+  validateTrigger,
+} from '../star-events/star-event.rules.js';
 
 // ── Highs (p.5, p.6) ─────────────────────────────────────────────────────────────────────────
 

@@ -38,6 +38,17 @@ affected coin and signal date (the first update after deployment: about 290 for 
 within the shared rate limit, budget reserve and circuit breaker. Same access posture as the daily
 route (operator-selected website collector, no supported API contract; Requirement 1).
 
+**LBank Spot 1-minute candles (assessed 2026-11-24 for the
+[LBank Spot Price Observation](lbank-spot-observation.md)).** Not a CMC route: LBank's official
+public REST API, `GET https://api.lbkex.com/v2/kline.do?symbol=<pair>&size<=2000&type=minute1&time=<unix s>`
+(host per LBank's 2023-08-07 API notice; the docs page still shows the old `api.lbank.info`). Verified
+on real events: contiguous closed bars over full 168 h windows (6 requests each), history back years,
+HIGH / LOW / CLOSE equal to LBank's own trades, OPEN = previous CLOSE, minutes without trades filled at
+volume 0, the minute in progress included (dropped by server time), a time before listing answered
+with the first bars, delisted pairs answered with error 10008, 200 requests / 10 s
+(`X-LBank-RateLimit-*`). LBank's public Futures API has no history. Details and numbers:
+[lbank-spot-observation.md § 3](lbank-spot-observation.md#3-data-source-report-b-feasibility-tested-2026-11-24-against-real-data).
+
 What none of these routes supply: an LBank **trading status** (open / suspended / delisted), the
 date a pair was listed, or a **sub-hourly** High with its time — so a forward-test event whose
 detection hour's High came before detection, and was not reached later, can stay `INCOMPLETE_DAY0`
@@ -116,6 +127,7 @@ agreement details, Binance main terms, CoinCap free tier.
 | Daily rows | ~1 per screen candidate per UTC day (ELIGIBLE coins since `vmc-tier1-2`, roughly 250–300), plus retries after `TIER1_DAILY_RETRY_HOURS` for coins whose latest day was not yet published |
 | Signal-day hourly Highs (forward test) | ~1 per coin and signal date whose daily High came before detection and was not reached later (a share of each day's new events), retried within `MISSING_DATA_RETRY_DAYS` only while no capture matches |
 | Venue rows | ≤ `TIER1_VENUE_MAX_ASSETS_PER_RUN` per run, each candidate at most every `TIER1_VENUE_REFRESH_HOURS` |
+| LBank Spot candles (not CMC: LBank's own API, its own budget) | ~1 per active pair per hour (≈ 225 / h at today's event volume), ≤ 6 for a new window, plus 2–3 list requests per job run with new events |
 | LBank Futures + Bithumb lists | ~4 per refresh (perpetual: 2 pages, futures: 1, Bithumb: 1), every `EXCHANGE_LISTS_REFRESH_HOURS` (24) plus `exchange-lists:refresh`; a failed attempt is retried after at most 6 h; skipped when the request reserve is reached |
 
 At 30 requests/minute, 1,000 daily-history requests take about 33 minutes, so the first run

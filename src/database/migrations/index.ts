@@ -12,6 +12,7 @@ import { M011ForwardCheckStatus1793923200011 } from './1793923200011-M011Forward
 import { M012ExchangeListings1793923200012 } from './1793923200012-M012ExchangeListings.js';
 import { M013ForwardDay0Hourly1793923200013 } from './1793923200013-M013ForwardDay0Hourly.js';
 import { M014StorageScope1793923200014 } from './1793923200014-M014StorageScope.js';
+import { M015LbankSpotObservation1793923200015 } from './1793923200015-M015LbankSpotObservation.js';
 
 /**
  * Every migration, in order, listed explicitly (no glob, so TypeScript tests and compiled ESM load
@@ -33,4 +34,5 @@ export const MIGRATIONS = [
   M012ExchangeListings1793923200012,
   M013ForwardDay0Hourly1793923200013,
   M014StorageScope1793923200014,
+  M015LbankSpotObservation1793923200015,
 ];

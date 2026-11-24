@@ -536,6 +536,11 @@ export class FixtureCmcMarket {
   }
 
   /** Listing observations for a slot (every coin; rank, tags, date added and USD quote). */
+  /** The synthetic USD price of a coin (constant over time); the synthetic LBank market follows it. */
+  referencePrice(cmcId: number): number {
+    return 1 + 10 * rand(`px:${cmcId}`);
+  }
+
   observations(slot: Date): RawObservation[] {
     const date = isoDate(slot);
     return this.all.map((s) => {
@@ -548,7 +553,7 @@ export class FixtureCmcMarket {
         cap === null
           ? Number(new D(s.baseVmc).times(50_000_000))
           : Number(new D(vmc).times(s.cap!));
-      const price = 1 + 10 * rand(`px:${s.cmcId}`);
+      const price = this.referencePrice(s.cmcId);
       const observedAt =
         s.quote === 'no_timestamp'
           ? null
@@ -599,7 +604,8 @@ export class FixtureCmcMarket {
           volumePercent: null,
           priceUsd: null,
           lastUpdated: new Date(at.getTime() - 60_000).toISOString(),
-          marketUrl: null,
+          // LBank's own symbol, as in the live CMC list (`…/trade/<base>_<quote>/`).
+          marketUrl: `https://www.lbank.com/en-US/trade/${base.toLowerCase()}_${p.quote.toLowerCase()}/`,
           tradingStatus: p.trading ? 'TRADING' : null,
           type: 'cex',
           flags: [],
@@ -633,7 +639,11 @@ export class FixtureCmcMarket {
       volumePercent: null,
       priceUsd: null,
       lastUpdated: new Date(at.getTime() - 60_000).toISOString(),
-      marketUrl: null,
+      // LBank's own contract symbol for perpetuals, as in the live CMC list (`…/futures/<base><quote>/`).
+      marketUrl:
+        exchange === LBANK && category === 'perpetual'
+          ? `https://www.lbank.com/futures/${s.symbol.toLowerCase()}${quote.toLowerCase()}/`
+          : null,
       tradingStatus: null,
       type: 'cex',
       flags: [],

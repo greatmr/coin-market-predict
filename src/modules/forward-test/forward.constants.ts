@@ -8,6 +8,8 @@
  * FORWARD_RULES_VERSION and update docs/forward-test.md. The value sets are PostgreSQL enum types
  * (migration M008): adding a value needs a migration as well.
  */
+import { TRIGGER_REASON } from '../star-events/star-event.rules.js';
+
 export const FORWARD_RULES_VERSION = 'star-forward-2';
 
 /** Nominal horizon: detected_at + 168 hours (owner decision, PDF p.2, p.6). */
@@ -132,23 +134,8 @@ export type EventResultFilter = (typeof EVENT_RESULT_FILTERS)[number];
 
 /** Reason codes (stable strings: they appear in the database, exports, the API and tests). */
 export const FORWARD_REASON = {
-  // trigger (PDF p.3, p.10)
-  queueNotPublished: 'QUEUE_NOT_PUBLISHED',
-  batchNotComplete: 'BATCH_NOT_COMPLETE',
-  batchNotCurrent: 'TRIGGER_BATCH_NOT_CURRENT',
-  notInQueue: 'NOT_IN_REVIEW_QUEUE',
-  notEligible: 'NOT_ELIGIBLE',
-  starsOutOfRange: 'STARS_OUT_OF_RANGE',
-  lbankNotVerified: 'LBANK_NOT_VERIFIED',
-  cmcIdMissing: 'CMC_ID_MISSING',
-  assetIdAmbiguous: 'ASSET_ID_AMBIGUOUS',
-  priceMissing: 'PRICE_MISSING',
-  priceNotFinite: 'PRICE_NOT_FINITE',
-  priceNotPositive: 'PRICE_NOT_POSITIVE',
-  quoteNotOk: 'QUOTE_NOT_OK',
-  quoteStale: 'QUOTE_STALE',
-  sourceTimeMissing: 'SOURCE_TIME_MISSING',
-  observedAtMissing: 'OBSERVED_AT_MISSING',
+  // trigger (PDF p.3, p.10): the shared star-event rule's codes (star-events/star-event.rules.ts)
+  ...TRIGGER_REASON,
   // Highs and coverage (PDF p.5–7, p.10)
   highMissing: 'HIGH_MISSING',
   highInvalid: 'HIGH_INVALID',

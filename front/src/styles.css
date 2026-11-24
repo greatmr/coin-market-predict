@@ -2319,6 +2319,27 @@ select option {
   background: var(--bg-2);
   color: var(--text);
 }
+/* Date fields in toolbars look like the selects beside them. */
+.select-field input[type='date'] {
+  background: var(--glass);
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  padding: 5px 10px;
+  min-height: 32px;
+  outline: none;
+  color-scheme: inherit;
+}
+.select-field input[type='date']:focus,
+.select-field select:focus {
+  border-color: var(--accent);
+}
+.select-field input[type='date']::-webkit-calendar-picker-indicator {
+  opacity: 0.6;
+  cursor: pointer;
+}
+.select-field input[type='date']::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}
 .inline-form {
   display: flex;
   gap: 10px;

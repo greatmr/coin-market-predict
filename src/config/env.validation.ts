@@ -125,6 +125,30 @@ const schema = z
     EXCHANGE_LISTS_REFRESH_HOURS: z.coerce.number().min(1).max(720).default(24),
     /** Beyond this age such a list verifies nothing: its listing shows Unknown, never No. */
     EXCHANGE_LISTS_MAX_AGE_HOURS: z.coerce.number().min(1).max(2160).default(72),
+
+    /**
+     * LBank Spot Price Observation (docs/lbank-spot-observation.md, ADR-0009): its own job and source.
+     * `auto` uses LBank's public API with a live data source and the synthetic fixture otherwise.
+     */
+    LBANK_OBSERVATION_ENABLED: bool.default(true),
+    LBANK_OBSERVATION_SOURCE: z.enum(['auto', 'api', 'fixture']).default('auto'),
+    /** The observation job's schedule (UTC); each pair is fetched at most every LBANK_SYNC_INTERVAL_MINUTES. */
+    LBANK_OBSERVATION_CRON: z.string().default('*/15 * * * *'),
+    LBANK_SYNC_INTERVAL_MINUTES: z.coerce.number().int().min(1).max(1440).default(60),
+    /** Time bound of one run's candle requests (the rest continue next run). */
+    LBANK_OBSERVATION_MAX_MINUTES: z.coerce.number().int().min(1).max(60).default(10),
+    /** Official public REST hosts (LBank "API Update" notice, 2023-08-07: api.lbkex.com). */
+    LBANK_API_BASE_URL: z.string().url().default('https://api.lbkex.com'),
+    LBANK_FUTURES_API_BASE_URL: z.string().url().default('https://lbkperp.lbank.com'),
+    /** Our own pace (LBank allows 200 requests / 10 s on public endpoints). */
+    LBANK_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(1000).default(60),
+    LBANK_MONTHLY_REQUEST_BUDGET: z.coerce.number().int().min(100).default(400_000),
+    /**
+     * Shared 1-minute candles older than this many days are deleted once no unfinished observation
+     * of their pair needs them (finalized results keep their values and the series' SHA-256; LBank
+     * serves years of 1-minute history). 0 keeps every candle (~35 MB a day at ~225 active pairs).
+     */
+    LBANK_CANDLE_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).default(7),
     /** CMC Markets venue rows are refreshed at most this often per review candidate. */
     TIER1_VENUE_REFRESH_HOURS: z.coerce.number().min(1).max(168).default(24),
     TIER1_VENUE_MAX_ASSETS_PER_RUN: z.coerce.number().int().min(0).max(2000).default(60),

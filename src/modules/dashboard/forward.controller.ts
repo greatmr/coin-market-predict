@@ -7,6 +7,7 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { RequirePermission } from '../auth/auth.guard.js';
 import { ForwardExportService } from '../forward-test/forward-export.service.js';
 import { ForwardReadService } from '../forward-test/forward-read.service.js';
+import { ForwardRetirementService } from '../forward-test/forward-retirement.service.js';
 import { PipelineService } from '../pipeline/pipeline.service.js';
 
 import { UuidSchema } from './dto/common.dto.js';
@@ -29,7 +30,44 @@ export class ForwardController {
     private readonly read: ForwardReadService,
     private readonly exporter: ForwardExportService,
     private readonly pipeline: PipelineService,
+    private readonly retirement: ForwardRetirementService,
   ) {}
+
+  /**
+   * The legacy tracker's state after the cutover (docs/forward-test.md § 15): active, closing (the
+   * cutover passed, pre-cutover events still finishing) or retired, with each terminal outcome's
+   * count and reasons. The dashboard hides the page from navigation once retired.
+   */
+  @Get('legacy')
+  legacy() {
+    return this.retirement.evaluate(this.read.providerId, new Date(), { write: false });
+  }
+
+  /** Administrative export of every legacy event's terminal closure (CSV). */
+  @RequirePermission('exports:read')
+  @Get('legacy/closures.csv')
+  async legacyClosures(@Res() res: Response) {
+    const rows = await this.retirement.closuresFor(this.read.providerId);
+    const lines = [
+      'event_id,closure,status_at_closure,outcome_version,peak_kind,peak_return_pct,reasons,closed_at_utc,rules_version',
+      ...rows.map((r) =>
+        [
+          r.eventId,
+          r.closure,
+          r.statusAtClosure,
+          r.outcomeVersion,
+          r.peakKind ?? '',
+          r.peakReturnPct?.toFixed() ?? '',
+          `"${r.reasons.join(' ').replace(/"/g, '""')}"`,
+          r.closedAt.toISOString(),
+          r.rulesVersion,
+        ].join(','),
+      ),
+    ];
+    res.setHeader('content-type', 'text/csv; charset=utf-8');
+    res.setHeader('content-disposition', 'attachment; filename="forward-test_legacy-closures.csv"');
+    res.send(`${lines.join('\n')}\n`);
+  }
 
   @Get()
   summary() {

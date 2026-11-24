@@ -70,7 +70,7 @@ const REVIEWED = `((r.batch_id, r.cmc_id) IN (
  * The snapshots that must stay, as sets built once per statement and joined by hash ($1 is the
  * provider id; `slots` narrows the hours read, a condition on `b.slot_time`):
  *  - `kept`: inputs of scan rows that stay stored (Review Queue rows, or rows a human record names);
- *  - `fwd`: the forward test's immutable detection snapshots (deleting one would fail anyway);
+ *  - `fwd`: the detection snapshots of forward-test and LBank observation events (provenance);
  *  - `bench`: the BTC/ETH benchmarks the coin agent reads.
  * Per-row correlated subqueries here took minutes on 2.5 M rows; these joins take seconds.
  */
@@ -80,7 +80,8 @@ const keepSets = (slots = 'TRUE') => `
       FROM scan_result r JOIN crawl_batch b ON b.id = r.batch_id
      WHERE b.provider_id = $1 AND ${slots} AND (r.in_queue OR ${REVIEWED})),
   fwd AS MATERIALIZED (
-    SELECT DISTINCT e.snapshot_id AS id FROM forward_event e WHERE e.snapshot_id IS NOT NULL),
+    SELECT e.snapshot_id AS id FROM forward_event e WHERE e.snapshot_id IS NOT NULL
+    UNION SELECT o.snapshot_id FROM lbank_obs_event o WHERE o.snapshot_id IS NOT NULL),
   bench AS MATERIALIZED (SELECT a.id FROM asset a WHERE a.is_benchmark)`;
 const NOT_FORWARD = `NOT EXISTS (SELECT 1 FROM fwd WHERE fwd.id = s.id)`;
 const NOT_BENCHMARK = `NOT EXISTS (SELECT 1 FROM bench WHERE bench.id = s.asset_id)`;
@@ -125,7 +126,8 @@ export class RetentionService {
       const cutoff = addHours(now, -24 * this.cfg.RETENTION_SNAPSHOT_DAYS);
       const [, deleted] = (await this.db.query(
         `DELETE FROM market_snapshot s WHERE s.provider_id = $1 AND s.slot_time < $2
-           AND NOT EXISTS (SELECT 1 FROM forward_event e WHERE e.snapshot_id = s.id)`,
+           AND NOT EXISTS (SELECT 1 FROM forward_event e WHERE e.snapshot_id = s.id)
+           AND NOT EXISTS (SELECT 1 FROM lbank_obs_event o WHERE o.snapshot_id = s.id)`,
         [providerId, cutoff],
       )) as [unknown, number];
       report.deletedSnapshots = deleted;

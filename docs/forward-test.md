@@ -7,6 +7,11 @@ Page references are written `(p.N)`. It is an add-on to the
 VMC or star rule changed, so `RULESET_VERSION` is unchanged. Module boundary:
 [ADR-0004](adr/0004-forward-test-module.md).
 
+> **Legacy since the cutover (2026-11-24 change, [ADR-0009](adr/0009-lbank-spot-observation.md)).**
+> Events detected at or after the persisted cutover go to the
+> [LBank Spot Price Observation](lbank-spot-observation.md) instead; this tracker finishes its own
+> pre-cutover events under the rules below and then retires (§ 15).
+
 > A descriptive measurement for research. The result is the **highest future High observed
 > after a star detection, against the CMC price at detection**: not an executable trade, not a
 > close-to-close return, not realized P/L (no fees, spread or slippage). Nothing here places
@@ -456,3 +461,26 @@ columns; older code ignores them. Do not run `db:revert` on real data.
 | U3  | No LBank reference price or LBank High is captured                                                                                                                                                                                                                                                                                                                                                                          | The metric is CMC-only by design (p.5)                                                                                                                                                    | A separately captured LBank reference with its own label                 |
 | U4  | The existing listing parser carries the price as a JavaScript number before storage                                                                                                                                                                                                                                                                                                                                         | CMC publishes it as a JSON number, so its shortest representation is stored; source text beyond that is not kept                                                                          | Keep the exact listing text in the crawler (not needed for this metric)  |
 | U5  | CMC publishes a closed day some time after 00:00 UTC                                                                                                                                                                                                                                                                                                                                                                        | `AWAITING_FINAL_DAY` until it arrives; retried automatically                                                                                                                              | —                                                                        |
+
+## 15. Legacy wind-down after the cutover
+
+The trigger rule (§ 3–4) now lives in `modules/star-events/` and is shared with the LBank Spot
+Price Observation; this tracker takes only sightings detected **before** the persisted cutover
+(`signal_cutover`; a database trigger refuses any later `forward_event`). Its daily High update keeps
+running for the pre-cutover events. Each of them gets an explicit terminal outcome
+(`forward_legacy_closure`, rules `legacy-closure-1`):
+
+| Closure            | When                                                                                                                                                                 |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FINAL`            | the event's status is FINAL                                                                                                                                          |
+| `INCOMPLETE`       | the window closed and the missing-data retries (`MISSING_DATA_RETRY_DAYS` after `evaluation_end`) are over, with a confirmed lower-bound peak — never a final result |
+| `DATA_UNAVAILABLE` | the retries are over and no confirmed High exists, or the last check failed                                                                                          |
+
+Reasons are kept with each closure (`STATUS:<status>`, `HIGH_MISSING:<date>`, `HIGH_INVALID:<date>`,
+the outcome's reasons, `LAST_CHECK:RETRIEVAL_ERROR`). When the cutover has passed and every legacy
+event is terminal, the daily update writes the retirement report (events, counts per closure, reason
+codes) to `app_state` and logs it; from then on the daily High update is skipped (hourly, CLI and
+_Update Highs now_), and the dashboard hides this page from navigation (it stays at `/forward`, and
+its exports and `GET /api/forward/legacy/closures.csv` stay available). Nothing is deleted or
+rewritten. `npm run cli -- forward:legacy` shows the state, the pending count and the latest time the
+last event becomes terminal.

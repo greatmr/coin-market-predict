@@ -8,6 +8,7 @@ import { DailyMetric } from '../modules/daily-metrics/entities/daily-metric.enti
 import { ForwardDay0Capture } from '../modules/forward-test/entities/forward-day0-capture.entity.js';
 import { ForwardEvent } from '../modules/forward-test/entities/forward-event.entity.js';
 import { ForwardHigh } from '../modules/forward-test/entities/forward-high.entity.js';
+import { ForwardLegacyClosure } from '../modules/forward-test/entities/forward-legacy-closure.entity.js';
 import { ForwardOutcome } from '../modules/forward-test/entities/forward-outcome.entity.js';
 import { ForwardTestWatchlist } from '../modules/forward-test/entities/forward-test-watchlist.entity.js';
 import { ForwardTriggerRejection } from '../modules/forward-test/entities/forward-trigger-rejection.entity.js';
@@ -21,6 +22,14 @@ import { CmcAsset } from '../modules/ingestion/entities/cmc-asset.entity.js';
 import { CrawlBatch } from '../modules/ingestion/entities/crawl-batch.entity.js';
 import { DiscoveryRun } from '../modules/ingestion/entities/discovery-run.entity.js';
 import { MarketSnapshot } from '../modules/ingestion/entities/market-snapshot.entity.js';
+import { MarketListFetch } from '../modules/lbank-observation/entities/market-list-fetch.entity.js';
+import { ObsEvent } from '../modules/lbank-observation/entities/obs-event.entity.js';
+import { ObsIntakeRun } from '../modules/lbank-observation/entities/obs-intake-run.entity.js';
+import { ObsRun } from '../modules/lbank-observation/entities/obs-run.entity.js';
+import { ObservationResult } from '../modules/lbank-observation/entities/observation-result.entity.js';
+import { Observation } from '../modules/lbank-observation/entities/observation.entity.js';
+import { SpotCandle } from '../modules/lbank-observation/entities/spot-candle.entity.js';
+import { SpotPair } from '../modules/lbank-observation/entities/spot-pair.entity.js';
 import { JobLease } from '../modules/pipeline/entities/job-lease.entity.js';
 import { PipelineRun } from '../modules/pipeline/entities/pipeline-run.entity.js';
 import { PipelineStage } from '../modules/pipeline/entities/pipeline-stage.entity.js';
@@ -29,6 +38,7 @@ import { ScanResult } from '../modules/scan/entities/scan-result.entity.js';
 import { ScanRun } from '../modules/scan/entities/scan-run.entity.js';
 import { Provider } from '../modules/sources/entities/provider.entity.js';
 import { SourceHealth } from '../modules/sources/entities/source-health.entity.js';
+import { SignalCutover } from '../modules/star-events/entities/signal-cutover.entity.js';
 import { TelegramDelivery } from '../modules/telegram/entities/telegram-delivery.entity.js';
 import { VenueCrawl } from '../modules/venues/entities/venue-crawl.entity.js';
 import { VenueDecision } from '../modules/venues/entities/venue-decision.entity.js';
@@ -82,6 +92,17 @@ export const ENTITIES = [
   ForwardDay0Capture,
   ForwardHigh,
   ForwardOutcome,
+  ForwardLegacyClosure,
+  // Cutover between the trackers and the LBank Spot Price Observation (ADR-0009)
+  SignalCutover,
+  ObsIntakeRun,
+  ObsEvent,
+  SpotPair,
+  SpotCandle,
+  MarketListFetch,
+  Observation,
+  ObservationResult,
+  ObsRun,
   // Claude coin agent (docs/adr/0005-coin-agent.md)
   AgentAnalysis,
 ];

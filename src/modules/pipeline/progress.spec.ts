@@ -24,8 +24,9 @@ describe('pipeline run progress', () => {
     });
     expect(p.stagesDone).toBe(3);
     expect(p.stagesTotal).toBe(STAGES.length);
-    expect(STAGES).toHaveLength(9);
-    expect(p.percent).toBe(Math.floor(((3 + 0.25) / 9) * 100));
+    // … notify, forward (legacy forward test), observe (LBank observation intake).
+    expect(STAGES).toHaveLength(10);
+    expect(p.percent).toBe(Math.floor(((3 + 0.25) / 10) * 100));
     // 120 s for 60 coins → 2 s per coin → 180 coins left ≈ 360 s.
     expect(p.current).toEqual({
       stage: 'daily',

@@ -1,73 +1,27 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { type DataSource, type EntityManager, In } from 'typeorm';
+import type { DataSource, EntityManager } from 'typeorm';
 
-import { type DValue, dec, forStorage } from '../../common/utils/decimal.js';
-import { plain } from '../../common/utils/plain.js';
+import { type DValue, forStorage } from '../../common/utils/decimal.js';
 
-import { CmcAsset } from '../ingestion/entities/cmc-asset.entity.js';
-import { CrawlBatch } from '../ingestion/entities/crawl-batch.entity.js';
-import { MarketSnapshot } from '../ingestion/entities/market-snapshot.entity.js';
-import { ScanResult } from '../scan/entities/scan-result.entity.js';
-import { ScanRun } from '../scan/entities/scan-run.entity.js';
+import { CutoverService } from '../star-events/cutover.service.js';
 import {
-  type BatchStatus,
-  type PassStatus,
-  type QueueStatus,
-  type ResolvedPair,
-  StrategyService,
-} from '../strategy/index.js';
+  type PublishedQueue,
+  PublishedQueueService,
+  type TriggerBatch,
+  type TriggerRow,
+} from '../star-events/published-queue.service.js';
+import { type QueueStatus, StrategyService } from '../strategy/index.js';
 
 import { ForwardEvent } from './entities/forward-event.entity.js';
 import { ForwardTestWatchlist } from './entities/forward-test-watchlist.entity.js';
 import { ForwardTriggerRejection } from './entities/forward-trigger-rejection.entity.js';
 import { ForwardTriggerRun } from './entities/forward-trigger-run.entity.js';
-import { type TriggerCandidate, eventWindow, validateTrigger } from './forward-rules.js';
+import { eventWindow, validateTrigger } from './forward-rules.js';
 import { FORWARD_RULES_VERSION } from './forward.constants.js';
 
-/** A published Review Queue row with the fields an event keeps (adapter: docs/forward-test.md § 3). */
-export interface TriggerRow extends TriggerCandidate {
-  symbol: string;
-  name: string;
-  slug: string | null;
-  rank: number | null;
-  snapshotId: number | null;
-  platformChain: string | null;
-  platformAddress: string | null;
-  capUsd: DValue | null;
-  volume24hUsd: DValue | null;
-  currentVmc: DValue | null;
-  vmc3dAvg: DValue | null;
-  vmc7dAvg: DValue | null;
-  vmc14dAvg: DValue | null;
-  vmc30dAvg: DValue | null;
-  multiple3d: DValue | null;
-  multiple7d: DValue | null;
-  multiple30d: DValue | null;
-  pass3d: PassStatus;
-  pass7d: PassStatus;
-  pass30d: PassStatus;
-  queueOrder: number | null;
-  /** Ranking fields of the published row, snapshotted as they were (weighted star ranking § 5). */
-  weightedPassPoints: number | null;
-  scoreComplete: boolean | null;
-  weightedStrength: DValue | null;
-  rankingRulesetVersion: string | null;
-  lbankPairs: ResolvedPair[];
-  rulesetVersion: string;
-  configVersion: string;
-  inputsHash: string;
-  /** Every scanner field of the row as published. */
-  scanSnapshot: Record<string, unknown>;
-}
-
-export interface TriggerBatch {
-  id: string;
-  providerId: string;
-  slotTime: Date;
-  status: BatchStatus;
-  isLive: boolean;
-}
+// The queue adapter is shared with the LBank Spot Price Observation (star-events); re-exported here.
+export type { TriggerBatch, TriggerRow } from '../star-events/published-queue.service.js';
 
 export interface CaptureReport {
   batchId: string;
@@ -77,6 +31,12 @@ export interface CaptureReport {
   created: Array<{ eventId: string; cmcId: number; stars: number }>;
   ignored: Array<{ cmcId: number; stars: number; eventId: string | null }>;
   rejected: Array<{ cmcId: number | null; stars: number; reasons: string[] }>;
+}
+
+/** Why the legacy trigger took nothing from a batch: it belongs to the LBank observation. */
+export interface CaptureSkipped {
+  batchId: string;
+  skipped: string;
 }
 
 const text = (v: DValue | null) => (v === null ? null : v.toFixed());
@@ -96,118 +56,33 @@ export class ForwardCaptureService {
   constructor(
     @InjectDataSource() private readonly db: DataSource,
     private readonly strategy: StrategyService,
+    private readonly queue: PublishedQueueService,
+    private readonly cutover: CutoverService,
   ) {}
 
   /** The published Review Queue of a scanned batch, mapped to trigger rows. */
-  async queueRows(batchId: string): Promise<{
-    batch: TriggerBatch;
-    queueStatus: QueueStatus | null;
-    rows: TriggerRow[];
-  }> {
-    const b = await this.db.getRepository(CrawlBatch).findOneByOrFail({ id: batchId });
-    const run = await this.db.getRepository(ScanRun).findOneBy({ batchId });
-    const results =
-      run?.status === 'succeeded'
-        ? await this.db
-            .getRepository(ScanResult)
-            .find({ where: { batchId, inQueue: true }, order: { queueOrder: 'ASC', cmcId: 'ASC' } })
-        : [];
-    const ids = [...new Set(results.map((r) => r.cmcId))];
-    const assets = new Map(
-      ids.length
-        ? (
-            await this.db
-              .getRepository(CmcAsset)
-              .findBy({ providerId: b.providerId, cmcId: In(ids) })
-          ).map((a) => [a.cmcId, a])
-        : [],
-    );
-    const snaps = new Map<string, number[]>();
-    if (ids.length)
-      for (const s of await this.db.getRepository(MarketSnapshot).find({
-        where: {
-          providerId: b.providerId,
-          slotTime: b.slotTime,
-          providerAssetId: In(ids.map(String)),
-        },
-        select: { id: true, providerAssetId: true },
-      }))
-        snaps.set(s.providerAssetId, [...(snaps.get(s.providerAssetId) ?? []), s.id]);
-    const rowsPerId = new Map<number, number>();
-    for (const r of results) rowsPerId.set(r.cmcId, (rowsPerId.get(r.cmcId) ?? 0) + 1);
-    const rows: TriggerRow[] = results.map((r) => {
-      const asset = assets.get(r.cmcId);
-      const snapIds = snaps.get(String(r.cmcId)) ?? [];
-      return {
-        cmcId: r.cmcId,
-        stars: r.stars,
-        inQueue: r.inQueue,
-        eligibilityStatus: r.eligibilityStatus,
-        lbankStatus: r.lbankStatus,
-        price: dec(r.priceUsd),
-        currentStatus: r.currentStatus,
-        sourceUpdatedAt: r.observedAt,
-        observedAt: r.crawledAt,
-        identityUnique: !!asset && snapIds.length === 1 && rowsPerId.get(r.cmcId) === 1,
-        symbol: r.symbol,
-        name: r.name,
-        slug: r.slug ?? asset?.slug ?? null,
-        rank: r.rank,
-        snapshotId: snapIds.length === 1 ? snapIds[0]! : null,
-        platformChain: asset?.platformChain ?? null,
-        platformAddress: asset?.platformAddress ?? null,
-        capUsd: dec(r.capUsd),
-        volume24hUsd: dec(r.volume24hUsd),
-        currentVmc: dec(r.currentVmc),
-        vmc3dAvg: dec(r.vmc3dAvg),
-        vmc7dAvg: dec(r.vmc7dAvg),
-        vmc14dAvg: dec(r.vmc14dAvg),
-        vmc30dAvg: dec(r.vmc30dAvg),
-        multiple3d: dec(r.multiple3d),
-        multiple7d: dec(r.multiple7d),
-        multiple30d: dec(r.multiple30d),
-        pass3d: r.pass3d,
-        pass7d: r.pass7d,
-        pass30d: r.pass30d,
-        queueOrder: r.queueOrder,
-        weightedPassPoints: r.weightedPassPoints,
-        scoreComplete: r.scoreComplete,
-        weightedStrength: dec(r.weightedStrength),
-        rankingRulesetVersion: r.rankingRulesetVersion,
-        lbankPairs: r.lbankPairs,
-        rulesetVersion: r.rulesetVersion,
-        configVersion: r.configVersion,
-        inputsHash: r.inputsHash,
-        // Decimals as exact text (plain() would turn them into floats).
-        scanSnapshot: plain<Record<string, unknown>>(
-          Object.fromEntries(
-            Object.entries(r).map(([k, v]) => [
-              k,
-              v && typeof v === 'object' && 'toFixed' in v ? (v as DValue).toFixed() : v,
-            ]),
-          ),
-        ),
-      };
-    });
-    return {
-      batch: {
-        id: b.id,
-        providerId: b.providerId,
-        slotTime: b.slotTime,
-        status: b.status,
-        isLive: b.isLive,
-      },
-      queueStatus: run?.queueStatus ?? null,
-      rows,
-    };
+  queueRows(batchId: string): Promise<PublishedQueue> {
+    return this.queue.queueRows(batchId);
   }
 
   /** The hourly trigger: read the batch's published queue and register its events. */
   async captureBatch(
     batchId: string,
     opts: { now: Date; pipelineRunId?: string | null },
-  ): Promise<CaptureReport> {
+  ): Promise<CaptureReport | CaptureSkipped> {
     const q = await this.queueRows(batchId);
+    // Legacy intake is closed for batches detected at or after the cutover (they belong to the
+    // LBank observation); the database trigger on forward_event refuses them as well.
+    const detectedAt = q.batch.crawledAt ?? q.rows.find((r) => r.observedAt)?.observedAt ?? null;
+    if (
+      detectedAt &&
+      (await this.cutover.route(q.batch.providerId, detectedAt)) === 'LBANK_OBSERVATION'
+    ) {
+      this.log.log(
+        `forward trigger ${q.batch.slotTime.toISOString()}: after the cutover, left to the LBank observation`,
+      );
+      return { batchId, skipped: 'after the cutover: the batch belongs to the LBank observation' };
+    }
     return this.capture(q.batch, q.queueStatus, q.rows, opts);
   }
 

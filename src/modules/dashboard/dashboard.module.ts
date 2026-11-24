@@ -5,6 +5,7 @@ import { AgentModule } from '../agent/agent.module.js';
 import { AuthGuard } from '../auth/auth.guard.js';
 import { AuthModule, OwnerBootstrap } from '../auth/auth.module.js';
 import { ForwardTestModule } from '../forward-test/forward-test.module.js';
+import { LbankObservationModule } from '../lbank-observation/lbank-observation.module.js';
 import { PipelineModule } from '../pipeline/pipeline.module.js';
 import { ReadModelModule } from '../read-model/read-model.module.js';
 import { ReviewsModule } from '../reviews/reviews.module.js';
@@ -18,6 +19,7 @@ import { AuthController } from './auth.controller.js';
 import { DashboardController } from './dashboard.controller.js';
 import { ForwardController } from './forward.controller.js';
 import { LbankController } from './lbank.controller.js';
+import { ObservationController } from './observation.controller.js';
 import { PipelineController } from './pipeline.controller.js';
 import { ReviewsController } from './reviews.controller.js';
 import { ScanController } from './scan.controller.js';
@@ -40,6 +42,7 @@ import { UsersController } from './users.controller.js';
     TelegramModule,
     AuthModule,
     ForwardTestModule,
+    LbankObservationModule,
     AgentModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: AuthGuard }, OwnerBootstrap],
@@ -54,6 +57,7 @@ import { UsersController } from './users.controller.js';
     PipelineController,
     TelegramAccessController,
     ForwardController,
+    ObservationController,
     AgentController,
   ],
 })

@@ -12,6 +12,7 @@ import { SessionProvider } from './state/session';
 const Overview = lazy(() => import('./features/overview/Overview'));
 const Sheet = lazy(() => import('./features/sheets/Sheet'));
 const Forward = lazy(() => import('./features/forward/Forward'));
+const Observation = lazy(() => import('./features/observation/Observation'));
 const Data = lazy(() => import('./features/data/Data'));
 const Batches = lazy(() => import('./features/health/Batches'));
 const Access = lazy(() => import('./features/telegram/Access'));
@@ -48,6 +49,7 @@ const page = (node: ReactNode) => (
 const ELEMENTS: Record<SectionKey, ReactNode> = {
   overview: <Overview />,
   queue: <Sheet />,
+  observation: <Observation />,
   forward: <Forward />,
   data: <Data />,
   batches: <Batches />,

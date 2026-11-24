@@ -307,6 +307,24 @@ the UTC day containing detection + 168 h. Rules, statuses, fields and gaps:
 - Reprocessing a batch, _Reprocess latest batch_ and the LBank refresh never create events, and
   signals from before deployment are not backfilled.
 
+## 5b. LBank Spot Price Observation
+
+Since the cutover, new CMC star events are observed on LBank Spot instead of the legacy forward test:
+the entry is the OPEN of the first LBank Spot 1-minute bar at or after the signal, and the page
+shows the highest High and lowest Low over exactly 168 h, with Spot / Futures eligibility at the
+signal. Rules, evidence and statuses: [lbank-spot-observation.md](lbank-spot-observation.md).
+
+- **Cutover** (once): `npm run cli -- observation:cutover --at <YYYY-MM-DD>T00:00:00Z` — a UTC
+  midnight at least 2 h ahead. Check it with `observation:cutover`; it cannot change once passed.
+  Runbook with backup, checks and rollback: [lbank-spot-observation.md § 10](lbank-spot-observation.md#10-cutover-runbook-plan-c).
+- **Daily check**: `observation:status` (and `observation:check` after each day: routing ok, no batch
+  without intake, no event in both trackers); the _LBank Spot observation_ page; `forward:legacy` for
+  the legacy events still finishing. The legacy page disappears from the navigation by itself once
+  every legacy event has a terminal outcome; its data and exports stay.
+- **Settings**: `LBANK_OBSERVATION_CRON` (15 min), `LBANK_SYNC_INTERVAL_MINUTES` (60),
+  `LBANK_CANDLE_RETENTION_DAYS` (7), `LBANK_API_BASE_URL` (`https://api.lbkex.com`),
+  `LBANK_OBSERVATION_ENABLED` (pause the job; events are still recorded).
+
 ## 6. Command reference
 
 | Command                                          | Purpose                                                                                |

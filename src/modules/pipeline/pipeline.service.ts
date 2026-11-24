@@ -15,12 +15,14 @@ import {
   type DailyRefreshReport,
 } from '../daily-metrics/daily-metrics.service.js';
 import { type ExportResult, ExportService } from '../exports/export.service.js';
+import { ForwardRetirementService } from '../forward-test/forward-retirement.service.js';
 import {
   type ForwardStageReport,
   ForwardTestService,
 } from '../forward-test/forward-test.service.js';
 import { CrawlBatch } from '../ingestion/entities/crawl-batch.entity.js';
 import { type CoverageReport, IngestionService } from '../ingestion/ingestion.service.js';
+import { ObservationIntakeService } from '../lbank-observation/observation-intake.service.js';
 import { type ScanOutcome, ScanService } from '../scan/scan.service.js';
 import { SourceUnavailableError } from '../sources/http/polite-client.js';
 import { SourceHealthService } from '../sources/source-health.service.js';
@@ -112,6 +114,8 @@ export class PipelineService {
     private readonly retention: RetentionService,
     private readonly health: SourceHealthService,
     private readonly forward: ForwardTestService,
+    private readonly retirement: ForwardRetirementService,
+    private readonly observationIntake: ObservationIntakeService,
   ) {}
 
   get providerId() {
@@ -393,6 +397,8 @@ export class PipelineService {
    * lease. Idempotent: it never creates an event and never duplicates a High or an outcome.
    */
   async runForwardUpdate(): Promise<Omit<ForwardStageReport, 'capture'> | { skipped: string }> {
+    if (await this.retirement.isRetired(this.providerId))
+      return { skipped: 'the legacy forward test is retired (docs/forward-test.md § 15)' };
     return this.exclusive(() =>
       this.forward.update(this.providerId, { now: this.clock.now(), trigger: 'manual' }),
     );
@@ -406,6 +412,11 @@ export class PipelineService {
   async startForwardUpdate(): Promise<
     { started: true; updateRunId: string; done: Promise<void> } | { started: false; reason: string }
   > {
+    if (await this.retirement.isRetired(this.providerId))
+      return {
+        started: false,
+        reason: 'the legacy forward test is retired: its Highs are no longer updated',
+      };
     const lease = await this.takeLease();
     if ('skipped' in lease) return { started: false, reason: lease.skipped };
     let created!: (id: string) => void;
@@ -778,13 +789,44 @@ export class PipelineService {
         this.log.warn(`forward test failed: ${redact(err)}`);
         return null;
       });
-      if (forward)
+      if (forward) {
+        const c = forward.capture && 'created' in forward.capture ? forward.capture : null;
         metrics.forward = {
-          created: forward.capture?.created.length ?? 0,
-          ignored: forward.capture?.ignored.length ?? 0,
-          rejected: forward.capture?.rejected.length ?? 0,
+          created: c?.created.length ?? 0,
+          ignored: c?.ignored.length ?? 0,
+          rejected: c?.rejected.length ?? 0,
+          ...(forward.capture && 'skipped' in forward.capture
+            ? { capture: forward.capture.skipped }
+            : {}),
           update: 'skipped' in forward.update ? forward.update.skipped : forward.update.status,
         };
+      }
+
+      // LBank Spot Price Observation intake (ADR-0009): batches detected at or after the cutover
+      // open their events here (the legacy trigger above leaves them alone). Never fails the run;
+      // the LBank candles are collected by the observation's own job.
+      const observe = await stage(
+        'observe',
+        () =>
+          this.observationIntake.intakeBatch(batchId!, {
+            now: this.clock.now(),
+            pipelineRunId: runId,
+          }),
+        { skipIfDone: false },
+      ).catch((err) => {
+        degraded.push('LBank observation intake failed');
+        this.log.warn(`LBank observation intake failed: ${redact(err)}`);
+        return null;
+      });
+      if (observe)
+        metrics.observe =
+          'skipped' in observe
+            ? { skipped: observe.skipped }
+            : {
+                created: observe.created.length,
+                ignored: observe.ignored.length,
+                rejected: observe.rejected.length,
+              };
 
       // Storage policy runs after delivery; a retention problem never invalidates the run.
       metrics.retention = await this.retention

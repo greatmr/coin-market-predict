@@ -8,7 +8,15 @@ import { useSearchParams } from 'react-router';
 import type { Permission } from '../types/api';
 
 export type SectionKey =
-  'overview' | 'queue' | 'forward' | 'data' | 'batches' | 'access' | 'users' | 'account';
+  | 'overview'
+  | 'queue'
+  | 'observation'
+  | 'forward'
+  | 'data'
+  | 'batches'
+  | 'access'
+  | 'users'
+  | 'account';
 
 export interface Section {
   key: SectionKey;
@@ -56,11 +64,20 @@ export const SECTIONS: readonly Section[] = [
   {
     key: 'forward',
     group: 'screen',
-    primary: true,
     path: '/forward',
     label: 'Forward test',
     title: 'Forward test',
-    sub: 'The first priced 1, 2 and 3-star detection per coin, UTC day and star count, followed to the end of the UTC day containing detection + 168 h. The return is the highest later High against the detection price: not a trade, not realized profit.',
+    sub: 'Legacy tracker: events detected before the cutover, followed to the end of the UTC day containing detection + 168 h on CMC daily Highs. It takes no new events; it is hidden from navigation once every event has a terminal outcome.',
+    counted: true,
+  },
+  {
+    key: 'observation',
+    group: 'screen',
+    primary: true,
+    path: '/lbank-spot',
+    label: 'LBank Spot',
+    title: 'LBank Spot price observation',
+    sub: 'Each CMC 1, 2 and 3-star event since the cutover, observed on LBank Spot 1-minute candles for exactly 168 hours: the entry reference, the highest High and the lowest Low. Two independent price extremes, not a trade, not profit, not a stop.',
     counted: true,
   },
   {

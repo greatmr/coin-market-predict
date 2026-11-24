@@ -57,7 +57,8 @@ export const STAGES: readonly (readonly [string, string])[] = [
   ['venues', 'Venues'],
   ['export', 'Export'],
   ['notify', 'Notify'],
-  ['forward', 'Forward test'],
+  ['forward', 'Forward test (legacy)'],
+  ['observe', 'LBank intake'],
 ];
 
 const REASON_TEXT: Record<string, string> = {

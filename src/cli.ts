@@ -26,11 +26,19 @@ import {
   ForwardReadService,
   listStatusJson,
 } from './modules/forward-test/forward-read.service.js';
+import { ForwardRetirementService } from './modules/forward-test/forward-retirement.service.js';
 import { IngestionService } from './modules/ingestion/ingestion.service.js';
+import {
+  LBANK_MARKET_SOURCE,
+  type LbankMarketSource,
+} from './modules/lbank-observation/lbank-market.source.js';
+import { ObservationReadService } from './modules/lbank-observation/observation-read.service.js';
+import { ObservationService } from './modules/lbank-observation/observation.service.js';
 import { PipelineService } from './modules/pipeline/pipeline.service.js';
 import { ReadModelService } from './modules/read-model/read-model.service.js';
 import { isCmcIdProvider } from './modules/sources/cmc-id-providers.js';
 import { SourceHealthService } from './modules/sources/source-health.service.js';
+import { CutoverError, CutoverService } from './modules/star-events/cutover.service.js';
 import { formatTier1Report } from './modules/telegram/format.js';
 import { ReportService } from './modules/telegram/report.service.js';
 import { TelegramService } from './modules/telegram/telegram.service.js';
@@ -72,6 +80,24 @@ const HELP = `Coins Predicts CLI — Two-Tier VMC strategy (docs/strategy-two-ti
                                Events with their latest outcome (provisional or final)
   forward:update               Run the daily High update now (under the pipeline lease), then export
   forward:export               Write the event export and star-group report (CSV + manifest)
+
+  forward:legacy [--json]      The legacy tracker after the cutover: pending events, terminal outcomes
+                               (FINAL / INCOMPLETE / DATA_UNAVAILABLE) with reasons, retirement
+
+  LBank Spot Price Observation (docs/lbank-spot-observation.md; its own job, every LBANK_OBSERVATION_CRON)
+  observation:cutover [--at ISO] [--note TEXT]
+                               Show the cutover, or set it: a future UTC midnight (00:00:00.000Z) after
+                               every stored batch. From then on new star events go to the LBank
+                               observation only; the legacy forward test takes none
+  observation:status [--json]  Cutover, last run, final-only statistics, routing check
+  observation:update           Run the observation job now (evidence, LBank candles, results)
+  observation:probe [--symbol btc_usdt]
+                               Read-only check that this host reaches LBank: one 1-minute kline page
+                               (closed bars, server time) and the Spot pair and Futures contract lists
+  observation:list [--status S] [--json]
+                               Observations, newest signal first
+  observation:check            Routing check: every post-cutover queue row accounted for, no event in
+                               both trackers, none without its observation (exit 1 when not ok)
 
   Storage (docs/operator-guide.md § Storage cleanup; take a backup before --apply)
   storage:prune [--apply] [--vacuum]
@@ -406,6 +432,113 @@ async function main() {
         );
         break;
       }
+      case 'forward:legacy': {
+        const s = await ctx.get(ForwardRetirementService).evaluate(cfg.DATA_SOURCE, new Date(), {
+          write: false,
+        });
+        out(
+          process.argv.includes('--json')
+            ? s
+            : [
+                `legacy forward test: ${s.state} (${s.why})`,
+                `cutover: ${s.cutoverAt ?? 'not set'}${s.cutoverPassed ? ' (passed)' : ''}`,
+                `events ${s.events}: ${s.terminal} terminal, ${s.pending} pending${s.pendingUntil ? ` (terminal by ${s.pendingUntil} at the latest)` : ''}`,
+                `terminal outcomes: FINAL ${s.closures.FINAL}, INCOMPLETE ${s.closures.INCOMPLETE}, DATA_UNAVAILABLE ${s.closures.DATA_UNAVAILABLE}`,
+                `reasons (INCOMPLETE / DATA_UNAVAILABLE): ${JSON.stringify(s.reasons)}`,
+                s.retirement ? `retired ${s.retirement.retiredAt}` : 'not retired',
+              ].join('\n'),
+        );
+        break;
+      }
+      case 'observation:cutover': {
+        const cut = ctx.get(CutoverService);
+        const at = arg('--at');
+        if (!at) {
+          out(await cut.status(cfg.DATA_SOURCE, new Date()));
+          break;
+        }
+        try {
+          out(
+            await cut.set(cfg.DATA_SOURCE, new Date(at), {
+              now: new Date(),
+              setBy: `cli:${process.env.USER ?? 'operator'}`,
+              note: arg('--note') ?? null,
+            }),
+          );
+        } catch (err) {
+          if (err instanceof CutoverError) {
+            process.stderr.write(`cutover refused: ${err.message}\n`);
+            process.exitCode = 1;
+          } else throw err;
+        }
+        break;
+      }
+      case 'observation:status': {
+        const r = ctx.get(ObservationReadService);
+        const s = { ...(await r.summary()), routing: await r.routingCheck() };
+        out(process.argv.includes('--json') ? s : renderObservationStatus(s));
+        break;
+      }
+      case 'observation:update': {
+        const r = await ctx.get(ObservationService).runNow('cli');
+        out(r);
+        if ('skipped' in r || r.status === 'failed') process.exitCode = 1;
+        break;
+      }
+      case 'observation:probe': {
+        const src = ctx.get<LbankMarketSource>(LBANK_MARKET_SOURCE);
+        const symbol = (arg('--symbol') ?? 'btc_usdt').toLowerCase();
+        const k = await src.klines(symbol, Date.now() - 10 * 60_000, 10);
+        const r = k.response;
+        const [spot, fut] = [await src.spotPairs(), await src.futuresContracts()];
+        out({
+          source: src.id,
+          live: src.isLive,
+          kline: {
+            url: k.url,
+            ms: k.durationMs,
+            result: r.kind,
+            ...(r.kind === 'ok'
+              ? {
+                  serverTime: new Date(r.serverTsMs).toISOString(),
+                  bars: r.bars.length,
+                  closed: r.closed.length,
+                  lastClosed: r.closed.at(-1)
+                    ? new Date(r.closed.at(-1)!.openMs).toISOString()
+                    : null,
+                }
+              : { code: r.code, message: r.message }),
+          },
+          spotPairs: spot.ok
+            ? { count: spot.items.length, listed: spot.items.includes(symbol) }
+            : { error: spot.error },
+          futuresContracts: fut.ok ? { count: fut.items.length } : { error: fut.error },
+        });
+        if (r.kind !== 'ok' || !spot.ok || !fut.ok) process.exitCode = 1;
+        break;
+      }
+      case 'observation:list': {
+        const status = arg('--status') as never;
+        const r = await ctx.get(ObservationReadService).list({ status, limit: 500, offset: 0 });
+        out(
+          process.argv.includes('--json')
+            ? r
+            : [
+                `${r.total} observations (prices: LBank Spot 1-minute; provisional unless FINAL)`,
+                ...r.rows.map(
+                  (o) =>
+                    `${o.signalAt}  ${o.symbol.padEnd(10)} ${o.stars}★  ${(o.pair.symbol ?? '—').padEnd(14)} ${o.eligibilityLabel.padEnd(32)} ${o.status.padEnd(19)} entry ${o.entry?.price ?? '—'}  rise ${o.maxRisePct ? `${Number(o.maxRisePct).toFixed(2)}%` : '—'}  drop ${o.maxDropPct ? `${Number(o.maxDropPct).toFixed(2)}%` : '—'}  bars ${o.coverage.coveredBars}/${o.coverage.expectedBars}`,
+                ),
+              ].join('\n'),
+        );
+        break;
+      }
+      case 'observation:check': {
+        const c = await ctx.get(ObservationReadService).routingCheck();
+        out(c);
+        if (!c.ok) process.exitCode = 1;
+        break;
+      }
       default:
         process.stdout.write(HELP);
         process.exitCode = 2;
@@ -590,6 +723,28 @@ function renderTrace(t: Record<string, unknown>): string {
 const pct = (v: string | null) => (v === null ? '—' : `${new D(v).toFixed(2)} %`);
 
 /** Star-group report as text (PDF p.9): FINAL events only in the return statistics. */
+function renderObservationStatus(
+  s: Awaited<ReturnType<ObservationReadService['summary']>> & {
+    routing: Awaited<ReturnType<ObservationReadService['routingCheck']>>;
+  },
+): string {
+  const f = s.summary.final;
+  const pct = (v: string | null) => (v === null ? '—' : `${Number(v).toFixed(2)} %`);
+  return [
+    `LBank Spot Price Observation (${s.rulesVersion}); prices: ${s.priceSource}`,
+    `cutover: ${s.cutover.cutoverAt ?? 'not set'}${s.cutover.passed ? ' (passed)' : ''}`,
+    `last run: ${s.lastRun ? `${s.lastRun.status} ${s.lastRun.startedAt}` : 'none'}; last successful ${s.lastSuccessfulRunAt ?? 'never'}`,
+    `observations: ${s.summary.total.events} events on ${s.summary.total.coins} coins; ` +
+      Object.entries(s.summary.byStatus)
+        .filter(([, c]) => c.events)
+        .map(([k, c]) => `${k} ${c.events}`)
+        .join(', '),
+    `FINAL (denominator): ${f.events} events, ${f.coins} coins — max rise median ${pct(f.rise.median)}, mean ${pct(f.rise.mean)}; max drop median ${pct(f.drop.median)}, mean ${pct(f.drop.mean)}`,
+    `provisional (ACTIVE / PARTIAL, not in statistics): ${s.summary.provisional.events}; no measurement: ${s.summary.unmeasured.events}`,
+    `routing check: ${s.routing.ok ? 'ok' : 'PROBLEM'} (${s.routing.batchesAfterCutover} batches after the cutover, ${s.routing.batchesWithoutIntake.length} without intake, ${s.routing.legacyEventsAfterCutover} legacy events after it, ${s.routing.eventsWithoutObservation} events without observation, ${s.routing.duplicateKeysAcrossTrackers} keys in both)`,
+  ].join('\n');
+}
+
 function renderForwardSummary(s: Awaited<ReturnType<ForwardReadService['summary']>>): string {
   const by = s.counts.byStatus as Record<string, number>;
   const lines = [

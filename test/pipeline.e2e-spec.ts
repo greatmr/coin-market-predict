@@ -27,7 +27,7 @@ beforeEach(async () => {
 afterEach(async () => ctx.app.close());
 
 describe('hourly pipeline', () => {
-  it('runs end to end (collect → LBank → daily → scan → venues → export → notify → forward) and skips a completed slot', async () => {
+  it('runs end to end (collect → LBank → daily → scan → venues → export → notify → forward → observe) and skips a completed slot', async () => {
     const p = ctx.app.get(PipelineService);
     const r = await p.runSlot();
     expect(['succeeded', 'partial']).toContain(r.status);
@@ -41,8 +41,13 @@ describe('hourly pipeline', () => {
       'export',
       'notify',
       'forward',
+      'observe',
     ]);
     expect(Object.values(r.stages).every((s) => s === 'succeeded')).toBe(true);
+    // No cutover set: the legacy forward test keeps every event, the LBank intake takes none.
+    expect((await ctx.repo(PipelineRun).findOneByOrFail({ id: r.runId! })).metrics).toMatchObject({
+      observe: { skipped: 'no cutover set: the legacy forward test takes every event' },
+    });
     const run = await ctx.repo(PipelineRun).findOneByOrFail({ id: r.runId! });
     expect(run.isLiveData).toBe(false);
     expect((run.metrics as { batchId?: string }).batchId).toBe(r.batchId);

@@ -23,6 +23,17 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M20 19V3" />
     </>
   ),
+  // LBank Spot observation: two 1-minute candles (wick + body).
+  observation: (
+    <>
+      <path d="M8 3v4" />
+      <rect x="5.5" y="7" width="5" height="8" rx="1" />
+      <path d="M8 15v5" />
+      <path d="M16 5v6" />
+      <rect x="13.5" y="11" width="5" height="6" rx="1" />
+      <path d="M16 17v3" />
+    </>
+  ),
   forward: (
     <>
       <path d="M4 18l5-6 4 3 7-9" />

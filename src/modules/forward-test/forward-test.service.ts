@@ -2,14 +2,21 @@ import { Injectable, Logger } from '@nestjs/common';
 
 import { redact } from '../../common/security/redact.js';
 
-import { type CaptureReport, ForwardCaptureService } from './forward-capture.service.js';
+import {
+  type CaptureReport,
+  type CaptureSkipped,
+  ForwardCaptureService,
+} from './forward-capture.service.js';
 import { type ForwardExportFile, ForwardExportService } from './forward-export.service.js';
+import { ForwardRetirementService, type LegacyStatus } from './forward-retirement.service.js';
 import { ForwardUpdateService, type UpdateReport } from './forward-update.service.js';
 
 export interface ForwardStageReport {
-  capture: CaptureReport | null;
+  capture: CaptureReport | CaptureSkipped | null;
   update: UpdateReport | { skipped: string };
   export: { path: string; files: number } | { error: string } | null;
+  /** The legacy tracker's wind-down after the cutover (closures, retirement). */
+  legacy?: Pick<LegacyStatus, 'state' | 'events' | 'terminal' | 'pending'> | { error: string };
 }
 
 /**
@@ -24,11 +31,13 @@ export class ForwardTestService {
     private readonly capture: ForwardCaptureService,
     private readonly updates: ForwardUpdateService,
     private readonly exporter: ForwardExportService,
+    private readonly retirement: ForwardRetirementService,
   ) {}
 
   /**
-   * The hourly step after the scanner publishes a batch: register the batch's events, then run the
-   * daily High update when a UTC day has closed (or missing Highs are due for a retry).
+   * The hourly step after the scanner publishes a batch: register the batch's events (legacy intake
+   * closes at the cutover), then run the daily High update when a UTC day has closed (or missing
+   * Highs are due for a retry) — until the legacy tracker is retired.
    */
   async afterPublication(
     providerId: string,
@@ -36,6 +45,8 @@ export class ForwardTestService {
     opts: { now: Date; pipelineRunId: string | null },
   ): Promise<ForwardStageReport> {
     const capture = await this.capture.captureBatch(batchId, opts);
+    if (await this.retirement.isRetired(providerId))
+      return { capture, update: { skipped: 'the legacy forward test is retired' }, export: null };
     const due = await this.updates.due(providerId, opts.now);
     if (!due.due) return { capture, update: { skipped: due.reason }, export: null };
     return { capture, ...(await this.update(providerId, { ...opts, trigger: 'schedule' })) };
@@ -53,7 +64,22 @@ export class ForwardTestService {
   ): Promise<Omit<ForwardStageReport, 'capture'>> {
     const update = await this.updates.update(providerId, opts);
     const exported = await this.writeExport(opts.now);
-    return { update, export: exported };
+    return { update, export: exported, legacy: await this.windDown(providerId, opts.now) };
+  }
+
+  /** Record terminal closures and retire the tracker when every legacy event is terminal. */
+  async windDown(
+    providerId: string,
+    now: Date,
+  ): Promise<NonNullable<ForwardStageReport['legacy']>> {
+    try {
+      const s = await this.retirement.evaluate(providerId, now, { write: true });
+      return { state: s.state, events: s.events, terminal: s.terminal, pending: s.pending };
+    } catch (err) {
+      const error = redact(err).slice(0, 300);
+      this.log.warn(`legacy wind-down failed: ${error}`);
+      return { error };
+    }
   }
 
   async writeExport(now: Date): Promise<{ path: string; files: number } | { error: string }> {

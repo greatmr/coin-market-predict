@@ -15,7 +15,8 @@ never real orders. Spec: `docs/strategy-two-tier-vmc.md`. Purpose and open decis
   listed coin) → lbank (LBank Spot pairs) → daily (completed UTC daily rows for screen
   candidates) → scan (Tier 1) → venues (review candidates' CMC Markets rows; LBank Futures and
   Bithumb lists, never Tier 1 inputs: `docs/adr/0007-exchange-listings.md`) → export (CSV)
-  → notify (Telegram) → forward (Star Event Forward Test) → retention.
+  → notify (Telegram) → forward (legacy Star Event Forward Test) → observe (LBank Spot Price
+  Observation intake) → retention.
 - **The strategy is its own module** (`src/modules/strategy/`, `docs/adr/0002-strategy-module-boundary.md`):
   `strategy.constants.ts` (`RULESET_VERSION`, thresholds, reason codes, status sets), pure
   `tier1/` (eligibility, vmc, lbank, venue-summary, review-queue), `tier2/review-rules.ts`,
@@ -33,6 +34,21 @@ never real orders. Spec: `docs/strategy-two-tier-vmc.md`. Purpose and open decis
   daily High (`forward_day0_capture`, rules `star-forward-2`).
   Pure rules in `forward-rules.ts` / `cohort.ts`; a rule change bumps `FORWARD_RULES_VERSION`
   (not `RULESET_VERSION`) and the doc. Reprocessing never creates events.
+- **Star events and the cutover** (`src/modules/star-events/`, `docs/adr/0009-lbank-spot-observation.md`):
+  the shared event rule (`validateTrigger`, `PublishedQueueService`; key (provider, CMC id, UTC date,
+  stars), first insert wins) and `signal_cutover` (one UTC-midnight cutover per provider, set with
+  `observation:cutover`, immutable once passed). Before it events go to the legacy forward test,
+  at or after it to the LBank observation; database triggers refuse the wrong side. Never route
+  by anything but the detection time.
+- **LBank Spot Price Observation** (`src/modules/lbank-observation/`, `docs/lbank-spot-observation.md`):
+  its own tables (`lbank_obs_event`, `lbank_observation` with a unique event FK, shared
+  `lbank_spot_candle` per pair and minute, append-only results), its own job and lease
+  (`LBANK_OBSERVATION_CRON`), LBank's public REST API (`api.lbkex.com`, provider `lbank_spot`) or
+  the synthetic fixture. Every price is LBank Spot (the CMC price is context and an identity check
+  only); exactly t0 + 168 h; entry = OPEN of the first 1-minute bar at or after t0; extremes from
+  bars with trades only, never the bar straddling the cutoff. Pure rules in `observation-rules.ts`;
+  a rule change bumps `OBSERVATION_RULES_VERSION` and the doc. FINAL only with full coverage; the
+  legacy tracker retires itself once every pre-cutover event has a terminal closure.
 - **Storage scope** (`docs/adr/0008-storage-scope.md`, D4): every coin is screened hourly and kept
   in the registry, but only ranks 1–1200 are stored as snapshots and only Review Queue rows as
   `scan_result`; other coins are counted on `scan_run.counts` and traced on request
@@ -83,6 +99,8 @@ npm run db:pull-prod                    # replace the local DB with production's
 npm run cli -- run-once                 # one pipeline run (fixture source by default)
 npm run cli -- tier1:trace --id 990001  # calculation trace for one coin
 npm run cli -- forward:status           # forward test: star groups, coverage, warnings
+npm run cli -- observation:status       # LBank Spot observation: cutover, final-only stats, routing check
+npm run cli -- observation:cutover      # show (or --at <future UTC midnight> set) the cutover
 npm run cli -- storage:prune            # dry run of the one-time D4 cleanup (--apply [--vacuum] after a backup)
 npm start                               # API http://127.0.0.1:3000 + scheduler (no pages)
 npm run front:install && npm run front:dev  # dashboard http://127.0.0.1:5173, proxies /api to :3000 (sign in: owner / owner first)

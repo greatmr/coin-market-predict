@@ -8,6 +8,7 @@ import { ForwardTestModule } from '../forward-test/forward-test.module.js';
 import { CrawlBatch } from '../ingestion/entities/crawl-batch.entity.js';
 import { MarketSnapshot } from '../ingestion/entities/market-snapshot.entity.js';
 import { IngestionModule } from '../ingestion/ingestion.module.js';
+import { LbankObservationModule } from '../lbank-observation/lbank-observation.module.js';
 import { ScanModule } from '../scan/scan.module.js';
 import { SourcesModule } from '../sources/sources.module.js';
 import { TelegramModule } from '../telegram/telegram.module.js';
@@ -23,7 +24,7 @@ import { SchedulerService } from './scheduler.service.js';
 
 /**
  * The hourly run: discover → collect → lbank → daily → scan → venues → export → notify → forward →
- * retention,
+ * observe → retention,
  * under a database lease, with stage records, restart recovery and the cron scheduler.
  */
 @Module({
@@ -38,6 +39,7 @@ import { SchedulerService } from './scheduler.service.js';
     ExportsModule,
     TelegramModule,
     ForwardTestModule,
+    LbankObservationModule,
   ],
   providers: [LeaseService, RetentionService, PipelineService, SchedulerService],
   exports: [PipelineService, LeaseService, RetentionService],
