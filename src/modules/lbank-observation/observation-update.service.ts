@@ -717,23 +717,7 @@ export class ObservationUpdateService {
           if (budget <= 0 || Date.now() >= deadline) break;
           budget--;
           attempted.add(m);
-          const r = await this.trades.checkMinute(pair, barsByMinute.get(m)!, now);
-          checks.set(m, r.check);
-          report.trades.minutesChecked++;
-          report.trades.requests += r.requests;
-          report.trades.outsideCandle += r.outsideCandle;
-          if (r.check.status === 'VERIFIED') report.trades.verified++;
-          else {
-            report.trades.failed++;
-            if (report.trades.failed <= 3)
-              report.notes.push(
-                `${pair.symbol} ${iso(m)}: trades ${r.check.status}${r.check.error ? ` (${r.check.error.slice(0, 120)})` : ''}`,
-              );
-          }
-          if (r.outsideCandle)
-            report.notes.push(
-              `${pair.symbol} ${iso(m)}: ${r.outsideCandle} trades outside the candle range (candidate bound)`,
-            );
+          checks.set(m, await this.checkMinute(pair, barsByMinute.get(m)!, now, report));
         }
       }
       if (budget <= 0)
@@ -760,6 +744,31 @@ export class ObservationUpdateService {
           .catch(() => undefined);
       }
     }
+  }
+
+  /** One minute's trade check, counted on the run the same way wherever it is made. */
+  private async checkMinute(
+    pair: SpotPair,
+    bar: Bar,
+    now: Date,
+    report: ObsRunReport,
+  ): Promise<MinuteCheck> {
+    const r = await this.trades.checkMinute(pair, bar, now);
+    const t = report.trades;
+    const at = `${pair.symbol} ${iso(bar.openMs)}`;
+    t.minutesChecked++;
+    t.requests += r.requests;
+    t.outsideCandle += r.outsideCandle;
+    if (r.check.status === 'VERIFIED') t.verified++;
+    else if (++t.failed <= 3)
+      report.notes.push(
+        `${at}: trades ${r.check.status}${r.check.error ? ` (${r.check.error.slice(0, 120)})` : ''}`,
+      );
+    if (r.outsideCandle)
+      report.notes.push(
+        `${at}: ${r.outsideCandle} trades outside the candle range (candidate bound)`,
+      );
+    return r.check;
   }
 
   /**
@@ -803,11 +812,8 @@ export class ObservationUpdateService {
         if (!bar.volume.gt(0)) continue;
         let c = checks.get(m);
         if (!c || c.status !== 'VERIFIED') {
-          const r = await this.trades.checkMinute(pair, bar, now);
-          report.trades.minutesChecked++;
-          report.trades.requests += r.requests;
-          checks.set(m, r.check);
-          c = r.check;
+          c = await this.checkMinute(pair, bar, now, report);
+          checks.set(m, c);
         }
         previous = c.status === 'VERIFIED' ? tradeJson(c.trades.at(-1)) : { unknown: c.status };
         break;

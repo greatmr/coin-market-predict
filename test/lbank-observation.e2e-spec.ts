@@ -985,8 +985,12 @@ describe('LBank Spot measurement (rules v2)', () => {
     await intake(row(1, 'abc', 3, '2030-01-02T00:07:00Z'), { scanCommitAt: commit });
     await intake(row(2, 'def', 1, '2030-01-02T00:07:00Z'), { scanCommitAt: commit });
     lbank.unsupported.add('def_usdt');
-    await runJob('2030-01-02T00:20:00Z');
-    await runJob('2030-01-09T00:20:00Z');
+    // Every checked minute is counted once as verified or not, including the spike-context checks.
+    for (const at of ['2030-01-02T00:20:00Z', '2030-01-09T00:20:00Z']) {
+      const { trades } = await runJob(at);
+      expect(trades.minutesChecked).toBeGreaterThan(0);
+      expect(trades.verified + trades.failed).toBe(trades.minutesChecked);
+    }
     const read = app.get(ObservationReadService);
     const all = await read.list({});
     expect(all.total).toBe(2);
