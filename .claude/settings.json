@@ -9,7 +9,9 @@
       "mcp__coins-predicts__list_batches",
       "mcp__coins-predicts__get_run_status",
       "mcp__coins-predicts__get_coverage",
-      "Bash(docker compose *)"
+      "Bash(docker compose *)",
+      "Bash(node_modules/@embedded-postgres/darwin-arm64/native/bin/psql -h 127.0.0.1 -p 5434 -U coins -d postgres -c \"CREATE DATABASE coins_test\")",
+      "Bash(python3 -)"
     ],
     "deny": [
       "Read(./.env)",
