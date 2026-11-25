@@ -3,28 +3,36 @@ import { D, type DValue } from '../../common/utils/decimal.js';
 import type { ResolvedPair } from '../strategy/index.js';
 
 import {
-  ENTRY_LOOKBACK_MS,
   type EligibilityClass,
-  type ExtremeOrder,
+  type ExtremesOrder,
+  OBS_FLAG as F,
   FINALIZE_RETRY_MS,
+  type GapState,
   type ListingStatus,
   MAPPING_MAX_PRICE_DEVIATION,
-  MAX_ENTRY_DELAY_MS,
-  MAX_ENTRY_STALENESS_MS,
   MINUTE_MS,
   type MappingStatus,
   type ObservationStatus,
   PREFERRED_QUOTE,
   OBS_REASON as R,
   SIGNAL_TRADE_WINDOW_MS,
+  SPOT_LOOKBACK_MS,
+  type TradeCheckStatus,
   WINDOW_MS,
 } from './observation.constants.js';
 
 /**
- * LBank Spot Price Observation rules (docs/lbank-spot-observation.md § 4–6), pure and exact: the
- * window, the entry reference, the two price extremes, coverage, status, and the LBank Spot pair of
- * a CMC event. No I/O; edge cases are in observation-rules.spec.ts. Every price is an LBank Spot
- * candle value; the CMC price appears only in the identity check (`entryDeviatesFromCmc`).
+ * LBank Spot Price Observation rules v2 (docs/lbank-spot-observation.md § 4–6), pure and exact: the
+ * window [observation_start, observation_start + 168 h), the reference (the first verified LBank
+ * Spot trade at or after the start), the highest and lowest verified trades, coverage, status and
+ * review flags. No I/O: candles and checked minute trade lists come in as data; the job fetches
+ * whatever `needs` lists. Edge cases: observation-rules.spec.ts.
+ *
+ * Candles only LOCATE candidates. LBank's 1-minute OPEN is the previous CLOSE and a candle's High or
+ * Low can be that carried OPEN without any trade at that price, so no candle value is ever a price
+ * here. Every price is a trade from a minute whose complete trade list was checked against its
+ * candle. A candle's High / Low bounds the trades of its minute (0 of 180 checked minutes on all
+ * production pairs had a trade outside it, 2026-11-25): candidates are taken in that order.
  */
 
 /** One LBank Spot 1-minute candle (UTC open time; exact decimals as the API sent them). */
@@ -37,205 +45,420 @@ export interface Bar {
   volume: DValue;
 }
 
-const floorMinute = (ms: number) => Math.floor(ms / MINUTE_MS) * MINUTE_MS;
-const ceilMinute = (ms: number) => Math.ceil(ms / MINUTE_MS) * MINUTE_MS;
+/** One LBank Spot trade (`/v2/supplement/trades.do`), exact. */
+export interface Trade {
+  id: string;
+  timeMs: number;
+  /** Position among the pair's trades of the same millisecond, in LBank's (stable) response order. */
+  ord: number;
+  price: DValue;
+  qty: DValue;
+  buyerMaker: boolean | null;
+}
+
+/** One minute's trade list, read completely and checked against the minute's candle. */
+export interface MinuteCheck {
+  minuteMs: number;
+  status: TradeCheckStatus;
+  /** Every trade of the minute in sequence (VERIFIED only; empty otherwise). */
+  trades: readonly Trade[];
+  tradeCount: number | null;
+  qtySum: DValue | null;
+  candleVolume: DValue | null;
+  attempts: number;
+  error: string | null;
+}
+
+/** What the candle series of the pair is known through (shared by its observations). */
+export interface PairSync {
+  /** Exclusive end of the minutes the API has answered (with or without a candle). */
+  syncedUntilMs: number | null;
+  /** LBank answered "currency pair nonsupport" (10008) and has not served candles since. */
+  unsupported: boolean;
+  /** The last candle request for the pair failed (error, timeout, rate limit). */
+  lastFetchFailed: boolean;
+  /** Minutes opening before this have closed (now less the closed-bar margin, floored). */
+  closedNowMs: number;
+}
+
+export const floorMinute = (ms: number) => Math.floor(ms / MINUTE_MS) * MINUTE_MS;
+export const ceilMinute = (ms: number) => Math.ceil(ms / MINUTE_MS) * MINUTE_MS;
+
+/** Trade sequence: time, then LBank's order inside one millisecond. */
+export const cmpTrade = (a: Pick<Trade, 'timeMs' | 'ord'>, b: Pick<Trade, 'timeMs' | 'ord'>) =>
+  a.timeMs - b.timeMs || a.ord - b.ord;
 
 // ── Window ──────────────────────────────────────────────────────────────────────────────────
 
 export interface ObsWindow {
-  t0Ms: number;
-  /** Exactly t0 + 168 h. */
-  cutoffMs: number;
-  /** The earliest bar that may be the entry: the first minute opening at or after t0. */
-  entryFromMs: number;
-  /** Bars opening before this end at or before the cutoff; the bar at this minute straddles it. */
-  endExclusiveMs: number;
-  /** Whole minutes in [entryFromMs, endExclusiveMs): 10 080 when t0 is on a minute, else 10 079. */
-  expectedBars: number;
-  /** [t0, entryFromMs) is not observed by any bar (0 when t0 is on a minute). */
-  startUnobservedMs: number;
-  /**
-   * [endExclusiveMs, cutoffMs) is not observed: the 1-minute bar covering it extends past the cutoff,
-   * so its High / Low may come from after it and is never used (no finer timestamped data is read).
-   */
-  boundaryUnobservedMs: number;
+  /** observation_start: the moment the star signal was proven usable (never the crawl time). */
+  startMs: number;
+  /** Exactly startMs + 168 h; the window is [startMs, endMs). */
+  endMs: number;
+  /** The minute containing the start (partial unless the start is on a whole minute). */
+  startMinuteMs: number;
+  /** Minutes touching the window are [startMinuteMs, endMinuteExclusiveMs). */
+  endMinuteExclusiveMs: number;
+  /** 10 080 when the start is on a whole minute, else 10 081 (the first and last are partial). */
+  minutes: number;
+  /** The last minute, when the end cuts it (trades from its start up to, not at, endMs). */
+  partialEndMinuteMs: number | null;
 }
 
-export function observationWindow(t0: Date): ObsWindow {
-  const t0Ms = t0.getTime();
-  const cutoffMs = t0Ms + WINDOW_MS;
-  const entryFromMs = ceilMinute(t0Ms);
-  const endExclusiveMs = floorMinute(cutoffMs);
+export function observationWindow(start: Date): ObsWindow {
+  const startMs = start.getTime();
+  const endMs = startMs + WINDOW_MS;
+  const startMinuteMs = floorMinute(startMs);
+  const endMinuteExclusiveMs = ceilMinute(endMs);
   return {
-    t0Ms,
-    cutoffMs,
-    entryFromMs,
-    endExclusiveMs,
-    expectedBars: Math.max(0, (endExclusiveMs - entryFromMs) / MINUTE_MS),
-    startUnobservedMs: entryFromMs - t0Ms,
-    boundaryUnobservedMs: cutoffMs - endExclusiveMs,
+    startMs,
+    endMs,
+    startMinuteMs,
+    endMinuteExclusiveMs,
+    minutes: (endMinuteExclusiveMs - startMinuteMs) / MINUTE_MS,
+    partialEndMinuteMs: endMs % MINUTE_MS === 0 ? null : floorMinute(endMs),
   };
 }
 
-/** Bars sorted by open time, one per minute (a later duplicate is dropped). */
-export function normalizeBars(bars: readonly Bar[]): Bar[] {
-  const seen = new Set<number>();
-  return [...bars]
-    .sort((a, b) => a.openMs - b.openMs)
-    .filter((b) => (seen.has(b.openMs) ? false : (seen.add(b.openMs), true)));
+/** Bars by open time (one per minute; a later duplicate is dropped). */
+export function barMap(bars: readonly Bar[]): Map<number, Bar> {
+  const m = new Map<number, Bar>();
+  for (const b of bars) if (!m.has(b.openMs)) m.set(b.openMs, b);
+  return m;
 }
 
-// ── Entry reference ─────────────────────────────────────────────────────────────────────────
+/** Why a minute has no candle: answered without one, not fetched (yet), failed, or delisted. */
+export function gapStateAt(minuteMs: number, s: PairSync): GapState | 'FUTURE' {
+  if (s.syncedUntilMs !== null && minuteMs < s.syncedUntilMs) return 'NO_BAR';
+  if (minuteMs + MINUTE_MS > s.closedNowMs) return 'FUTURE';
+  return s.unsupported ? 'PAIR_UNSUPPORTED' : s.lastFetchFailed ? 'FETCH_FAILED' : 'NOT_FETCHED';
+}
 
-export type EntryResult =
-  | { kind: 'pending' }
-  | { kind: 'none' }
-  | { kind: 'too_late'; bar: Bar; delayMs: number }
+// ── Reference: the first verified trade at or after the start ──────────────────────────────
+
+export type ReferenceEval =
   | {
-      kind: 'ok';
-      bar: Bar;
-      price: DValue;
+      status: 'VERIFIED';
+      trade: Trade;
+      minuteMs: number;
+      /** reference time − observation start (ms). */
       delayMs: number;
-      /** Open time of the last bar with trades before the entry bar, within the look-back. */
-      lastTradeBarMs: number | null;
-      stale: boolean;
+      /** Whole minutes after the start verified silent before the reference trade. */
+      silentMinutes: number;
+      /** The operator's rule (2026-11-25): delayed when at least one whole minute was silent. */
+      delayed: boolean;
+      /** Other trades of the reference's millisecond (LBank's order picks the first). */
+      sameMs: Trade[];
+    }
+  /** Every minute of [start, end) verified, and none holds a trade. */
+  | { status: 'NO_TRADE' }
+  /** The search stops at `minuteMs`: no candle yet / a gap, or its trades are not checked. */
+  | {
+      status: 'PENDING';
+      minuteMs: number;
+      why: GapState | 'FUTURE' | 'CHECK_PENDING' | Exclude<TradeCheckStatus, 'VERIFIED'>;
+      needs: number[];
     };
 
 /**
- * The entry reference is the OPEN of the first bar opening at or after t0 (never a bar that opened
- * before the signal: its High / Low may precede it). `syncedUntilMs` is how far the pair's series
- * has been fetched: without a bar, "pending" until the allowed delay has been fetched, then "none".
+ * The first LBank Spot trade with time ≥ start and < end. Minutes are walked from the start minute: a
+ * zero-volume candle is a verified minute without trades; a traded minute needs its complete trade
+ * list (checked against its candle) before its first in-window trade can be the reference, which
+ * proves no earlier post-start trade was missed. A missing candle stops the search (never skipped).
  */
-export function selectEntry(
-  sortedBars: readonly Bar[],
+export function findReference(
   w: ObsWindow,
-  syncedUntilMs: number | null,
-): EntryResult {
-  const bar = sortedBars.find((b) => b.openMs >= w.entryFromMs && b.openMs < w.endExclusiveMs);
-  const allowedUntil = w.t0Ms + MAX_ENTRY_DELAY_MS;
-  if (!bar)
-    return syncedUntilMs === null || syncedUntilMs <= allowedUntil
-      ? { kind: 'pending' }
-      : { kind: 'none' };
-  const delayMs = bar.openMs - w.t0Ms;
-  if (bar.openMs > allowedUntil) {
-    // An earlier minute may simply not be fetched yet.
-    if (syncedUntilMs === null || syncedUntilMs <= w.entryFromMs) return { kind: 'pending' };
-    return { kind: 'too_late', bar, delayMs };
+  bars: ReadonlyMap<number, Bar>,
+  checks: ReadonlyMap<number, MinuteCheck>,
+  sync: PairSync,
+): ReferenceEval {
+  for (let m = w.startMinuteMs; m < w.endMinuteExclusiveMs; m += MINUTE_MS) {
+    const bar = bars.get(m);
+    if (!bar) return { status: 'PENDING', minuteMs: m, why: gapStateAt(m, sync), needs: [] };
+    if (!bar.volume.gt(0)) continue;
+    const c = checks.get(m);
+    if (!c) return { status: 'PENDING', minuteMs: m, why: 'CHECK_PENDING', needs: [m] };
+    if (c.status !== 'VERIFIED')
+      return { status: 'PENDING', minuteMs: m, why: c.status, needs: [m] };
+    const first = c.trades.find((t) => t.timeMs >= w.startMs && t.timeMs < w.endMs);
+    if (!first) continue;
+    const silentFrom = ceilMinute(w.startMs);
+    const silentMinutes = Math.max(0, (floorMinute(first.timeMs) - silentFrom) / MINUTE_MS);
+    return {
+      status: 'VERIFIED',
+      trade: first,
+      minuteMs: m,
+      delayMs: first.timeMs - w.startMs,
+      silentMinutes,
+      delayed: silentMinutes >= 1,
+      sameMs: c.trades.filter((t) => t.timeMs === first.timeMs && t.id !== first.id),
+    };
   }
-  let lastTradeBarMs: number | null = null;
-  for (const b of sortedBars) {
-    if (b.openMs >= bar.openMs) break;
-    if (b.openMs >= bar.openMs - ENTRY_LOOKBACK_MS && b.volume.gt(0)) lastTradeBarMs = b.openMs;
-  }
-  const stale = lastTradeBarMs === null || bar.openMs - lastTradeBarMs > MAX_ENTRY_STALENESS_MS;
-  return { kind: 'ok', bar, price: bar.open, delayMs, lastTradeBarMs, stale };
+  return { status: 'NO_TRADE' };
 }
 
-// ── Extremes ────────────────────────────────────────────────────────────────────────────────
+// ── Extremes: highest / lowest verified trades over a range of the trade sequence ─────────
 
-export interface Extremes {
-  high: DValue;
-  highBarMs: number;
-  low: DValue;
-  lowBarMs: number;
-  /** By bar time; SAME_BAR: the order inside that minute is unknown. */
-  order: ExtremeOrder;
-  /** Lowest Low from the entry up to and including the bar of the eventual highest High (descriptive). */
-  lowBeforeHigh: DValue;
-  lowBeforeHighBarMs: number;
-  tradedBars: number;
+/** A range of the trade sequence: from a trade (inclusive) to a time (exclusive) or a trade (inclusive). */
+export interface SeqRange {
+  from: Pick<Trade, 'timeMs' | 'ord'>;
+  to: { beforeMs: number } | { through: Pick<Trade, 'timeMs' | 'ord'> };
 }
+
+export type BlockState =
+  GapState | 'FUTURE' | 'CHECK_PENDING' | Exclude<TradeCheckStatus, 'VERIFIED'>;
+
+export interface ExtremeEval {
+  kind: 'high' | 'low';
+  /** First trade at the extreme price (verified minutes only). */
+  best: Trade | null;
+  bestMinuteMs: number | null;
+  /** No gap, unchecked or unverified minute in the range could hold a more extreme price. */
+  proven: boolean;
+  /** Minutes whose trades must be checked (or re-checked) next, most promising first. */
+  needs: number[];
+  /**
+   * What keeps it from being proven: `gap` ranges (no candle: [fromMs, toMs)) and single `check`
+   * minutes whose trades are not verified yet but whose candle bound could beat the best.
+   */
+  blocking: Array<{ fromMs: number; toMs: number; kind: 'gap' | 'check'; state: BlockState }>;
+  /** Candidate minutes examined in candle order with their verified traded extreme (audit). */
+  checked: Array<{ minuteMs: number; candle: string; traded: string | null; check: string }>;
+}
+
+const inRange = (t: Pick<Trade, 'timeMs' | 'ord'>, r: SeqRange): boolean =>
+  cmpTrade(t, r.from) >= 0 &&
+  ('beforeMs' in r.to ? t.timeMs < r.to.beforeMs : cmpTrade(t, r.to.through) <= 0);
+
+/** Never-checked candidate minutes asked for per extreme per evaluation (the job loops). */
+const NEEDS_PER_EVAL = 3;
 
 /**
- * The highest High and lowest Low of bars with trades in [fromMs, toExclusiveMs): two independent
- * extremes. A bar without trades carries the previous close as O = H = L = C, which may be a
- * pre-entry price, so it is never an extreme. Ties go to the earliest bar.
+ * The highest (or lowest) trade price in `r`, located with candles and proven with trades: the
+ * boundary minutes (the reference's, and the last when the range ends inside it) come from their
+ * trade lists only; whole minutes are taken in candle High order (Low for the lowest), each checked
+ * against its complete trade list, until no remaining candle could hold a higher (or an equal and
+ * earlier) price. A candle whose High was a carried OPEN is passed over once its trades show it.
+ * Ties go to the earliest trade.
  */
-export function computeExtremes(
-  sortedBars: readonly Bar[],
-  fromMs: number,
-  toExclusiveMs: number,
-): Extremes | null {
-  let hi: Bar | null = null;
-  let lo: Bar | null = null;
-  let traded = 0;
-  for (const b of sortedBars) {
-    if (b.openMs < fromMs || b.openMs >= toExclusiveMs || !b.volume.gt(0)) continue;
-    traded++;
-    if (!hi || b.high.gt(hi.high)) hi = b;
-    if (!lo || b.low.lt(lo.low)) lo = b;
-  }
-  if (!hi || !lo) return null;
-  let lbh: Bar | null = null;
-  for (const b of sortedBars) {
-    if (b.openMs < fromMs || b.openMs > hi.openMs || !b.volume.gt(0)) continue;
-    if (!lbh || b.low.lt(lbh.low)) lbh = b;
-  }
-  return {
-    high: hi.high,
-    highBarMs: hi.openMs,
-    low: lo.low,
-    lowBarMs: lo.openMs,
-    order: hi.openMs < lo.openMs ? 'HIGH_FIRST' : lo.openMs < hi.openMs ? 'LOW_FIRST' : 'SAME_BAR',
-    lowBeforeHigh: lbh!.low,
-    lowBeforeHighBarMs: lbh!.openMs,
-    tradedBars: traded,
+export function rangeExtreme(
+  kind: 'high' | 'low',
+  r: SeqRange,
+  bars: ReadonlyMap<number, Bar>,
+  checks: ReadonlyMap<number, MinuteCheck>,
+  sync: PairSync,
+): ExtremeEval {
+  const better = (a: Trade, b: Trade | null) =>
+    !b ||
+    (kind === 'high' ? a.price.gt(b.price) : a.price.lt(b.price)) ||
+    (a.price.eq(b.price) && cmpTrade(a, b) < 0);
+  const bound = (b: Bar) => (kind === 'high' ? b.high : b.low);
+  const out: ExtremeEval = {
+    kind,
+    best: null,
+    bestMinuteMs: null,
+    proven: false,
+    needs: [],
+    blocking: [],
+    checked: [],
   };
+  const take = (trades: readonly Trade[], minuteMs: number) => {
+    for (const t of trades)
+      if (inRange(t, r) && better(t, out.best)) {
+        out.best = t;
+        out.bestMinuteMs = minuteMs;
+      }
+  };
+  const fromMinute = floorMinute(r.from.timeMs);
+  const lastMinute =
+    'beforeMs' in r.to ? floorMinute(r.to.beforeMs - 1) : floorMinute(r.to.through.timeMs);
+  const lastIsBoundary = 'through' in r.to || r.to.beforeMs % MINUTE_MS !== 0;
+  const boundary =
+    lastIsBoundary && lastMinute !== fromMinute ? [fromMinute, lastMinute] : [fromMinute];
+
+  const gapAt = (m: number, state: BlockState) => {
+    const last = out.blocking.at(-1);
+    if (last?.kind === 'gap' && last.toMs === m && last.state === state) last.toMs = m + MINUTE_MS;
+    else out.blocking.push({ fromMs: m, toMs: m + MINUTE_MS, kind: 'gap', state });
+  };
+  const checkAt = (m: number, state: BlockState) => {
+    out.blocking.push({ fromMs: m, toMs: m + MINUTE_MS, kind: 'check', state });
+    out.needs.push(m);
+  };
+  for (const m of boundary) {
+    const bar = bars.get(m);
+    if (!bar) {
+      gapAt(m, gapStateAt(m, sync));
+      continue;
+    }
+    if (!bar.volume.gt(0)) continue;
+    const c = checks.get(m);
+    if (!c) checkAt(m, 'CHECK_PENDING');
+    else if (c.status !== 'VERIFIED') checkAt(m, c.status);
+    else take(c.trades, m);
+  }
+
+  const firstWhole = fromMinute + MINUTE_MS;
+  const endWhole = lastIsBoundary ? lastMinute : lastMinute + MINUTE_MS;
+  const candidates: Bar[] = [];
+  for (let m = firstWhole; m < endWhole; m += MINUTE_MS) {
+    const bar = bars.get(m);
+    if (!bar) gapAt(m, gapStateAt(m, sync));
+    else if (bar.volume.gt(0)) candidates.push(bar);
+  }
+  candidates.sort((a, b) =>
+    kind === 'high'
+      ? b.high.cmp(a.high) || a.openMs - b.openMs
+      : a.low.cmp(b.low) || a.openMs - b.openMs,
+  );
+  let pending = 0;
+  for (const bar of candidates) {
+    const b = bound(bar);
+    if (out.best) {
+      const beyond = kind === 'high' ? b.gt(out.best.price) : b.lt(out.best.price);
+      // An equal bound only matters in a minute earlier than the current best's (ties: earliest).
+      if (!beyond && !(b.eq(out.best.price) && bar.openMs < out.bestMinuteMs!)) break;
+    }
+    const c = checks.get(bar.openMs);
+    if (!c || c.status !== 'VERIFIED') {
+      // Its trades are unknown (≤ its bound): it blocks; a failed check is retried by the job.
+      checkAt(
+        bar.openMs,
+        c ? (c.status as Exclude<TradeCheckStatus, 'VERIFIED'>) : 'CHECK_PENDING',
+      );
+      out.checked.push({
+        minuteMs: bar.openMs,
+        candle: b.toFixed(),
+        traded: null,
+        check: c?.status ?? 'PENDING',
+      });
+      if (!c && ++pending >= NEEDS_PER_EVAL) break;
+      continue;
+    }
+    take(c.trades, bar.openMs);
+    const own = c.trades.reduce<Trade | null>(
+      (x, t) => (!x || (kind === 'high' ? t.price.gt(x.price) : t.price.lt(x.price)) ? t : x),
+      null,
+    );
+    out.checked.push({
+      minuteMs: bar.openMs,
+      candle: b.toFixed(),
+      traded: own?.price.toFixed() ?? null,
+      check: c.status,
+    });
+  }
+  // A checked-out candidate whose bound cannot beat (or tie earlier than) the final best does not
+  // block; a minute without a candle always does (no bound).
+  out.blocking = out.blocking.filter((x) => {
+    if (!out.best || x.kind === 'gap') return true;
+    const bar = bars.get(x.fromMs);
+    if (!bar) return true;
+    const b = bound(bar);
+    const beyond = kind === 'high' ? b.gt(out.best.price) : b.lt(out.best.price);
+    return beyond || (b.eq(out.best.price) && x.fromMs < out.bestMinuteMs!);
+  });
+  out.needs = [...new Set(out.needs)].filter((m) =>
+    out.blocking.some((x) => x.kind === 'check' && x.fromMs === m),
+  );
+  out.proven = out.blocking.length === 0;
+  return out;
 }
 
-/** 100 × (price / entry − 1), exact (80 significant digits); negative for a decline. */
-export function pctChange(price: DValue, entry: DValue): DValue {
-  return price.div(entry).minus(1).times(100);
+/** 100 × (price / reference − 1), exact (80 significant digits); negative for a decline. */
+export function pctChange(price: DValue, reference: DValue): DValue {
+  return price.div(reference).minus(1).times(100);
+}
+
+export function extremesOrder(high: Trade | null, low: Trade | null): ExtremesOrder | null {
+  if (!high || !low || high.id === low.id) return null;
+  if (high.timeMs === low.timeMs) return 'SAME_MS';
+  return high.timeMs < low.timeMs ? 'HIGH_FIRST' : 'LOW_FIRST';
 }
 
 // ── Coverage ────────────────────────────────────────────────────────────────────────────────
 
-export interface Coverage {
-  expectedBars: number;
-  /** Exclusive end of the part of the window that has been fetched. */
-  observedThroughMs: number;
-  expectedSoFar: number;
-  presentBars: number;
-  missingBars: number;
-  /** [from, to) of minutes the source answered without a bar, oldest first. */
-  missingRanges: Array<[number, number]>;
-  tradedBars: number;
-  zeroVolumeBars: number;
+export interface Gap {
+  fromMs: number;
+  toMs: number;
+  state: GapState;
+  detail?: string;
 }
 
-export function coverage(
-  sortedBars: readonly Bar[],
-  w: ObsWindow,
-  syncedUntilMs: number | null,
-): Coverage {
+export interface Coverage {
+  /** Minutes touching the window (10 080 or 10 081). */
+  minutesExpected: number;
+  /** Exclusive end of the window part the candles have been fetched through. */
+  dataThroughMs: number;
+  minutesPresent: number;
+  minutesTraded: number;
+  minutesZeroVolume: number;
+  /** Minutes the source answered without a candle. */
+  minutesMissing: number;
+  /** Every gap so far (closed minutes only), oldest first. */
+  gaps: Gap[];
+  /** Candles for every minute of the window (the window has ended and nothing is missing). */
+  candlesComplete: boolean;
+}
+
+export function coverage(w: ObsWindow, bars: ReadonlyMap<number, Bar>, sync: PairSync): Coverage {
   const through = Math.max(
-    w.entryFromMs,
-    Math.min(w.endExclusiveMs, floorMinute(syncedUntilMs ?? w.entryFromMs)),
+    w.startMinuteMs,
+    Math.min(w.endMinuteExclusiveMs, sync.syncedUntilMs ?? w.startMinuteMs),
   );
-  const missingRanges: Array<[number, number]> = [];
-  let expect = w.entryFromMs;
+  const gaps: Gap[] = [];
+  const add = (fromMs: number, state: GapState) => {
+    const last = gaps.at(-1);
+    if (last && last.toMs === fromMs && last.state === state) last.toMs = fromMs + MINUTE_MS;
+    else gaps.push({ fromMs, toMs: fromMs + MINUTE_MS, state });
+  };
   let present = 0;
   let traded = 0;
-  for (const b of sortedBars) {
-    if (b.openMs < w.entryFromMs || b.openMs >= through) continue;
-    if (b.openMs > expect) missingRanges.push([expect, b.openMs]);
-    expect = b.openMs + MINUTE_MS;
-    present++;
-    if (b.volume.gt(0)) traded++;
+  let missing = 0;
+  const closedEnd = Math.min(w.endMinuteExclusiveMs, sync.closedNowMs);
+  for (let m = w.startMinuteMs; m < Math.max(through, closedEnd); m += MINUTE_MS) {
+    const bar = bars.get(m);
+    if (bar) {
+      present++;
+      if (bar.volume.gt(0)) traded++;
+      continue;
+    }
+    const state = gapStateAt(m, sync);
+    if (state === 'FUTURE') break;
+    if (state === 'NO_BAR') missing++;
+    add(m, state);
   }
-  if (expect < through) missingRanges.push([expect, through]);
-  const expectedSoFar = (through - w.entryFromMs) / MINUTE_MS;
   return {
-    expectedBars: w.expectedBars,
-    observedThroughMs: through,
-    expectedSoFar,
-    presentBars: present,
-    missingBars: expectedSoFar - present,
-    missingRanges,
-    tradedBars: traded,
-    zeroVolumeBars: present - traded,
+    minutesExpected: w.minutes,
+    dataThroughMs: through,
+    minutesPresent: present,
+    minutesTraded: traded,
+    minutesZeroVolume: present - traded,
+    minutesMissing: missing,
+    gaps,
+    candlesComplete: through >= w.endMinuteExclusiveMs && missing === 0,
   };
+}
+
+/** Where the next candle fetch for one observation must start; null when its window is complete. */
+export function neededFromMs(w: ObsWindow, syncedUntilMs: number | null): number | null {
+  const from = w.startMinuteMs - SPOT_LOOKBACK_MS;
+  if (syncedUntilMs !== null && syncedUntilMs >= w.endMinuteExclusiveMs) return null;
+  return syncedUntilMs === null || syncedUntilMs < from ? from : syncedUntilMs;
+}
+
+/** Whether a traded candle lies in [start − 1 h, start + 1 h) (trading around the signal). */
+export function tradeNearSignal(bars: readonly Bar[], w: ObsWindow): boolean {
+  return bars.some(
+    (b) =>
+      b.openMs >= w.startMs - SPOT_LOOKBACK_MS &&
+      b.openMs < w.startMs + SIGNAL_TRADE_WINDOW_MS &&
+      b.volume.gt(0),
+  );
+}
+
+/** Whether a candle exists in the hour before the start minute (the series spans the signal). */
+export function barBeforeSignal(bars: readonly Bar[], w: ObsWindow): boolean {
+  return bars.some((b) => b.openMs < w.startMinuteMs && b.openMs >= w.startMs - SPOT_LOOKBACK_MS);
 }
 
 // ── Spot pair of a CMC event ────────────────────────────────────────────────────────────────
@@ -282,6 +505,7 @@ export function resolveSpotPair(pairs: readonly ResolvedPair[]): SpotPairMapping
       trading: p.trading,
       tradingSource: p.tradingSource,
       marketUrl: p.marketUrl,
+      lastUpdated: p.lastUpdated,
     })),
   };
   if (!usdt.length)
@@ -329,9 +553,9 @@ export function resolveSpotPair(pairs: readonly ResolvedPair[]): SpotPairMapping
   };
 }
 
-/** Identity check only: |entry / CMC price − 1| beyond the limit (CMC price never enters a return). */
-export function entryDeviatesFromCmc(entry: DValue, cmcPrice: DValue): boolean {
-  return entry.div(cmcPrice).minus(1).abs().gt(new D(MAPPING_MAX_PRICE_DEVIATION));
+/** Identity check only (a review flag): |reference / CMC price − 1| beyond the limit. */
+export function deviatesFromCmc(reference: DValue, cmcPrice: DValue): boolean {
+  return reference.div(cmcPrice).minus(1).abs().gt(new D(MAPPING_MAX_PRICE_DEVIATION));
 }
 
 // ── Spot / Futures at the signal ────────────────────────────────────────────────────────────
@@ -341,10 +565,10 @@ export interface SpotEvidenceInput {
   listed: boolean | null;
   /** LBank answered "currency pair nonsupport" within the evidence lag of t0. */
   unsupportedNearSignal: boolean;
-  /** A bar exists in the hour before t0, and the entry bar exists: the series spans the signal. */
+  /** A candle exists in the hour before the start, and one at the start minute. */
   barBeforeT0: boolean;
   entryBar: boolean;
-  /** A bar with trades in [t0 − 1 h, t0 + 1 h]. */
+  /** A traded candle in [start − 1 h, start + 1 h). */
   tradeNearSignal: boolean;
 }
 
@@ -354,9 +578,9 @@ export interface ListingDecision {
 }
 
 /**
- * Whether the LBank Spot pair was available and trading at t0. Candles are historical evidence: a
- * series with bars before and at the signal shows the pair existed then. NO needs both the list
- * near the signal and the API's own answer (or the absence of any bar). Conflicts are UNKNOWN.
+ * Whether the LBank Spot pair was available and trading at the signal. Candles are historical
+ * evidence: a series with candles before and at the start shows the pair existed then. NO needs
+ * LBank's own answer near the signal (or the absence of any candle). Conflicts are UNKNOWN.
  */
 export function spotAtSignal(
   i: SpotEvidenceInput,
@@ -371,8 +595,6 @@ export function spotAtSignal(
       return { status: 'UNKNOWN', trading, reasons: [R.spotEvidenceConflict] };
     return { status: 'YES', trading, reasons: i.tradeNearSignal ? [] : [R.noTradesNearSignal] };
   }
-  // LBank's own "currency pair nonsupport" near the signal, or its pairs list without the pair and
-  // no bar before the signal: not available at t0.
   if (!i.entryBar && (i.unsupportedNearSignal || (i.listed === false && !i.barBeforeT0)))
     return {
       status: 'NO',
@@ -391,10 +613,10 @@ export interface FuturesEvidenceInput {
 }
 
 /**
- * Whether an LBank Futures contract was available and trading at t0: evidence from before the
- * signal (CMC's list, by CMC id) and right after it (LBank's own list) must agree. YES needs the
- * CMC-listed contract in LBank's list with 24 h volume; NO needs both lists without it. A contract
- * listed today proves nothing about earlier signals, so anything else stays UNKNOWN.
+ * Futures LISTING EVIDENCE around the signal (never proof of tradability at the instant, never a
+ * Futures price): a snapshot before the signal (CMC's list, by CMC id) and one after it (LBank's own
+ * list). YES = the CMC-listed contract is in LBank's list with 24 h volume (listed in both
+ * snapshots); NO = neither snapshot has it; anything else is UNKNOWN. It never blocks a Spot result.
  */
 export function futuresAtSignal(i: FuturesEvidenceInput): ListingDecision {
   if (!i.lbank) return { status: 'UNKNOWN', reasons: [R.futuresSnapshotMissing] };
@@ -435,15 +657,16 @@ export function classifyEligibility(
 
 export interface StatusInput {
   nowMs: number;
-  w: ObsWindow;
+  /** Null while the observation start is not established yet. */
+  w: ObsWindow | null;
   mapping: MappingStatus;
   mappingReasons: readonly string[];
   spot: ListingDecision;
-  entry: EntryResult;
-  /** The entry deviates from the CMC price by more than the identity limit. */
-  entryDeviates: boolean;
-  cov: Coverage;
-  extremes: Extremes | null;
+  reference: ReferenceEval | null;
+  highest: ExtremeEval | null;
+  lowest: ExtremeEval | null;
+  lowBeforeHigh: ExtremeEval | null;
+  cov: Coverage | null;
   /** LBank answered "currency pair nonsupport" for this pair. */
   pairUnsupported: boolean;
   fetchError: string | null;
@@ -455,11 +678,30 @@ export interface StatusDecision {
   reasons: string[];
 }
 
+const blockingReasons = (e: ExtremeEval | null): string[] =>
+  !e
+    ? []
+    : e.blocking.map((b) =>
+        b.state === 'NO_BAR'
+          ? R.missingBars
+          : b.state === 'CHECK_PENDING'
+            ? R.verificationPending
+            : b.state === 'FETCH_FAILED'
+              ? R.fetchError
+              : b.state === 'PAIR_UNSUPPORTED'
+                ? R.pairUnsupported
+                : b.state === 'NOT_FETCHED' || b.state === 'FUTURE'
+                  ? R.fetchPending
+                  : R.tradesUnverified,
+      );
+
 /**
- * ACTIVE while the window runs or data is still being fetched; FINAL only after t0 + 168 h with every
- * expected bar present, a fresh entry and verified Spot availability; otherwise an explicit terminal
- * status once the retries after the window are over. Provisional extremes are kept on ACTIVE and
- * PARTIAL observations but never enter final statistics.
+ * ACTIVE while the window runs or its data is still being fetched or verified (provisional values);
+ * after the window, FINAL only with a verified reference, candles for every minute and every
+ * deciding minute's trades verified; NO_TRADES when the complete window holds no trade; otherwise,
+ * once the retries are over (end + 24 h, the same for every gap including the first minutes), PARTIAL
+ * (reference verified, coverage incomplete) or UNVERIFIABLE (no provable reference). Mapping, Spot
+ * availability and delisting outcomes as before. Futures never decides a status.
  */
 export function observationStatus(i: StatusInput): StatusDecision {
   const done = (status: ObservationStatus, reasons: string[]): StatusDecision => ({
@@ -467,73 +709,147 @@ export function observationStatus(i: StatusInput): StatusDecision {
     terminal: true,
     reasons: [...new Set(reasons)],
   });
-  const pastRetries = i.nowMs > i.w.cutoffMs + FINALIZE_RETRY_MS;
-  const extra = i.fetchError ? [R.fetchError] : [];
+  const active = (reasons: string[]): StatusDecision => ({
+    status: 'ACTIVE',
+    terminal: false,
+    reasons: [...new Set(reasons)],
+  });
   if (i.mapping === 'AMBIGUOUS') return done('MAPPING_AMBIGUOUS', [...i.mappingReasons]);
   if (i.mapping === 'NONE') return done('DATA_UNAVAILABLE', [...i.mappingReasons]);
+  if (!i.w) return active([R.timingPending]);
+  const pastRetries = i.nowMs > i.w.endMs + FINALIZE_RETRY_MS;
   if (i.mapping === 'PENDING')
     return pastRetries
       ? done('ELIGIBILITY_UNKNOWN', [R.mappingPending])
-      : { status: 'ACTIVE', terminal: false, reasons: [R.mappingPending] };
+      : active([R.mappingPending]);
   if (i.spot.status === 'NO') return done('DATA_UNAVAILABLE', [...i.spot.reasons]);
 
-  const e = i.entry;
-  if (e.kind === 'none')
-    return done('DATA_UNAVAILABLE', [
-      R.entryUnavailable,
-      ...(i.pairUnsupported ? [R.pairUnsupported] : []),
-    ]);
-  if (e.kind === 'too_late') return done('DATA_UNAVAILABLE', [R.entryTooLate]);
-  if (e.kind === 'pending') {
-    if (i.pairUnsupported) return done('DATA_UNAVAILABLE', [R.pairUnsupported, R.entryUnavailable]);
-    return pastRetries
-      ? done('DATA_UNAVAILABLE', [R.entryUnavailable, R.fetchIncomplete, ...extra])
-      : { status: 'ACTIVE', terminal: false, reasons: [R.entryPending, ...extra] };
+  const extra = [
+    ...(i.fetchError ? [R.fetchError] : []),
+    ...(i.pairUnsupported ? [R.pairUnsupported] : []),
+  ];
+  const ended = i.nowMs >= i.w.endMs;
+  const ref = i.reference;
+  if (!ref || ref.status === 'PENDING') {
+    const why = ref?.status === 'PENDING' ? ref.why : 'FUTURE';
+    const reasons = [
+      R.referencePending,
+      ...(why === 'NO_BAR'
+        ? [R.missingBars]
+        : why === 'FETCH_FAILED'
+          ? [R.fetchError]
+          : why === 'PAIR_UNSUPPORTED'
+            ? [R.pairUnsupported]
+            : why === 'CHECK_PENDING'
+              ? [R.verificationPending]
+              : why === 'NOT_FETCHED' || why === 'FUTURE'
+                ? [ended ? R.fetchPending : R.windowOpen]
+                : [R.tradesUnverified]),
+      ...extra,
+    ];
+    if (!pastRetries) return active(reasons);
+    if (i.pairUnsupported || why === 'PAIR_UNSUPPORTED')
+      return done('DATA_UNAVAILABLE', [R.pairUnsupported, R.referenceUnverified]);
+    return done('UNVERIFIABLE', [R.referenceUnverified, ...reasons.slice(1), R.fetchIncomplete]);
   }
-  if (i.entryDeviates) return done('MAPPING_AMBIGUOUS', [R.priceDeviation]);
+  if (ref.status === 'NO_TRADE') return done('NO_TRADES', [R.noTrades]);
 
-  const reasons: string[] = [...i.spot.reasons.filter((r) => r !== R.noTradesNearSignal), ...extra];
-  if (e.stale) reasons.push(R.entryStale);
-  if (i.cov.missingBars > 0) reasons.push(R.missingBars);
-  if (i.pairUnsupported) reasons.push(R.pairUnsupported);
-  const elapsed = i.nowMs >= i.w.cutoffMs;
-  const synced = i.cov.observedThroughMs >= i.w.endExclusiveMs;
-  if (!elapsed || !synced) {
-    if (elapsed && pastRetries) return done('PARTIAL', [...reasons, R.fetchIncomplete]);
-    return {
-      status: 'ACTIVE',
-      terminal: false,
-      reasons: [...reasons, elapsed ? R.fetchPending : R.windowOpen],
+  const proven = !!i.highest?.proven && !!i.lowest?.proven && !!i.lowBeforeHigh?.proven;
+  const complete = !!i.cov?.candlesComplete && proven;
+  const gapReasons = [
+    ...blockingReasons(i.highest),
+    ...blockingReasons(i.lowest),
+    ...blockingReasons(i.lowBeforeHigh),
+    ...(i.cov && i.cov.minutesMissing > 0 ? [R.missingBars] : []),
+  ];
+  const spotReasons = i.spot.reasons.filter((r) => r !== R.noTradesNearSignal);
+  if (!ended)
+    return active([
+      R.windowOpen,
+      ...spotReasons,
+      ...gapReasons.filter((r) => r !== R.fetchPending),
+      ...extra,
+    ]);
+  if (!complete) {
+    const reasons = [...spotReasons, ...gapReasons, ...extra];
+    if (!pastRetries) return active(reasons.length ? reasons : [R.fetchPending]);
+    return done('PARTIAL', [...reasons, R.fetchIncomplete]);
+  }
+  if (i.spot.status !== 'YES')
+    return pastRetries ? done('ELIGIBILITY_UNKNOWN', spotReasons) : active(spotReasons);
+  return done('FINAL', spotReasons);
+}
+
+// ── Review flags ────────────────────────────────────────────────────────────────────────────
+
+export interface FlagInput {
+  reference: ReferenceEval | null;
+  highest: ExtremeEval | null;
+  lowest: ExtremeEval | null;
+  checks: ReadonlyMap<number, MinuteCheck>;
+  bars: ReadonlyMap<number, Bar>;
+  cmcPrice: DValue;
+  mappingSnapshotOld: boolean;
+}
+
+/**
+ * Review flags (operator decisions 2026-11-25): a delayed reference (≥ 1 whole silent minute), a
+ * same-millisecond tie at the reference, an extreme set in a minute with exactly one trade (thin
+ * market), the CMC identity deviation and an old mapping snapshot. Flags never change a value or a
+ * status and never exclude an observation.
+ */
+export function reviewFlags(i: FlagInput): { flags: string[]; evidence: Record<string, unknown> } {
+  const flags: string[] = [];
+  const evidence: Record<string, unknown> = {};
+  const ref = i.reference?.status === 'VERIFIED' ? i.reference : null;
+  if (ref?.delayed) {
+    flags.push(F.referenceDelayed);
+    evidence.referenceDelayed = { delayMs: ref.delayMs, silentMinutes: ref.silentMinutes };
+  }
+  if (ref && ref.sameMs.some((t) => !t.price.eq(ref.trade.price))) {
+    flags.push(F.referenceSameMsTie);
+    evidence.referenceSameMsTie = ref.sameMs.map((t) => ({
+      id: t.id,
+      price: t.price.toFixed(),
+      ord: t.ord,
+    }));
+  }
+  for (const [e, flag] of [
+    [i.highest, F.singleTradeHigh],
+    [i.lowest, F.singleTradeLow],
+  ] as const) {
+    if (!e?.best || e.bestMinuteMs === null) continue;
+    const c = i.checks.get(e.bestMinuteMs);
+    if (c?.status !== 'VERIFIED' || c.trades.length !== 1) continue;
+    flags.push(flag);
+    const bar = i.bars.get(e.bestMinuteMs);
+    evidence[flag === F.singleTradeHigh ? 'singleTradeHigh' : 'singleTradeLow'] = {
+      tradeId: e.best.id,
+      time: new Date(e.best.timeMs).toISOString(),
+      price: e.best.price.toFixed(),
+      qty: e.best.qty.toFixed(),
+      quoteValueUsdt: e.best.price.times(e.best.qty).toFixed(),
+      minuteTrades: 1,
+      minuteVolume: bar?.volume.toFixed() ?? null,
+      candle: bar
+        ? {
+            open: bar.open.toFixed(),
+            high: bar.high.toFixed(),
+            low: bar.low.toFixed(),
+            close: bar.close.toFixed(),
+          }
+        : null,
     };
   }
-  if (!i.extremes) reasons.push(R.noTrades);
-  if (i.spot.status !== 'YES')
-    return pastRetries
-      ? done('ELIGIBILITY_UNKNOWN', reasons)
-      : { status: 'ACTIVE', terminal: false, reasons };
-  if (i.cov.missingBars === 0 && !e.stale && i.extremes) return done('FINAL', reasons);
-  if (i.cov.missingBars > 0 && !pastRetries) return { status: 'ACTIVE', terminal: false, reasons };
-  return done('PARTIAL', reasons);
-}
-
-/** Minutes of the window the next fetch should cover for one observation; null when complete. */
-export function neededFromMs(w: ObsWindow, syncedUntilMs: number | null): number | null {
-  const from = w.entryFromMs - ENTRY_LOOKBACK_MS;
-  if (syncedUntilMs !== null && syncedUntilMs >= w.endExclusiveMs) return null;
-  return syncedUntilMs === null || syncedUntilMs < from ? from : syncedUntilMs;
-}
-
-/** Whether a bar with trades lies in [t0 − 1 h, t0 + 1 h] (trading at the signal). */
-export function tradeNearSignal(sortedBars: readonly Bar[], w: ObsWindow): boolean {
-  return sortedBars.some(
-    (b) =>
-      b.openMs >= w.t0Ms - ENTRY_LOOKBACK_MS &&
-      b.openMs < w.t0Ms + SIGNAL_TRADE_WINDOW_MS &&
-      b.volume.gt(0),
-  );
-}
-
-/** Whether a bar exists in the hour before t0 (the series spans the signal). */
-export function barBeforeSignal(sortedBars: readonly Bar[], w: ObsWindow): boolean {
-  return sortedBars.some((b) => b.openMs < w.t0Ms && b.openMs >= w.t0Ms - ENTRY_LOOKBACK_MS);
+  if (ref && deviatesFromCmc(ref.trade.price, i.cmcPrice)) {
+    flags.push(F.priceDeviation);
+    evidence.priceDeviation = {
+      reference: ref.trade.price.toFixed(),
+      cmcPrice: i.cmcPrice.toFixed(),
+      deviationPct: pctChange(ref.trade.price, i.cmcPrice).toFixed(),
+      limitPct: new D(MAPPING_MAX_PRICE_DEVIATION).times(100).toFixed(),
+    };
+  }
+  if (i.mappingSnapshotOld) flags.push(F.mappingSnapshotOld);
+  return { flags, evidence };
 }

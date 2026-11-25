@@ -33,12 +33,25 @@ export class SpotPair {
   @Column({ name: 'last_fetch_at', type: 'timestamptz', nullable: true })
   lastFetchAt!: Date | null;
 
-  /** `ok`, `unsupported` (LBank error 10008) or `error`. */
+  /** Outcome of the last candle attempt: `ok`, `unsupported` (LBank error 10008) or `error`. */
   @Column({ name: 'last_fetch_status', type: 'text', nullable: true })
   lastFetchStatus!: string | null;
 
   @Column({ name: 'last_error', type: 'text', nullable: true })
   lastError!: string | null;
+
+  /** The last successful candle fetch (`last_fetch_at` is the last attempt). */
+  @Column({ name: 'last_success_at', type: 'timestamptz', nullable: true })
+  lastSuccessAt!: Date | null;
+
+  @Column({ name: 'trades_last_attempt_at', type: 'timestamptz', nullable: true })
+  tradesLastAttemptAt!: Date | null;
+
+  @Column({ name: 'trades_last_success_at', type: 'timestamptz', nullable: true })
+  tradesLastSuccessAt!: Date | null;
+
+  @Column({ name: 'trades_last_error', type: 'text', nullable: true })
+  tradesLastError!: string | null;
 
   /** First time the API answered "currency pair nonsupport" (cleared when it serves bars again). */
   @Column({ name: 'unsupported_since', type: 'timestamptz', nullable: true })

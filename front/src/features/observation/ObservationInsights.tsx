@@ -1,6 +1,7 @@
-// LBank Spot Price Observation summary, kept on the Data page (the LBank Spot page has only the
-// table and its filters): the cutover, counts with their denominators, final-only statistics by
-// stars and by Spot / Futures class, the legacy wind-down, the export and "Update now".
+// LBank Spot price observation summary, kept on the Data page (the LBank Spot page has only the
+// table and its filters): the cutover, counts with their denominators, Final-only statistics of the
+// highest and lowest return by stars and by Spot / Futures evidence class, data freshness (not the
+// recompute time), the legacy wind-down, the export and "Update now" with what it actually did.
 import { useCallback, useEffect, useState } from 'react';
 
 import { HelpButton } from '../../components/Help';
@@ -9,7 +10,7 @@ import { api, apiPost, errorMessage } from '../../lib/api';
 import { apiUrl } from '../../lib/config';
 import { type StatusMap, humanize, triggerText } from '../../lib/constants';
 import { toast } from '../../lib/feedback';
-import { fmtAgo, fmtInt, fmtPct, fmtTime, utc } from '../../lib/format';
+import { fmtAgo, fmtInt, fmtPct, fmtSpan, fmtTime, utc } from '../../lib/format';
 import { useApp } from '../../state/app';
 
 import type { LegacyStatus, ObservationSummary, StatsJson } from './types';
@@ -26,8 +27,8 @@ interface StatRow {
   label: string;
   events: number;
   coins: number;
-  rise: StatsJson;
-  drop: StatsJson;
+  highest: StatsJson;
+  lowest: StatsJson;
 }
 
 const pct = (v: string | null) => (v === null ? '—' : fmtPct(v));
@@ -39,28 +40,51 @@ const STAT_COLS: Column<StatRow>[] = [
   {
     label: 'Coins',
     num: true,
-    title: "Distinct coins: one coin's events follow one price path",
+    title: "Distinct coins: one coin's overlapping events follow one price path (correlated)",
     render: (g) => fmtInt(g.coins),
   },
-  { label: 'Max rise, median', num: true, render: (g) => pct(g.rise.median) },
   {
-    label: 'Max rise, middle half',
+    label: 'Highest return, median',
     num: true,
-    title: '25th to 75th percentile',
-    render: (g) => range(g.rise),
+    title: 'Maximum rise vs the reference trade (≥ 0); not profit',
+    render: (g) => pct(g.highest.median),
   },
-  { label: 'Max drop, median', num: true, render: (g) => pct(g.drop.median) },
   {
-    label: 'Max drop, middle half',
+    label: 'Highest, middle half',
     num: true,
     title: '25th to 75th percentile',
-    render: (g) => range(g.drop),
+    render: (g) => range(g.highest),
+  },
+  {
+    label: 'Lowest return, median',
+    num: true,
+    title: 'Maximum decline vs the reference trade (≤ 0); not a stop loss',
+    render: (g) => pct(g.lowest.median),
+  },
+  {
+    label: 'Lowest, middle half',
+    num: true,
+    title: '25th to 75th percentile',
+    render: (g) => range(g.lowest),
   },
 ];
+
+function lastRunText(s: ObservationSummary): string {
+  const r = s.lastRun;
+  if (!r) return 'runs every 15 minutes';
+  const did =
+    r.fetchedNewData === null
+      ? ''
+      : r.fetchedNewData
+        ? ` · fetched ${fmtInt(r.candlesStored ?? 0)} candles, ${fmtInt(r.tradeMinutesChecked ?? 0)} trade minutes`
+        : ' · no new LBank data: recomputed only';
+  return `${fmtAgo(r.startedAt)}, ${triggerText(r.trigger)}${did}`;
+}
 
 function Tiles({ s }: { s: ObservationSummary }) {
   const f = s.summary.final;
   const c = s.summary.correlation;
+  const fr = s.freshness;
   return (
     <div className="tiles">
       <div className="tile">
@@ -81,20 +105,42 @@ function Tiles({ s }: { s: ObservationSummary }) {
           {`on ${fmtInt(s.summary.total.coins)} coins · ${fmtInt(c.overlappingPairs)} overlapping pairs`}
         </span>
       </div>
-      <div className="tile" title="Every statistic below uses Final observations only">
-        <span className="tile-label">Final</span>
+      <div
+        className="tile"
+        title="Every statistic below uses Final observations of the current rules only"
+      >
+        <span className="tile-label">{`Final (${s.rulesVersion})`}</span>
         <b>{`${fmtInt(f.events)} events · ${fmtInt(f.coins)} coins`}</b>
         <span className="muted small">
-          {`provisional ${fmtInt(s.summary.provisional.events)} · not measurable ${fmtInt(s.summary.unmeasured.events)}`}
+          {`${fmtInt(f.flagged.singleTrade.events)} with a thin-market extreme · ${fmtInt(f.flagged.delayedReference.events)} delayed (kept)`}
+        </span>
+      </div>
+      <div className="tile" title="Never in a statistic">
+        <span className="tile-label">Not in the statistics</span>
+        <b>{`${fmtInt(s.summary.provisional.events)} active`}</b>
+        <span className="muted small">
+          {`${fmtInt(s.summary.partial.events)} partial · ${fmtInt(s.summary.noTrades.events)} no trades · ${fmtInt(s.summary.unverifiable.events)} unverifiable · ${fmtInt(s.summary.unmeasured.events)} not measurable`}
+        </span>
+      </div>
+      <div
+        className="tile"
+        title="How current the LBank data is, independent of when the job last ran or recomputed"
+      >
+        <span className="tile-label">Data freshness</span>
+        <b>
+          {fr.oldestOpenLagMs === null
+            ? 'No open window'
+            : `${fmtSpan(fr.oldestOpenLagMs / 1000)} behind`}
+        </b>
+        <span className="muted small">
+          {`oldest open window through ${fr.oldestOpenDataThrough ? fmtTime(fr.oldestOpenDataThrough) : '—'} · last LBank fetch ${fmtAgo(fr.lastSourceFetchAt)}${fr.pairsWithFetchErrors ? ` · ${fr.pairsWithFetchErrors} pairs failing` : ''}${fr.observationsAwaitingVerification ? ` · ${fr.observationsAwaitingVerification} awaiting trade checks` : ''}`}
         </span>
       </div>
       <div className="tile">
         <span className="tile-label">Last update</span>
         <b>{s.lastRun ? <Lab map={RUN_STATUS} k={s.lastRun.status} /> : 'Not yet'}</b>
         <span className="muted small">
-          {s.lastRun
-            ? `${fmtAgo(s.lastRun.startedAt)}, ${triggerText(s.lastRun.trigger)}`
-            : 'runs every 15 minutes'}
+          {lastRunText(s)}
           {s.lastSuccessfulRunAt && s.lastRun?.status !== 'succeeded'
             ? ` · last successful ${fmtAgo(s.lastSuccessfulRunAt)}`
             : ''}
@@ -142,7 +188,10 @@ export default function ObservationInsights() {
     setStarting(true);
     try {
       const r = await apiPost<{ ok: boolean; reason?: string }>('observations/update');
-      if (r.ok) toast('The LBank observation update started; results refresh with the next poll.');
+      if (r.ok)
+        toast(
+          'The LBank observation update started; “Last update” shows whether it fetched new data or only recomputed.',
+        );
       else toast(`The update did not start: ${r.reason ?? 'unknown reason'}.`, 'warning');
     } catch (err) {
       toast(`The update did not start: ${errorMessage(err)}`, 'error');
@@ -154,7 +203,14 @@ export default function ObservationInsights() {
   const f = s?.summary.final;
   const rows: StatRow[] = f
     ? [
-        { key: 'all', label: 'All', events: f.events, coins: f.coins, rise: f.rise, drop: f.drop },
+        {
+          key: 'all',
+          label: 'All',
+          events: f.events,
+          coins: f.coins,
+          highest: f.highest,
+          lowest: f.lowest,
+        },
         ...f.byStars
           .filter((g) => g.events)
           .map((g) => ({ ...g, key: `s${g.key}`, label: `${g.key}★` })),
@@ -168,7 +224,7 @@ export default function ObservationInsights() {
   return (
     <>
       <div className="panel-head">
-        <h2>LBank Spot observation</h2>
+        <h2>LBank Spot price observation</h2>
         <HelpButton topic="observationResults" />
         <span className="row-actions">
           {s && can('exports:read') ? (
@@ -181,7 +237,7 @@ export default function ObservationInsights() {
               type="button"
               className="btn"
               disabled={starting}
-              title="Fetch the latest LBank candles and recompute every open observation now"
+              title="Fetch the latest LBank candles and trades and recompute every open observation now"
               onClick={() => void runNow()}
             >
               {starting ? 'Starting…' : 'Update now'}
@@ -194,26 +250,34 @@ export default function ObservationInsights() {
         <Tiles s={s} />
       ) : (
         <div className="tiles">
-          <SkeletonTiles />
+          <SkeletonTiles n={6} />
         </div>
       )}
       <div className="panel">
         <div className="panel-head">
           <h2>Results of Final observations</h2>
-          <span className="hint">two independent price extremes on LBank Spot, not profit</span>
+          <span className="hint">
+            two independent price extremes on LBank Spot vs the first trade after the signal, never
+            summed, not profit
+          </span>
         </div>
         <div className="table-wrap">
           {s ? (
             <Table
               cols={STAT_COLS}
               rows={rows.filter((r) => r.events)}
-              empty="No Final observation yet: an observation is Final once its 168 hours have passed with every minute present."
+              empty="No Final observation yet: an observation is Final once its 168 hours have passed and every minute and deciding trade is verified."
               rowKey={(r) => r.key}
             />
           ) : (
             <SkeletonTable rows={4} />
           )}
         </div>
+        {s && f && f.events ? (
+          <p className="muted small">
+            {`Each event counts once (${fmtInt(f.events)} events on ${fmtInt(f.coins)} coins). Events of one coin whose windows overlap follow the same price path, so they are correlated, not independent; no coin-level weighting is applied.`}
+          </p>
+        ) : null}
         {leg ? <p className="muted small">{leg}</p> : null}
       </div>
     </>

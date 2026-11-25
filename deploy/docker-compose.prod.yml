@@ -35,6 +35,10 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      # The deployed commit, shown on /healthz (deploy: GIT_COMMIT=$(git rev-parse HEAD) …).
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     image: coins-predicts-api:prod
     restart: unless-stopped
     depends_on:
@@ -57,6 +61,8 @@ services:
     build:
       context: ../front
       dockerfile: Dockerfile
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     image: coins-predicts-web:prod
     restart: unless-stopped
     depends_on:

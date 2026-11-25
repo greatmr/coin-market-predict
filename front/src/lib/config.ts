@@ -30,3 +30,10 @@ export const apiUrl = (path: string): string =>
 
 /** True when the API is on another origin (cookies then need credentials: 'include'). */
 export const apiIsCrossOrigin = (): boolean => runtime.apiBase !== '';
+
+/** The API's liveness probe (outside /api), which also names the build it runs. */
+export const healthUrl = (): string => `${runtime.apiBase}/healthz`;
+
+/** The commit this dashboard bundle was built from (Docker build arg GIT_COMMIT; 'dev' locally). */
+export const UI_BUILD_COMMIT: string =
+  (import.meta.env.VITE_BUILD_COMMIT as string | undefined) || 'dev';

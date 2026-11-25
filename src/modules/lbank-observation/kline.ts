@@ -176,6 +176,104 @@ export function parseKlineResponse(body: string): KlineResponse {
   };
 }
 
+/** One row of `GET /v2/supplement/trades.do`, exact, in the response's order. */
+export interface TradeRow {
+  id: string;
+  timeMs: number;
+  price: DValue;
+  qty: DValue;
+  buyerMaker: boolean | null;
+}
+
+export type TradesResponse =
+  | {
+      kind: 'ok';
+      serverTsMs: number | null;
+      /** Well-formed rows in the response's order (LBank: ascending time; stable inside one ms). */
+      rows: TradeRow[];
+      /** Rows in the response before validation (a full page has TRADES_PAGE_SIZE). */
+      rowCount: number;
+      invalid: Array<{ index: number; reason: string }>;
+      /** Times were not ascending (the rows are kept in response order; the reader sorts). */
+      unordered: boolean;
+      responseSha256: string;
+    }
+  | {
+      kind: 'unsupported';
+      code: number;
+      message: string;
+      serverTsMs: number | null;
+      responseSha256: string;
+    }
+  | {
+      kind: 'error';
+      code: number | null;
+      message: string;
+      serverTsMs: number | null;
+      responseSha256: string;
+    };
+
+/**
+ * `GET /v2/supplement/trades.do?symbol&size(1–600)&time=<unix ms>` (verified 2026-11-25): the trades
+ * with time STRICTLY AFTER `time`, ascending; `time` in seconds is misread as milliseconds; a future
+ * `time` answers 10003. Prices and quantities keep their exact JSON digits.
+ */
+export function parseTradesResponse(body: string): TradesResponse {
+  const responseSha256 = sha256(body);
+  const { env, code, message, serverTsMs } = parseEnvelope(body);
+  if (!env || code === null)
+    return {
+      kind: 'error',
+      code: null,
+      message: `malformed response: ${message}`,
+      serverTsMs,
+      responseSha256,
+    };
+  if (code === LBANK_ERROR.pairUnsupported)
+    return { kind: 'unsupported', code, message, serverTsMs, responseSha256 };
+  if (code !== 0 || !Array.isArray(env.data))
+    return {
+      kind: 'error',
+      code,
+      message: code !== 0 ? message : 'no data array',
+      serverTsMs,
+      responseSha256,
+    };
+  const invalid: Array<{ index: number; reason: string }> = [];
+  const rows: TradeRow[] = [];
+  env.data.forEach((raw: unknown, index) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+      return invalid.push({ index, reason: 'not an object' });
+    const r = raw as Record<string, unknown>;
+    if (typeof r.id !== 'string' || !r.id.trim()) return invalid.push({ index, reason: 'no id' });
+    const timeMs = intOf(r.time);
+    if (timeMs === null || timeMs <= 0) return invalid.push({ index, reason: 'no time' });
+    const price = exactNumber(r.price);
+    const qty = exactNumber(r.qty);
+    if (!price || !qty) return invalid.push({ index, reason: 'non-numeric value' });
+    if (price.lte(0)) return invalid.push({ index, reason: 'non-positive price' });
+    if (qty.lte(0)) return invalid.push({ index, reason: 'non-positive quantity' });
+    rows.push({
+      id: r.id,
+      timeMs,
+      price,
+      qty,
+      buyerMaker: typeof r.isBuyerMaker === 'boolean' ? r.isBuyerMaker : null,
+    });
+  });
+  let unordered = false;
+  for (let i = 1; i < rows.length; i++) if (rows[i]!.timeMs < rows[i - 1]!.timeMs) unordered = true;
+  return {
+    kind: 'ok',
+    serverTsMs,
+    rows,
+    rowCount: env.data.length,
+    invalid,
+    unordered,
+    responseSha256,
+  };
+}
+
 /** `GET /v2/currencyPairs.do`: LBank's list of available Spot pairs (lower-case symbols). */
 export function parsePairsResponse(
   body: string,

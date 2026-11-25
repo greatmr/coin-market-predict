@@ -5,6 +5,7 @@ import {
   parseFuturesResponses,
   parseKlineResponse,
   parsePairsResponse,
+  parseTradesResponse,
 } from './kline.js';
 
 /** Response recorded from https://api.lbkex.com/v2/kline.do (btc_usdt, minute1, size=5) on 2026-11-24. */
@@ -114,5 +115,57 @@ describe('LBank markets lists', () => {
         { symbol: 'SOXLUSDT', base: 'SOXL', quote: 'USDT', volume24h: null },
       ],
     });
+  });
+});
+
+/** Recorded from https://api.lbkex.com/v2/supplement/trades.do (btc_usdt, size=3) on 2026-11-25. */
+const TRADES =
+  '{"msg":"Success","result":"true","data":[{"quoteQty":982.8813933,"price":59102.91,"qty":0.01663,"id":"90e662d9-660b-4f53-bae7-107817edbc4f.0","time":1795600914443,"isBuyerMaker":false},{"quoteQty":134.1636284,"price":59102.92,"qty":0.00227,"id":"644a86f2-1088-47ce-9c2d-87bd783ac674.0","time":1795600914465,"isBuyerMaker":false},{"quoteQty":112.8865581,"price":59102.91,"qty":0.00191,"id":"488c4bdc-a663-46c0-9383-bd4c0b6a541b.0","time":1795600914488,"isBuyerMaker":true}],"error_code":0,"ts":1795611721592}';
+
+describe('LBank trades response', () => {
+  it('keeps exact prices and quantities, millisecond times, ids and the response order', () => {
+    const r = parseTradesResponse(TRADES);
+    expect(r.kind).toBe('ok');
+    if (r.kind !== 'ok') return;
+    expect(r.rowCount).toBe(3);
+    expect(r.unordered).toBe(false);
+    expect(
+      r.rows.map((t) => [
+        t.id.slice(0, 8),
+        t.timeMs,
+        t.price.toFixed(),
+        t.qty.toFixed(),
+        t.buyerMaker,
+      ]),
+    ).toEqual([
+      ['90e662d9', 1795600914443, '59102.91', '0.01663', false],
+      ['644a86f2', 1795600914465, '59102.92', '0.00227', false],
+      ['488c4bdc', 1795600914488, '59102.91', '0.00191', true],
+    ]);
+  });
+
+  it('flags rows out of time order, drops invalid rows, and keeps errors apart from an empty page', () => {
+    const r = parseTradesResponse(
+      '{"result":"true","data":[{"id":"b","time":20,"price":"2","qty":"1"},{"id":"a","time":10,"price":"1","qty":"1"},{"id":"z","time":30,"price":"0","qty":"1"},{"time":40,"price":"1","qty":"1"}],"error_code":0,"ts":1}',
+    );
+    expect(r).toMatchObject({ kind: 'ok', rowCount: 4, unordered: true });
+    if (r.kind === 'ok')
+      expect(r.invalid.map((i) => i.reason)).toEqual(['non-positive price', 'no id']);
+    expect(parseTradesResponse('{"result":"true","data":[],"error_code":0,"ts":1}')).toMatchObject({
+      kind: 'ok',
+      rows: [],
+      rowCount: 0,
+    });
+    // Recorded: a future `time` and an unknown pair.
+    expect(
+      parseTradesResponse(
+        '{"result":"false","msg":"Illegal parameter","error_code":10003,"ts":1795611722955}',
+      ),
+    ).toMatchObject({ kind: 'error', code: 10003 });
+    expect(
+      parseTradesResponse(
+        '{"result":"false","msg":"currency pair nonsupport","error_code":10008,"ts":1795611725499}',
+      ),
+    ).toMatchObject({ kind: 'unsupported' });
   });
 });

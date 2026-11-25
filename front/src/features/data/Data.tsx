@@ -15,6 +15,7 @@ import ObservationInsights from '../observation/ObservationInsights';
 import Quality, { qualityMeta } from '../overview/Quality';
 import type { ScanCountsDetail } from '../overview/types';
 
+import BuildInfo from './BuildInfo';
 import StoragePanel from './StoragePanel';
 
 export default function Data() {
@@ -68,6 +69,7 @@ export default function Data() {
       <ObservationInsights />
       <ForwardInsights />
       {can('health:read') ? <StoragePanel /> : null}
+      <BuildInfo />
     </>
   );
 }

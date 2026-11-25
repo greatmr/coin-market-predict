@@ -144,11 +144,14 @@ const schema = z
     LBANK_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(1000).default(60),
     LBANK_MONTHLY_REQUEST_BUDGET: z.coerce.number().int().min(100).default(400_000),
     /**
-     * Shared 1-minute candles older than this many days are deleted once no unfinished observation
-     * of their pair needs them (finalized results keep their values and the series' SHA-256; LBank
-     * serves years of 1-minute history). 0 keeps every candle (~35 MB a day at ~225 active pairs).
+     * Shared raw 1-minute candles older than this many days, once no unfinished observation of their
+     * pair needs them, are archived per pair and UTC day (gzip CSV + SHA-256, kept) and then deleted.
+     * 0 keeps every raw candle (no archive needed).
      */
     LBANK_CANDLE_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).default(7),
+    /** Build metadata stamped into the image (`GIT_COMMIT`, `BUILD_TIME` build args): /healthz. */
+    APP_BUILD_COMMIT: z.string().trim().max(64).default('unknown'),
+    APP_BUILD_TIME: z.string().trim().max(40).default('unknown'),
     /** CMC Markets venue rows are refreshed at most this often per review candidate. */
     TIER1_VENUE_REFRESH_HOURS: z.coerce.number().min(1).max(168).default(24),
     TIER1_VENUE_MAX_ASSETS_PER_RUN: z.coerce.number().int().min(0).max(2000).default(60),

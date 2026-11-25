@@ -74,9 +74,12 @@ alias dc='docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod'
 ## Update
 ```bash
 cd /root/jahan/market-predict && git pull
-dc up -d --build --remove-orphans
+GIT_COMMIT=$(git rev-parse HEAD) BUILD_TIME=$(date -u +%FT%TZ) dc up -d --build --remove-orphans
+curl -fsS http://127.0.0.1:38417/healthz   # build.commit = the commit just pulled
 ```
-`--remove-orphans` matters once, on the first update to the two-container layout (2026-11-15): it
+`GIT_COMMIT` / `BUILD_TIME` are stamped into both images (build args): `/healthz` reports the API's
+commit and the Data page shows the dashboard's next to it, so the served code can be matched to git.
+Without them the build reads `unknown`. `--remove-orphans` matters once, on the first update to the two-container layout (2026-11-15): it
 removes the old single `app` container, which otherwise keeps port 38417 and stops `web` from
 starting. The exports volume (`app_var`) is reused by `api`.
 Data survives: it lives in the named volumes. When the update brings a new migration (for example

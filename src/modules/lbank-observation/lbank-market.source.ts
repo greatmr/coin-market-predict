@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { D } from '../../common/utils/decimal.js';
 import { type Clock, systemClock } from '../../common/utils/time.js';
 
 import type { FixtureCmcMarket } from '../sources/fixture/fixture-cmc.js';
@@ -10,9 +11,11 @@ import { LBANK } from '../strategy/index.js';
 import {
   type FuturesContract,
   type KlineResponse,
+  type TradesResponse,
   parseFuturesResponses,
   parseKlineResponse,
   parsePairsResponse,
+  parseTradesResponse,
 } from './kline.js';
 import { lbankContractFromUrl, lbankSpotSymbolFromUrl } from './observation-rules.js';
 import {
@@ -20,6 +23,7 @@ import {
   LBANK_SPOT_PROVIDER,
   MINUTE_MS,
   PRICE_INTERVAL,
+  TRADES_PAGE_SIZE,
 } from './observation.constants.js';
 
 /**
@@ -32,6 +36,11 @@ export interface LbankMarketSource {
   readonly isLive: boolean;
   /** `GET /v2/kline.do?symbol&size&type=minute1&time` from `fromMs` (a whole UTC minute). */
   klines(symbol: string, fromMs: number, size: number): Promise<KlineFetch>;
+  /**
+   * `GET /v2/supplement/trades.do?symbol&size&time`: up to `size` (≤ 600) trades with time STRICTLY
+   * AFTER `afterMs`, ascending. `afterMs` must not be in the future (LBank answers 10003).
+   */
+  trades(symbol: string, afterMs: number, size: number): Promise<TradesFetch>;
   /** `GET /v2/currencyPairs.do`. */
   spotPairs(): Promise<ListFetch<string>>;
   /** Futures contract list joined with 24 h volume (`/cfd/openApi/v1/pub/instrument` + `marketData`). */
@@ -45,6 +54,13 @@ export interface KlineFetch {
   response: KlineResponse;
 }
 
+export interface TradesFetch {
+  url: string;
+  requestedAt: Date;
+  durationMs: number;
+  response: TradesResponse;
+}
+
 export type ListFetch<T> =
   | { ok: true; url: string; fetchedAt: Date; items: T[]; sha256: string }
   | { ok: false; url: string; fetchedAt: Date; error: string };
@@ -53,7 +69,7 @@ export const LBANK_MARKET_SOURCE = Symbol('LBANK_MARKET_SOURCE');
 
 export const LBANK_SPOT_PROVIDER_INFO: ProviderInfo = {
   id: LBANK_SPOT_PROVIDER,
-  name: 'LBank public market data (Spot klines, pairs; Futures contracts)',
+  name: 'LBank public market data (Spot klines, trades, pairs; Futures contracts)',
   accessMethod: 'official_api',
   isLive: true,
   baseUrl: 'https://api.lbkex.com',
@@ -91,6 +107,24 @@ export class LbankApiSource implements LbankMarketSource {
       requestedAt,
       durationMs: Date.now() - started,
       response: parseKlineResponse(body),
+    };
+  }
+
+  async trades(symbol: string, afterMs: number, size: number): Promise<TradesFetch> {
+    const params = new URLSearchParams({
+      symbol,
+      size: String(Math.min(TRADES_PAGE_SIZE, Math.max(1, size))),
+      time: String(Math.floor(afterMs)),
+    });
+    const url = `${this.spotBase}/v2/supplement/trades.do?${params.toString()}`;
+    const requestedAt = this.clock.now();
+    const started = Date.now();
+    const body = await this.http.getText(url);
+    return {
+      url,
+      requestedAt,
+      durationMs: Date.now() - started,
+      response: parseTradesResponse(body),
     };
   }
 
@@ -136,8 +170,8 @@ const FIXTURE_LISTED_FROM = Date.UTC(2026, 0, 1);
  * A deterministic synthetic LBank market for the fixture data source (every value SYNTHETIC): the
  * fixture's LBank Spot pairs and perpetuals, with 1-minute candles that follow LBank's documented
  * conventions (OPEN = previous CLOSE, filled minutes without trades, the current minute in progress,
- * first bars returned for a time before listing), around each coin's synthetic CMC price. Symbols
- * containing `illiquid` trade rarely.
+ * first bars returned for a time before listing) and trades consistent with them (exclusive `time`,
+ * ascending), around each coin's synthetic CMC price. Symbols containing `illiquid` trade rarely.
  */
 export class FixtureLbankSource implements LbankMarketSource {
   readonly id = 'fixture';
@@ -181,18 +215,58 @@ export class FixtureLbankSource implements LbankMarketSource {
     return this.price(symbol, minute);
   }
 
-  private bar(symbol: string, minute: number, nowMs: number): Array<number | string> {
+  /** O, H, L, C, V as LBank would send them (8 significant digits); the minute in progress is partial. */
+  private ohlcv(
+    symbol: string,
+    minute: number,
+    nowMs: number,
+  ): [string, string, string, string, string] {
     const fmt = (n: number) => Number(n.toPrecision(8)).toString();
     const open = this.lastTradePrice(symbol, minute - 1);
-    if (!this.traded(symbol, minute))
-      return [minute * 60, fmt(open), fmt(open), fmt(open), fmt(open), '0'];
+    if (!this.traded(symbol, minute)) return [fmt(open), fmt(open), fmt(open), fmt(open), '0'];
     // The minute in progress has seen only part of its trades.
     const progress = Math.min(1, Math.max(0.05, (nowMs - minute * MINUTE_MS) / MINUTE_MS));
     const close = open + (this.price(symbol, minute) - open) * progress;
     const high = Math.max(open, close) * (1 + 0.002 * unit(`h:${symbol}:${minute}`) * progress);
     const low = Math.min(open, close) * (1 - 0.002 * unit(`l:${symbol}:${minute}`) * progress);
     const volume = (1 + 999 * unit(`v:${symbol}:${minute}`)) * progress;
-    return [minute * 60, fmt(open), fmt(high), fmt(low), fmt(close), fmt(volume)];
+    return [fmt(open), fmt(high), fmt(low), fmt(close), fmt(volume)];
+  }
+
+  private bar(symbol: string, minute: number, nowMs: number): Array<number | string> {
+    return [minute * 60, ...this.ohlcv(symbol, minute, nowMs)];
+  }
+
+  /**
+   * The trades of a closed traded minute, consistent with its candle: one at the Low (+7.123 s), one
+   * at the High (+23.456 s) and one at the Close (+51.789 s); quantities sum exactly to the volume.
+   * The OPEN (the previous close) is not traded, as on LBank.
+   */
+  private minuteTrades(symbol: string, minute: number) {
+    const [, high, low, close, volume] = this.ohlcv(symbol, minute, (minute + 2) * MINUTE_MS);
+    if (volume === '0') return [];
+    const v = new D(volume);
+    const q1 = v.times('0.25');
+    const q2 = v.times('0.35');
+    const q3 = v.minus(q1).minus(q2);
+    const at = minute * MINUTE_MS;
+    return [
+      { id: `fx-${symbol}-${minute}-1`, time: at + 7_123, price: low, qty: q1.toFixed(), m: true },
+      {
+        id: `fx-${symbol}-${minute}-2`,
+        time: at + 23_456,
+        price: high,
+        qty: q2.toFixed(),
+        m: false,
+      },
+      {
+        id: `fx-${symbol}-${minute}-3`,
+        time: at + 51_789,
+        price: close,
+        qty: q3.toFixed(),
+        m: true,
+      },
+    ];
   }
 
   async klines(symbol: string, fromMs: number, size: number): Promise<KlineFetch> {
@@ -218,6 +292,45 @@ export class FixtureLbankSource implements LbankMarketSource {
       body = `{"msg":"Success","result":"true","data":${JSON.stringify(data).replace(/"(-?\d[\d.e+-]*)"/g, '$1')},"error_code":0,"ts":${now.getTime()}}`;
     }
     return { url, requestedAt: now, durationMs: 0, response: parseKlineResponse(body) };
+  }
+
+  async trades(symbol: string, afterMs: number, size: number): Promise<TradesFetch> {
+    await this.loadRefs();
+    const now = this.clock.now();
+    const url = `fixture://lbank/v2/supplement/trades.do?symbol=${symbol}&size=${size}&time=${Math.floor(afterMs)}`;
+    const pairs = await this.spotPairs();
+    let body: string;
+    if (!new Set(pairs.ok ? pairs.items : []).has(symbol)) {
+      body = JSON.stringify({
+        result: 'false',
+        msg: 'currency pair nonsupport',
+        error_code: 10008,
+        ts: now.getTime(),
+      });
+    } else if (afterMs > now.getTime()) {
+      body = JSON.stringify({
+        result: 'false',
+        msg: 'Illegal parameter',
+        error_code: 10003,
+        ts: now.getTime(),
+      });
+    } else {
+      const rows: string[] = [];
+      const lastClosed = Math.floor(now.getTime() / MINUTE_MS) - 1;
+      const limit = Math.min(size, TRADES_PAGE_SIZE);
+      for (
+        let m = Math.max(Math.floor(afterMs / MINUTE_MS), FIXTURE_LISTED_FROM / MINUTE_MS);
+        m <= lastClosed && rows.length < limit;
+        m++
+      )
+        for (const t of this.minuteTrades(symbol, m))
+          if (t.time > afterMs && rows.length < limit)
+            rows.push(
+              `{"quoteQty":0,"price":${t.price},"qty":${t.qty},"id":"${t.id}","time":${t.time},"isBuyerMaker":${t.m}}`,
+            );
+      body = `{"msg":"Success","result":"true","data":[${rows.join(',')}],"error_code":0,"ts":${now.getTime()}}`;
+    }
+    return { url, requestedAt: now, durationMs: 0, response: parseTradesResponse(body) };
   }
 
   async spotPairs(): Promise<ListFetch<string>> {

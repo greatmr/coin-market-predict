@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   COVERAGE_FILTERS,
   ELIGIBILITY_CLASSES,
+  FLAG_FILTERS,
   OBSERVATION_STATUSES,
   OBS_SORT_KEYS,
 } from '../../lbank-observation/observation.constants.js';
@@ -19,6 +20,7 @@ export const ObservationFilterSchema = z.object({
   eligibility: z.enum(ELIGIBILITY_CLASSES).optional(),
   stars: z.coerce.number().int().min(1).max(3).optional(),
   coverage: z.enum(COVERAGE_FILTERS).optional(),
+  flags: z.enum(FLAG_FILTERS).optional(),
   from: isoDateTime.optional(),
   to: isoDateTime.optional(),
   search: z.string().trim().max(64).optional(),

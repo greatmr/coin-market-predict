@@ -4,29 +4,30 @@ import { D } from '../../common/utils/decimal.js';
 
 import type { ResolvedPair } from '../strategy/index.js';
 
+import { type AssessInput, type Assessment, assess } from './observation-assess.js';
 import {
   type Bar,
-  type ListingDecision,
-  type StatusInput,
+  type MinuteCheck,
+  type PairSync,
+  type Trade,
+  barMap,
   classifyEligibility,
-  computeExtremes,
   coverage,
-  entryDeviatesFromCmc,
+  deviatesFromCmc,
+  findReference,
   futuresAtSignal,
   lbankContractFromUrl,
   lbankSpotSymbolFromUrl,
-  neededFromMs,
-  observationStatus,
   observationWindow,
-  pctChange,
+  rangeExtreme,
   resolveSpotPair,
-  selectEntry,
   spotAtSignal,
 } from './observation-rules.js';
 import { FINALIZE_RETRY_MS, MINUTE_MS, WINDOW_MS } from './observation.constants.js';
 
 /** Every value below is SYNTHETIC test data unless a comment says it was recorded from LBank. */
 const T = (s: string) => new Date(s).getTime();
+const M = MINUTE_MS;
 const bar = (ms: number, o: string, h: string, l: string, c: string, v = '10'): Bar => ({
   openMs: ms,
   open: new D(o),
@@ -35,344 +36,540 @@ const bar = (ms: number, o: string, h: string, l: string, c: string, v = '10'): 
   close: new D(c),
   volume: new D(v),
 });
-/** Contiguous minutes from `fromMs`, flat at `price` with volume 10 unless `at` overrides a minute. */
-function series(fromMs: number, n: number, price = '1', at: Record<number, Bar> = {}): Bar[] {
-  return Array.from(
-    { length: n },
-    (_, i) => at[i] ?? bar(fromMs + i * MINUTE_MS, price, price, price, price),
-  );
+/** A minute without trades, as LBank fills it: O = H = L = C = the previous close, volume 0. */
+const flat = (ms: number, price: string) => bar(ms, price, price, price, price, '0');
+const trade = (id: string, ms: number, price: string, qty = '1', ord = 0): Trade => ({
+  id,
+  timeMs: ms,
+  ord,
+  price: new D(price),
+  qty: new D(qty),
+  buyerMaker: null,
+});
+const verified = (minuteMs: number, trades: Trade[]): MinuteCheck => ({
+  minuteMs,
+  status: 'VERIFIED',
+  trades,
+  tradeCount: trades.length,
+  qtySum: trades.reduce((s, t) => s.plus(t.qty), new D(0)),
+  candleVolume: null,
+  attempts: 1,
+  error: null,
+});
+const failed = (minuteMs: number, status: MinuteCheck['status']): MinuteCheck => ({
+  minuteMs,
+  status,
+  trades: [],
+  tradeCount: null,
+  qtySum: null,
+  candleVolume: null,
+  attempts: 1,
+  error: status,
+});
+/** Zero-volume minutes [fromMs, toMs) at `price`. */
+const flats = (fromMs: number, toMs: number, price: string) => {
+  const out: Bar[] = [];
+  for (let m = fromMs; m < toMs; m += M) out.push(flat(m, price));
+  return out;
+};
+const syncOf = (syncedUntilMs: number | null, nowMs: number, over: Partial<PairSync> = {}) => ({
+  syncedUntilMs,
+  unsupported: false,
+  lastFetchFailed: false,
+  closedNowMs: Math.floor((nowMs - 5_000) / M) * M,
+  ...over,
+});
+
+/** A pair's market: candles plus the complete trade lists LBank would return per minute. */
+class Market {
+  bars = new Map<number, Bar>();
+  trades = new Map<number, Trade[]>();
+  checks = new Map<number, MinuteCheck>();
+  checked: number[] = [];
+  set(...bars: Bar[]) {
+    for (const b of bars) this.bars.set(b.openMs, b);
+    return this;
+  }
+  /** A traded minute: its candle (High / Low may be the carried OPEN) and its trades. */
+  traded(b: Bar, trades: Trade[]) {
+    this.bars.set(b.openMs, b);
+    this.trades.set(b.openMs, trades);
+    return this;
+  }
+  sorted() {
+    return [...this.bars.values()].sort((a, b) => a.openMs - b.openMs);
+  }
 }
 
-describe('observation window (exactly t0 + 168 h)', () => {
-  it('t0 inside a minute: entry from the next minute, the straddling final minute is not observed', () => {
-    const w = observationWindow(new Date('2026-11-26T00:07:00.078Z'));
-    expect(new Date(w.cutoffMs).toISOString()).toBe('2026-12-03T00:07:00.078Z');
-    expect(new Date(w.entryFromMs).toISOString()).toBe('2026-11-26T00:08:00.000Z');
-    expect(new Date(w.endExclusiveMs).toISOString()).toBe('2026-12-03T00:07:00.000Z');
-    expect(w.expectedBars).toBe(10_079);
-    expect(w.startUnobservedMs).toBe(59_922);
-    expect(w.boundaryUnobservedMs).toBe(78);
+/**
+ * The job's loop without I/O: assess, check the minutes it asks for (from the market's trade
+ * lists), repeat until nothing more is asked.
+ */
+function solve(mk: Market, over: Partial<AssessInput> & Pick<AssessInput, 'now' | 'start'>) {
+  const bars = mk.sorted();
+  const input = (): AssessInput => ({
+    t0: over.start ?? over.now,
+    cmcPrice: new D('1'),
+    mapping: 'OK',
+    mappingReasons: [],
+    bars,
+    barsByMinute: barMap(bars),
+    checks: mk.checks,
+    sync: syncOf(bars.at(-1) ? bars.at(-1)!.openMs + M : null, over.now.getTime()),
+    unsupportedSince: null,
+    spotListed: true,
+    futures: { status: 'UNKNOWN', reasons: ['FUTURES_SNAPSHOT_MISSING'] },
+    fetchError: null,
+    mappingSnapshotOld: false,
+    ...over,
+  });
+  let a: Assessment = assess(input());
+  for (let round = 0; round < 50 && a.needs.length; round++) {
+    for (const m of a.needs) {
+      mk.checked.push(m);
+      mk.checks.set(m, verified(m, mk.trades.get(m) ?? []));
+    }
+    a = assess(input());
+  }
+  return a;
+}
+
+describe('observation window: exactly [start, start + 168 h)', () => {
+  it('a start inside a minute: 10 081 touched minutes, the first and last partial', () => {
+    const w = observationWindow(new Date('2026-11-25T00:15:32.457Z'));
+    expect(w.endMs - w.startMs).toBe(WINDOW_MS);
+    expect(new Date(w.endMs).toISOString()).toBe('2026-12-02T00:15:32.457Z');
+    expect(new Date(w.startMinuteMs).toISOString()).toBe('2026-11-25T00:15:00.000Z');
+    expect(new Date(w.endMinuteExclusiveMs).toISOString()).toBe('2026-12-02T00:16:00.000Z');
+    expect(w.minutes).toBe(10_081);
+    expect(new Date(w.partialEndMinuteMs!).toISOString()).toBe('2026-12-02T00:15:00.000Z');
   });
 
-  it('t0 on a minute: 10 080 bars, nothing unobserved; never extended to the end of a UTC day', () => {
+  it('a start on a whole minute: 10 080 minutes; never extended to the end of a UTC day', () => {
     const w = observationWindow(new Date('2026-11-26T14:00:00.000Z'));
-    expect(w.cutoffMs - w.t0Ms).toBe(WINDOW_MS);
-    expect(new Date(w.endExclusiveMs).toISOString()).toBe('2026-12-03T14:00:00.000Z');
-    expect(w.expectedBars).toBe(10_080);
-    expect(w.startUnobservedMs).toBe(0);
-    expect(w.boundaryUnobservedMs).toBe(0);
-  });
-
-  it('a manual run time (19:48:44.796, as on 10 Nov) leaves 15.2 s before and 44.8 s after unobserved', () => {
-    const w = observationWindow(new Date('2026-11-10T19:48:44.796Z'));
-    expect(w.expectedBars).toBe(10_079);
-    expect(w.startUnobservedMs).toBe(15_204);
-    expect(w.boundaryUnobservedMs).toBe(44_796);
+    expect(new Date(w.endMs).toISOString()).toBe('2026-12-03T14:00:00.000Z');
+    expect(w.minutes).toBe(10_080);
+    expect(w.partialEndMinuteMs).toBeNull();
   });
 });
 
-describe('entry reference (OPEN of the first bar opening at or after t0)', () => {
-  const t0 = new Date('2026-11-26T00:07:00.078Z');
-  const w = observationWindow(t0);
-  const before = T('2026-11-26T00:07:00.000Z'); // opened 78 ms before the signal: never the entry
+describe('reference: the first verified LBank Spot trade at or after the start', () => {
+  const S = T('2026-11-25T00:15:32.457Z');
+  const m0 = Math.floor(S / M) * M;
+  const now = new Date(S + 3 * 3_600_000);
 
-  it('never uses the bar that opened before the signal', () => {
-    const bars = [bar(before, '5', '9', '1', '5'), bar(w.entryFromMs, '2', '2.5', '1.5', '2')];
-    const e = selectEntry(bars, w, w.entryFromMs + 10 * MINUTE_MS);
-    expect(e).toMatchObject({ kind: 'ok', delayMs: 59_922 });
-    if (e.kind === 'ok') expect(e.price.toFixed()).toBe('2');
+  it('a candle OPEN carried from a pre-signal trade is never the reference', () => {
+    // LBank's OPEN is the previous CLOSE: 0.0919 was traded before the start.
+    const mk = new Market()
+      .set(...flats(m0 - 60 * M, m0, '0.0919'))
+      .traded(bar(m0, '0.0919', '0.0921', '0.0917', '0.092', '30'), [
+        trade('pre', m0 + 10_000, '0.0921', '10'),
+        trade('ref', m0 + 40_000, '0.0918', '15'),
+        trade('nxt', m0 + 50_000, '0.092', '5'),
+      ])
+      .set(...flats(m0 + M, m0 + 120 * M, '0.092'));
+    const a = solve(mk, { now, start: new Date(S) });
+    expect(a.reference).toMatchObject({ status: 'VERIFIED', delayMs: 40_000 - 32_457 });
+    expect(a.reference?.status === 'VERIFIED' && a.reference.trade.id).toBe('ref');
+    expect(a.reference?.status === 'VERIFIED' && a.reference.trade.price.toFixed()).toBe('0.0918');
+    // The pre-start trade (0.0921) is neither the reference nor the highest.
+    expect(a.highest?.best?.price.toFixed()).toBe('0.092');
   });
 
-  it('t0 exactly on a minute: the bar opening at t0 is the entry (delay 0)', () => {
-    const w0 = observationWindow(new Date('2026-11-26T14:00:00.000Z'));
-    const e = selectEntry([bar(w0.t0Ms, '3', '3', '3', '3')], w0, w0.t0Ms + MINUTE_MS);
-    expect(e).toMatchObject({ kind: 'ok', delayMs: 0 });
-  });
-
-  it('one missing bar is tolerated (≤ 2 min); a later first bar is ENTRY too late, never shown as t0', () => {
-    expect(
-      selectEntry(
-        [bar(w.entryFromMs + MINUTE_MS, '2', '2', '2', '2')],
-        w,
-        w.entryFromMs + 5 * MINUTE_MS,
-      ),
-    ).toMatchObject({
-      kind: 'ok',
-      delayMs: 119_922,
+  it('a trade exactly at the start is included; one exactly at the end is not', () => {
+    const start = T('2026-11-20T12:34:20.000Z');
+    const w = observationWindow(new Date(start));
+    const sm = Math.floor(start / M) * M;
+    const em = w.partialEndMinuteMs!;
+    const mk = new Market()
+      .set(...flats(sm - 60 * M, sm, '1'))
+      .traded(bar(sm, '1', '9', '1', '1.2', '3'), [
+        trade('before', sm + 5_000, '9'),
+        trade('at-start', start, '1'),
+        trade('later', sm + 50_000, '1.2'),
+      ])
+      .traded(bar(sm + M, '1.2', '1', '1', '1', '1'), [trade('w1', sm + M + 1_000, '1')])
+      .set(...flats(sm + 2 * M, em, '1'))
+      .traded(bar(em, '1', '5', '0.1', '0.1', '3'), [
+        trade('in-end', em + 10_000, '0.8'),
+        trade('at-end', w.endMs, '5'),
+        trade('after-end', em + 30_000, '0.1'),
+      ])
+      .set(flat(em + M, '0.1'));
+    const a = solve(mk, {
+      now: new Date(w.endMs + 2 * 3_600_000),
+      start: new Date(start),
+      futures: { status: 'UNKNOWN', reasons: [] },
     });
-    expect(
-      selectEntry(
-        [bar(w.entryFromMs + 2 * MINUTE_MS, '2', '2', '2', '2')],
-        w,
-        w.entryFromMs + 5 * MINUTE_MS,
-      ),
-    ).toMatchObject({
-      kind: 'too_late',
-      delayMs: 179_922,
+    expect(a.reference?.status === 'VERIFIED' && a.reference.trade.id).toBe('at-start');
+    expect(a.reference?.status === 'VERIFIED' && a.reference.delayMs).toBe(0);
+    // First partial minute: only trades at/after the reference; last: only before the end.
+    expect(a.highest?.best?.id).toBe('later');
+    expect(a.lowest?.best?.id).toBe('in-end');
+    expect(a.highestPct?.toFixed()).toBe('20');
+    expect(a.lowestPct?.toFixed()).toBe('-20');
+    // A complete window with Futures UNKNOWN is FINAL: Futures never blocks a Spot result.
+    expect(a.status).toEqual({ status: 'FINAL', terminal: true, reasons: [] });
+    expect(a.eligibility).toBe('SPOT_FUTURES_UNKNOWN');
+  });
+
+  it('the first trade much later than the signal: exact delay, marked delayed, still observed', () => {
+    const mk = new Market()
+      .set(...flats(m0 - 60 * M, m0 + 37 * M, '0.00278999'))
+      .traded(bar(m0 + 37 * M, '0.00278999', '0.00278999', '0.0027899', '0.0027899', '870.99'), [
+        trade('first', m0 + 37 * M + 37_385, '0.0027899', '870.99'),
+      ])
+      .set(...flats(m0 + 38 * M, m0 + 180 * M, '0.0027899'));
+    const a = solve(mk, { now, start: new Date(S) });
+    expect(a.reference).toMatchObject({
+      status: 'VERIFIED',
+      delayMs: 37 * M + 37_385 - 32_457,
+      silentMinutes: 36,
+      delayed: true,
     });
+    expect(a.flags).toContain('REFERENCE_DELAYED');
   });
 
-  it('pending while the entry minutes are not fetched; none once they were answered without a bar', () => {
-    expect(selectEntry([], w, null)).toEqual({ kind: 'pending' });
-    expect(selectEntry([], w, w.entryFromMs)).toEqual({ kind: 'pending' });
-    expect(selectEntry([], w, w.entryFromMs + 10 * MINUTE_MS)).toEqual({ kind: 'none' });
-  });
-
-  it('stale when no bar with trades lies within 60 min before the entry bar (filler bars do not count)', () => {
-    const lastTrade = w.entryFromMs - 61 * MINUTE_MS;
-    const filler = (ms: number) => bar(ms, '2', '2', '2', '2', '0');
-    const bars = [
-      bar(lastTrade, '2', '2', '2', '2'),
-      ...Array.from({ length: 60 }, (_, i) => filler(lastTrade + (i + 1) * MINUTE_MS)),
-      filler(w.entryFromMs),
-    ];
-    expect(selectEntry(bars, w, w.entryFromMs + MINUTE_MS)).toMatchObject({
-      kind: 'ok',
-      stale: true,
-      lastTradeBarMs: null,
-    });
-    const fresh = [bar(w.entryFromMs - 59 * MINUTE_MS, '2', '2', '2', '2'), filler(w.entryFromMs)];
-    expect(selectEntry(fresh, w, w.entryFromMs + MINUTE_MS)).toMatchObject({
-      kind: 'ok',
-      stale: false,
-      lastTradeBarMs: w.entryFromMs - 59 * MINUTE_MS,
-    });
-  });
-});
-
-describe('extremes (LBank Spot bars with trades only)', () => {
-  const from = T('2026-11-26T00:08:00Z');
-
-  it('recorded 0G event (10 Nov 19:48:44Z): entry 0.1435, High 0.1632, Low 0.1198 → +13.7282229965 % / −16.5156794425 %', () => {
-    // Values recorded from api.lbkex.com on 2026-11-24 (0g_usdt, 1-minute bars).
-    const rise = pctChange(new D('0.1632'), new D('0.1435'));
-    const drop = pctChange(new D('0.1198'), new D('0.1435'));
-    expect(rise.toDecimalPlaces(10).toFixed()).toBe('13.7282229965');
-    expect(drop.toDecimalPlaces(10).toFixed()).toBe('-16.5156794425');
-  });
-
-  it('ignores filler bars (no trades): their O = H = L = C may be a pre-entry price', () => {
-    const bars = [
-      bar(from, '1', '1.1', '0.9', '1'),
-      bar(from + MINUTE_MS, '5', '5', '5', '5', '0'), // filler carrying an old close
-      bar(from + 2 * MINUTE_MS, '1', '1.2', '0.95', '1.1'),
-    ];
-    const x = computeExtremes(bars, from, from + 3 * MINUTE_MS)!;
-    expect(x.high.toFixed()).toBe('1.2');
-    expect(x.low.toFixed()).toBe('0.9');
-    expect(x.tradedBars).toBe(2);
-  });
-
-  it('ties go to the earliest bar; one bar holding both extremes has an unknown order', () => {
-    const tie = [bar(from, '1', '2', '0.5', '1'), bar(from + MINUTE_MS, '1', '2', '0.5', '1')];
-    const x = computeExtremes(tie, from, from + 2 * MINUTE_MS)!;
-    expect([x.highBarMs, x.lowBarMs]).toEqual([from, from]);
-    expect(x.order).toBe('SAME_BAR');
-  });
-
-  it('orders the High and Low bars, and the lowest Low up to (and including) the High bar', () => {
-    const bars = [
-      bar(from, '1', '1.05', '0.97', '1'),
-      bar(from + MINUTE_MS, '1', '1.02', '0.80', '0.9'), // the overall Low, before the High
-      bar(from + 2 * MINUTE_MS, '0.9', '1.50', '0.85', '1.4'), // the High
-      bar(from + 3 * MINUTE_MS, '1.4', '1.45', '0.70', '0.8'), // a lower Low after the High
-    ];
-    const x = computeExtremes(bars, from, from + 4 * MINUTE_MS)!;
-    expect(x.high.toFixed()).toBe('1.5');
-    expect(x.low.toFixed()).toBe('0.7');
-    expect(x.order).toBe('HIGH_FIRST');
-    expect(x.lowBeforeHigh.toFixed()).toBe('0.8');
-    expect(x.lowBeforeHighBarMs).toBe(from + MINUTE_MS);
-  });
-
-  it('never takes the High / Low of the bar that straddles the cutover', () => {
-    const w = observationWindow(new Date('2026-11-26T00:07:00.078Z'));
-    const bars = [
-      bar(w.endExclusiveMs - MINUTE_MS, '1', '1.1', '0.9', '1'),
-      bar(w.endExclusiveMs, '1', '99', '0.01', '1'),
-    ];
-    const x = computeExtremes(bars, w.entryFromMs, w.endExclusiveMs)!;
-    expect(x.high.toFixed()).toBe('1.1');
-    expect(x.low.toFixed()).toBe('0.9');
-  });
-
-  it('no bar with trades: no extremes', () => {
-    expect(
-      computeExtremes([bar(from, '1', '1', '1', '1', '0')], from, from + MINUTE_MS),
-    ).toBeNull();
-  });
-});
-
-describe('coverage', () => {
-  const w = observationWindow(new Date('2026-11-26T00:00:00.000Z'));
-
-  it('lists minutes the source answered without a bar, and counts only what has been fetched', () => {
-    const bars = series(w.entryFromMs, 10).filter((_, i) => i < 3 || i > 5);
-    const c = coverage(bars, w, w.entryFromMs + 10 * MINUTE_MS);
-    expect(c.expectedSoFar).toBe(10);
-    expect(c.presentBars).toBe(7);
-    expect(c.missingBars).toBe(3);
-    expect(c.missingRanges).toEqual([
-      [w.entryFromMs + 3 * MINUTE_MS, w.entryFromMs + 6 * MINUTE_MS],
-    ]);
-  });
-
-  it('a gap at the end of what was fetched is missing; nothing beyond the window counts', () => {
-    const c = coverage(series(w.entryFromMs, 5), w, w.entryFromMs + 8 * MINUTE_MS);
-    expect(c.missingRanges).toEqual([
-      [w.entryFromMs + 5 * MINUTE_MS, w.entryFromMs + 8 * MINUTE_MS],
-    ]);
-    const all = coverage([], w, w.endExclusiveMs + 50 * MINUTE_MS);
-    expect(all.observedThroughMs).toBe(w.endExclusiveMs);
-    expect(all.expectedSoFar).toBe(10_080);
-  });
-
-  it('the next fetch starts an hour before the entry (look-back), or where the pair is synced to', () => {
-    expect(neededFromMs(w, null)).toBe(w.entryFromMs - 60 * MINUTE_MS);
-    expect(neededFromMs(w, w.entryFromMs + 5 * MINUTE_MS)).toBe(w.entryFromMs + 5 * MINUTE_MS);
-    expect(neededFromMs(w, w.endExclusiveMs)).toBeNull();
-  });
-});
-
-describe('status (ACTIVE → FINAL, or an explicit terminal status)', () => {
-  const t0 = new Date('2026-11-26T00:00:00.000Z');
-  const w = observationWindow(t0);
-  const full = series(w.entryFromMs - 30 * MINUTE_MS, 30 + w.expectedBars);
-  const yes: ListingDecision = { status: 'YES', reasons: [] };
-  const base = (over: Partial<StatusInput> = {}): StatusInput => {
-    const synced = over.cov?.observedThroughMs ?? w.endExclusiveMs;
-    const entry = selectEntry(full, w, synced);
-    return {
-      nowMs: w.cutoffMs,
-      w,
-      mapping: 'OK',
-      mappingReasons: [],
-      spot: yes,
-      entry,
-      entryDeviates: false,
-      cov: coverage(full, w, synced),
-      extremes: computeExtremes(full, w.entryFromMs, w.endExclusiveMs),
-      pairUnsupported: false,
-      fetchError: null,
-      ...over,
+  it('"delayed" needs one whole silent minute after the start (operator rule), not a threshold', () => {
+    const at = (offsetMs: number) => {
+      const mk = new Market()
+        .set(...flats(m0 - 60 * M, m0, '1'))
+        .set(flat(m0, '1'))
+        .set(...flats(m0 + M, Math.floor((S + offsetMs) / M) * M, '1'))
+        .traded(bar(Math.floor((S + offsetMs) / M) * M, '1', '1', '1', '1', '1'), [
+          trade('t', S + offsetMs, '1'),
+        ]);
+      const a = solve(mk, { now, start: new Date(S) });
+      return a.reference?.status === 'VERIFIED' ? a.reference.delayed : null;
     };
+    expect(at(58_000)).toBe(false); // 00:16:30.457: part of 00:15 and 00:16, no whole minute
+    expect(at(92_543)).toBe(true); // 00:17:05: the whole minute 00:16 was silent
+  });
+
+  it('several trades in the reference millisecond: LBank’s order picks it, a price tie is flagged', () => {
+    const mk = new Market()
+      .set(...flats(m0 - 60 * M, m0, '2'))
+      .traded(bar(m0, '2', '2.02', '2', '2.02', '3'), [
+        trade('a', S + 1_000, '2.01', '1', 0),
+        trade('b', S + 1_000, '2.02', '1', 1),
+        trade('c', S + 1_000, '2.01', '1', 2),
+      ])
+      .set(...flats(m0 + M, m0 + 5 * M, '2.01'));
+    const a = solve(mk, { now, start: new Date(S) });
+    expect(a.reference?.status === 'VERIFIED' && a.reference.trade.id).toBe('a');
+    expect(a.flags).toContain('REFERENCE_SAME_MS_TIE');
+  });
+
+  it('a missing candle stops the search (never skipped); an unchecked minute asks for its trades', () => {
+    const w = observationWindow(new Date(S));
+    const bars = barMap([...flats(m0 - 60 * M, m0, '1'), flat(m0 + M, '1')]);
+    const sync = syncOf(m0 + 2 * M, now.getTime());
+    expect(findReference(w, bars, new Map(), sync)).toEqual({
+      status: 'PENDING',
+      minuteMs: m0,
+      why: 'NO_BAR',
+      needs: [],
+    });
+    const traded = barMap([bar(m0, '1', '1', '1', '1', '5')]);
+    expect(findReference(w, traded, new Map(), sync)).toMatchObject({
+      status: 'PENDING',
+      why: 'CHECK_PENDING',
+      needs: [m0],
+    });
+    const below = new Map([[m0, failed(m0, 'TRADES_BELOW_CANDLE')]]);
+    expect(findReference(w, traded, below, sync)).toMatchObject({
+      status: 'PENDING',
+      why: 'TRADES_BELOW_CANDLE',
+    });
+  });
+
+  it('a start minute that traded only before the start moves on to the next minute', () => {
+    const mk = new Market()
+      .set(...flats(m0 - 60 * M, m0, '3'))
+      .traded(bar(m0, '3', '3.1', '3', '3.1', '2'), [trade('early', m0 + 1_000, '3.1', '2')])
+      .traded(bar(m0 + M, '3.1', '3.2', '3.2', '3.2', '1'), [trade('next', m0 + M + 5, '3.2')])
+      .set(...flats(m0 + 2 * M, m0 + 10 * M, '3.2'));
+    const a = solve(mk, { now, start: new Date(S) });
+    expect(a.reference?.status === 'VERIFIED' && a.reference.trade.id).toBe('next');
+    expect(a.reference?.status === 'VERIFIED' && a.reference.delayed).toBe(false);
+  });
+});
+
+describe('extremes: verified trades only, located with candles', () => {
+  const S = T('2026-11-25T00:15:32.457Z');
+  const m0 = Math.floor(S / M) * M;
+  const now = new Date(S + 6 * 3_600_000);
+
+  it('a candle High that is only the carried OPEN is passed over; the next candidate is checked', () => {
+    // Recorded pattern (twt_usdt 00:08, re_usdt 00:08): High = OPEN without a trade at that price.
+    const mk = new Market()
+      .set(...flats(m0 - 60 * M, m0, '1'))
+      .traded(bar(m0, '1', '1', '1', '1', '1'), [trade('ref', S + 500, '1')])
+      .traded(bar(m0 + M, '1.05', '1.05', '1', '1.01', '10'), [
+        trade('x1', m0 + M + 1_000, '1', '4'),
+        trade('x2', m0 + M + 2_000, '1.01', '6'),
+      ])
+      .traded(bar(m0 + 2 * M, '1.01', '1.03', '1.01', '1.03', '5'), [
+        trade('y1', m0 + 2 * M + 3_000, '1.02', '2'),
+        trade('y2', m0 + 2 * M + 4_000, '1.03', '3'),
+      ])
+      .set(...flats(m0 + 3 * M, m0 + 60 * M, '1.03'));
+    const a = solve(mk, { now, start: new Date(S) });
+    expect(a.highest?.best?.id).toBe('y2');
+    expect(a.highestPct?.toFixed()).toBe('3');
+    expect(mk.checked).toContain(m0 + M); // the artefact minute was checked, then passed over
+    expect(a.highest?.checked.map((c) => [c.candle, c.traded])).toEqual([
+      ['1.05', '1.01'],
+      ['1.03', '1.03'],
+    ]);
+  });
+
+  it('ties go to the earliest trade; order follows trade times; same millisecond is unknown', () => {
+    const mk = new Market()
+      .set(...flats(m0 - 60 * M, m0, '1'))
+      .traded(bar(m0, '1', '1', '1', '1', '1'), [trade('ref', S + 500, '1')])
+      .traded(bar(m0 + 2 * M, '1', '1.5', '1', '1.5', '1'), [trade('h1', m0 + 2 * M + 10, '1.5')])
+      .traded(bar(m0 + 3 * M, '1.5', '1.5', '0.5', '0.5', '2'), [
+        trade('h2', m0 + 3 * M + 10, '1.5'),
+        trade('l1', m0 + 3 * M + 20, '0.5'),
+      ]);
+    mk.set(flat(m0 + M, '1'));
+    const a = solve(mk, { now, start: new Date(S) });
+    expect(a.highest?.best?.id).toBe('h1');
+    expect(a.lowest?.best?.id).toBe('l1');
+    expect(a.order).toBe('HIGH_FIRST');
+    // Lowest price from the reference through the eventual highest trade (inclusive).
+    expect(a.lowBeforeHigh?.best?.id).toBe('ref');
+
+    const same = new Market()
+      .set(...flats(m0 - 60 * M, m0, '1'))
+      .traded(bar(m0, '1', '1', '1', '1', '1'), [trade('ref', S + 500, '1')])
+      .traded(bar(m0 + M, '1', '2', '0.5', '0.5', '2'), [
+        trade('hi', m0 + M + 7, '2', '1', 0),
+        trade('lo', m0 + M + 7, '0.5', '1', 1),
+      ]);
+    expect(solve(same, { now, start: new Date(S) }).order).toBe('SAME_MS');
+  });
+
+  it('an isolated real print is kept and flagged (single-trade minute), never removed', () => {
+    // Recorded shape (tit_usdt 2026-11-25 06:42:26.747): one trade at exactly half the price.
+    const mk = new Market()
+      .set(...flats(m0 - 60 * M, m0, '0.0027899'))
+      .traded(bar(m0, '0.0027899', '0.0027899', '0.0027899', '0.0027899', '100'), [
+        trade('ref', S + 3_000, '0.0027899', '100'),
+      ])
+      .set(...flats(m0 + M, m0 + 120 * M, '0.0027899'))
+      .traded(bar(m0 + 120 * M, '0.0027899', '0.0027899', '0.00139495', '0.00139495', '2739.66'), [
+        trade('spike', m0 + 120 * M + 26_747, '0.00139495', '2739.66'),
+      ])
+      .set(...flats(m0 + 121 * M, m0 + 200 * M, '0.00139495'));
+    const a = solve(mk, { now, start: new Date(S) });
+    expect(a.lowestPct?.toFixed()).toBe('-50');
+    expect(a.highestPct?.toFixed()).toBe('0');
+    expect(a.flags).toEqual(expect.arrayContaining(['SINGLE_TRADE_LOW']));
+    expect(a.flagsEvidence.singleTradeLow).toMatchObject({
+      tradeId: 'spike',
+      price: '0.00139495',
+      qty: '2739.66',
+      quoteValueUsdt: '3.821688717',
+      minuteTrades: 1,
+    });
+  });
+
+  it('an unverified candidate that could beat the best blocks; one below the best does not', () => {
+    const w = observationWindow(new Date(S));
+    const ref = trade('ref', S + 500, '1');
+    const bars = barMap([
+      bar(m0, '1', '1', '1', '1', '1'),
+      bar(m0 + M, '1', '1.2', '1', '1.2', '1'),
+      bar(m0 + 2 * M, '1.2', '1.1', '1', '1.1', '1'),
+    ]);
+    const checks = new Map([
+      [m0, verified(m0, [ref])],
+      [m0 + M, verified(m0 + M, [trade('h', m0 + M + 1, '1.2')])],
+      [m0 + 2 * M, failed(m0 + 2 * M, 'FETCH_FAILED')],
+    ]);
+    const sync = syncOf(m0 + 3 * M, now.getTime());
+    const e = rangeExtreme('high', { from: ref, to: { beforeMs: m0 + 3 * M } }, bars, checks, sync);
+    expect(e.best?.id).toBe('h');
+    expect(e.proven).toBe(true); // 1.1 cannot beat 1.2
+    const checks2 = new Map(checks);
+    checks2.set(m0 + M, failed(m0 + M, 'TRADES_BELOW_CANDLE'));
+    const e2 = rangeExtreme(
+      'high',
+      { from: ref, to: { beforeMs: m0 + 3 * M } },
+      bars,
+      checks2,
+      sync,
+    );
+    expect(e2.proven).toBe(false);
+    expect(e2.blocking).toContainEqual(
+      expect.objectContaining({ kind: 'check', state: 'TRADES_BELOW_CANDLE', fromMs: m0 + M }),
+    );
+    expect(e2.needs).toContain(m0 + M); // retried
+    void w;
+  });
+
+  it('overlapping events of one pair: own start, reference and window from the same data', () => {
+    const mk = new Market()
+      .set(...flats(m0 - 60 * M, m0, '1'))
+      .traded(bar(m0, '1', '1', '1', '1', '1'), [trade('r1', S + 100, '1')])
+      .traded(bar(m0 + 5 * M, '1', '2', '2', '2', '1'), [trade('r2', m0 + 5 * M + 100, '2')])
+      .traded(bar(m0 + 10 * M, '2', '1.5', '1.5', '1.5', '1'), [
+        trade('x', m0 + 10 * M + 1, '1.5'),
+      ]);
+    for (let m = m0 + M; m < m0 + 30 * M; m += M) if (!mk.bars.has(m)) mk.set(flat(m, '2'));
+    const a1 = solve(mk, { now, start: new Date(S) });
+    const a2 = solve(mk, { now, start: new Date(m0 + 5 * M) });
+    expect(a1.reference?.status === 'VERIFIED' && a1.reference.trade.id).toBe('r1');
+    expect(a2.reference?.status === 'VERIFIED' && a2.reference.trade.id).toBe('r2');
+    expect(a1.highestPct?.toFixed()).toBe('100');
+    expect(a2.highestPct?.toFixed()).toBe('0');
+    expect(a2.lowestPct?.toFixed()).toBe('-25');
+  });
+});
+
+describe('coverage and the gap states', () => {
+  const S = T('2026-11-25T00:15:32.457Z');
+  const m0 = Math.floor(S / M) * M;
+  const w = observationWindow(new Date(S));
+
+  it('a zero-volume candle is a verified quiet minute, not a gap', () => {
+    const bars = barMap(flats(m0, m0 + 10 * M, '1'));
+    const c = coverage(w, bars, syncOf(m0 + 10 * M, m0 + 10 * M + 10_000));
+    expect(c).toMatchObject({
+      minutesPresent: 10,
+      minutesZeroVolume: 10,
+      minutesMissing: 0,
+      gaps: [],
+    });
+  });
+
+  it('answered without a candle (NO_BAR) vs failed vs not fetched vs delisted', () => {
+    const bars = barMap([flat(m0, '1'), flat(m0 + 3 * M, '1')]);
+    const nowMs = m0 + 10 * M + 10_000;
+    const c = coverage(w, bars, syncOf(m0 + 4 * M, nowMs));
+    expect(c.gaps).toEqual([
+      { fromMs: m0 + M, toMs: m0 + 3 * M, state: 'NO_BAR' },
+      { fromMs: m0 + 4 * M, toMs: m0 + 10 * M, state: 'NOT_FETCHED' },
+    ]);
+    expect(c.minutesMissing).toBe(2);
+    expect(
+      coverage(w, bars, syncOf(m0 + 4 * M, nowMs, { lastFetchFailed: true })).gaps.at(-1),
+    ).toMatchObject({
+      state: 'FETCH_FAILED',
+    });
+    expect(
+      coverage(w, bars, syncOf(m0 + 4 * M, nowMs, { unsupported: true })).gaps.at(-1),
+    ).toMatchObject({
+      state: 'PAIR_UNSUPPORTED',
+    });
+    expect(c.candlesComplete).toBe(false);
+  });
+});
+
+describe('status: one retry policy, explicit outcomes', () => {
+  const S = T('2026-11-25T00:15:32.457Z');
+  const m0 = Math.floor(S / M) * M;
+  const w = observationWindow(new Date(S));
+  const after = (ms: number) => new Date(w.endMs + ms);
+  const full = (mk: Market, price = '1') => {
+    for (let m = m0 - 60 * M; m < w.endMinuteExclusiveMs; m += M)
+      if (!mk.bars.has(m)) mk.set(flat(m, price));
+    return mk;
   };
 
-  it('FINAL exactly at t0 + 168 h when every expected bar is present', () => {
-    expect(observationStatus(base())).toEqual({ status: 'FINAL', terminal: true, reasons: [] });
+  it('ACTIVE while the window runs; FINAL once it has ended with verified data', () => {
+    const mk = full(
+      new Market().traded(bar(m0, '1', '1', '1', '1', '1'), [trade('ref', S + 900, '1')]),
+    );
+    const open = solve(mk, { now: new Date(S + 3_600_000), start: new Date(S) });
+    expect(open.status.status).toBe('ACTIVE');
+    expect(open.status.reasons).toContain('WINDOW_OPEN');
+    const done = solve(mk, { now: after(10 * M), start: new Date(S) });
+    expect(done.status).toMatchObject({ status: 'FINAL', terminal: true });
+    expect(done.evidenceSha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it('ACTIVE while the window runs (provisional extremes)', () => {
-    const now = w.t0Ms + 3 * 3_600_000;
-    const s = observationStatus(base({ nowMs: now, cov: coverage(full, w, now) }));
-    expect(s).toEqual({ status: 'ACTIVE', terminal: false, reasons: ['WINDOW_OPEN'] });
-  });
-
-  it('missing bars: ACTIVE while gaps are retried, PARTIAL after (never FINAL)', () => {
-    const gappy = full.filter((b) => b.openMs !== w.entryFromMs + 500 * MINUTE_MS);
-    const cov = coverage(gappy, w, w.endExclusiveMs);
-    expect(observationStatus(base({ cov }))).toMatchObject({
-      status: 'ACTIVE',
-      reasons: ['MISSING_BARS'],
-    });
-    expect(observationStatus(base({ cov, nowMs: w.cutoffMs + FINALIZE_RETRY_MS + 1 }))).toEqual({
-      status: 'PARTIAL',
+  it('a complete window without any trade is NO_TRADES (no percentage), not missing data', () => {
+    const a = solve(full(new Market()), { now: after(10 * M), start: new Date(S) });
+    expect(a.reference).toEqual({ status: 'NO_TRADE' });
+    expect(a.status).toEqual({
+      status: 'NO_TRADES',
       terminal: true,
-      reasons: ['MISSING_BARS'],
-    });
-  });
-
-  it('a stale entry (last trade over an hour before) ends PARTIAL', () => {
-    const e = selectEntry(full, w, w.endExclusiveMs);
-    const stale = e.kind === 'ok' ? { ...e, stale: true } : e;
-    expect(observationStatus(base({ entry: stale }))).toMatchObject({
-      status: 'PARTIAL',
-      reasons: ['ENTRY_STALE'],
-    });
-  });
-
-  it('window over but not fetched to the end: ACTIVE, then PARTIAL (FETCH_INCOMPLETE)', () => {
-    const cov = coverage(full, w, w.endExclusiveMs - 60 * MINUTE_MS);
-    expect(observationStatus(base({ cov }))).toMatchObject({
-      status: 'ACTIVE',
-      reasons: ['FETCH_PENDING'],
-    });
-    expect(
-      observationStatus(base({ cov, nowMs: w.cutoffMs + FINALIZE_RETRY_MS + 1 })),
-    ).toMatchObject({
-      status: 'PARTIAL',
-      reasons: ['FETCH_INCOMPLETE'],
-    });
-  });
-
-  it('mapping and Spot availability failures are terminal at once', () => {
-    expect(
-      observationStatus(base({ mapping: 'AMBIGUOUS', mappingReasons: ['MULTIPLE_USDT_PAIRS'] })),
-    ).toEqual({
-      status: 'MAPPING_AMBIGUOUS',
-      terminal: true,
-      reasons: ['MULTIPLE_USDT_PAIRS'],
-    });
-    expect(
-      observationStatus(base({ mapping: 'NONE', mappingReasons: ['NO_USDT_PAIR'] })),
-    ).toMatchObject({
-      status: 'DATA_UNAVAILABLE',
-      reasons: ['NO_USDT_PAIR'],
-    });
-    expect(
-      observationStatus(base({ spot: { status: 'NO', reasons: ['PAIR_UNSUPPORTED_BY_API'] } })),
-    ).toMatchObject({
-      status: 'DATA_UNAVAILABLE',
-    });
-    expect(observationStatus(base({ entryDeviates: true }))).toMatchObject({
-      status: 'MAPPING_AMBIGUOUS',
-      reasons: ['PRICE_DEVIATION_FROM_CMC'],
-    });
-  });
-
-  it('entry problems: too late, none, never fetched, delisted pair', () => {
-    const late = { kind: 'too_late', bar: full[0]!, delayMs: 300_000 } as const;
-    expect(observationStatus(base({ entry: late }))).toMatchObject({
-      status: 'DATA_UNAVAILABLE',
-      reasons: ['ENTRY_TOO_LATE'],
-    });
-    expect(observationStatus(base({ entry: { kind: 'none' } }))).toMatchObject({
-      status: 'DATA_UNAVAILABLE',
-      reasons: ['ENTRY_UNAVAILABLE'],
-    });
-    expect(
-      observationStatus(base({ entry: { kind: 'pending' }, nowMs: w.t0Ms + MINUTE_MS })),
-    ).toMatchObject({
-      status: 'ACTIVE',
-      reasons: ['ENTRY_PENDING'],
-    });
-    expect(
-      observationStatus(
-        base({ entry: { kind: 'pending' }, nowMs: w.cutoffMs + FINALIZE_RETRY_MS + 1 }),
-      ),
-    ).toMatchObject({
-      status: 'DATA_UNAVAILABLE',
-    });
-    expect(
-      observationStatus(base({ entry: { kind: 'pending' }, pairUnsupported: true })),
-    ).toMatchObject({
-      status: 'DATA_UNAVAILABLE',
-      reasons: ['PAIR_UNSUPPORTED_BY_API', 'ENTRY_UNAVAILABLE'],
-    });
-  });
-
-  it('unknown Spot availability: ACTIVE, then ELIGIBILITY_UNKNOWN; no trades in the window: PARTIAL', () => {
-    const unknown: ListingDecision = { status: 'UNKNOWN', reasons: ['SPOT_EVIDENCE_MISSING'] };
-    expect(observationStatus(base({ spot: unknown }))).toMatchObject({ status: 'ACTIVE' });
-    expect(
-      observationStatus(base({ spot: unknown, nowMs: w.cutoffMs + FINALIZE_RETRY_MS + 1 })),
-    ).toMatchObject({
-      status: 'ELIGIBILITY_UNKNOWN',
-    });
-    expect(observationStatus(base({ extremes: null }))).toMatchObject({
-      status: 'PARTIAL',
       reasons: ['NO_TRADES_IN_WINDOW'],
     });
+    expect(a.highestPct).toBeNull();
+  });
+
+  it('missing first minutes are retried like any gap (no ENTRY_TOO_LATE), then UNVERIFIABLE', () => {
+    const mk = full(
+      new Market().traded(bar(m0 + 5 * M, '1', '1', '1', '1', '1'), [
+        trade('t', m0 + 5 * M + 1, '1'),
+      ]),
+    );
+    mk.bars.delete(m0); // the source answered the start minute without a candle
+    const early = solve(mk, { now: new Date(S + 10 * M), start: new Date(S) });
+    expect(early.status).toMatchObject({ status: 'ACTIVE', terminal: false });
+    expect(early.status.reasons).toEqual(
+      expect.arrayContaining(['REFERENCE_PENDING', 'MISSING_BARS']),
+    );
+    const ended = solve(mk, { now: after(FINALIZE_RETRY_MS - M), start: new Date(S) });
+    expect(ended.status.status).toBe('ACTIVE');
+    const late = solve(mk, { now: after(FINALIZE_RETRY_MS + M), start: new Date(S) });
+    expect(late.status).toMatchObject({ status: 'UNVERIFIABLE', terminal: true });
+    expect(late.status.reasons).toContain('REFERENCE_UNVERIFIED');
+  });
+
+  it('a gap after the reference: ACTIVE while retried, PARTIAL after, never FINAL', () => {
+    const mk = full(
+      new Market().traded(bar(m0, '1', '1', '1', '1', '1'), [trade('ref', S + 900, '1')]),
+    );
+    mk.bars.delete(m0 + 100 * M);
+    expect(solve(mk, { now: after(M), start: new Date(S) }).status.status).toBe('ACTIVE');
+    const p = solve(mk, { now: after(FINALIZE_RETRY_MS + M), start: new Date(S) });
+    expect(p.status).toMatchObject({ status: 'PARTIAL', terminal: true });
+    expect(p.status.reasons).toContain('MISSING_BARS');
+  });
+
+  it('a source that stopped answering is never a quiet interval', () => {
+    const mk = new Market().traded(bar(m0, '1', '1', '1', '1', '1'), [trade('ref', S + 900, '1')]);
+    for (let m = m0 - 60 * M; m < m0 + 30 * M; m += M) if (!mk.bars.has(m)) mk.set(flat(m, '1'));
+    const a = solve(mk, {
+      now: after(M),
+      start: new Date(S),
+      sync: syncOf(m0 + 30 * M, after(M).getTime(), { lastFetchFailed: true }),
+    });
+    expect(a.status.status).toBe('ACTIVE');
+    expect(a.cov?.gaps.at(-1)).toMatchObject({ state: 'FETCH_FAILED' });
+    expect(a.reference?.status).toBe('VERIFIED');
+  });
+
+  it('mapping and Spot outcomes; the CMC deviation is a review flag, not an exclusion', () => {
+    const base = { now: after(M), start: new Date(S) };
+    expect(
+      solve(new Market(), {
+        ...base,
+        mapping: 'AMBIGUOUS',
+        mappingReasons: ['MULTIPLE_USDT_PAIRS'],
+      }).status,
+    ).toEqual({ status: 'MAPPING_AMBIGUOUS', terminal: true, reasons: ['MULTIPLE_USDT_PAIRS'] });
+    expect(
+      solve(new Market(), { ...base, mapping: 'NONE', mappingReasons: ['NO_USDT_PAIR'] }).status
+        .status,
+    ).toBe('DATA_UNAVAILABLE');
+    expect(solve(new Market(), { ...base, start: null }).status).toEqual({
+      status: 'ACTIVE',
+      terminal: false,
+      reasons: ['TIMING_PENDING'],
+    });
+    const mk = full(
+      new Market().traded(bar(m0, '1.3', '1.3', '1.3', '1.3', '1'), [trade('ref', S + 900, '1.3')]),
+      '1.3',
+    );
+    const a = solve(mk, { ...base, now: after(10 * M), cmcPrice: new D('1') });
+    expect(a.flags).toContain('PRICE_DEVIATION_FROM_CMC');
+    expect(a.status.status).toBe('FINAL');
   });
 });
 
@@ -440,15 +637,15 @@ describe('LBank Spot pair of a CMC event (by CMC id, LBank symbol from the marke
     );
   });
 
-  it('the CMC price only checks identity (25 %), it is never part of a return', () => {
-    expect(entryDeviatesFromCmc(new D('0.1435'), new D('0.142987979'))).toBe(false);
-    expect(entryDeviatesFromCmc(new D('1.26'), new D('1'))).toBe(true);
-    expect(entryDeviatesFromCmc(new D('0.75'), new D('1'))).toBe(false);
+  it('the CMC price only checks identity (25 %, a review flag), never part of a return', () => {
+    expect(deviatesFromCmc(new D('0.1435'), new D('0.142987979'))).toBe(false);
+    expect(deviatesFromCmc(new D('1.26'), new D('1'))).toBe(true);
+    expect(deviatesFromCmc(new D('0.75'), new D('1'))).toBe(false);
   });
 });
 
 describe('Spot / Futures at the signal and the eligibility class', () => {
-  it('Spot: a series spanning t0 shows availability; NO needs LBank’s own answer near the signal', () => {
+  it('Spot: a series spanning the start shows availability; NO needs LBank’s own answer', () => {
     const spans = {
       unsupportedNearSignal: false,
       barBeforeT0: true,
@@ -481,7 +678,7 @@ describe('Spot / Futures at the signal and the eligibility class', () => {
     });
   });
 
-  it('Futures: evidence before (CMC by id) and after (LBank list) the signal must agree', () => {
+  it('Futures listing evidence: snapshots before (CMC by id) and after (LBank list) must agree', () => {
     const lbank = (base: string, volume: string | null) => ({
       contracts: new Map([
         [`${base}USDT`, { base, volume24h: volume === null ? null : new D(volume) }],
@@ -505,6 +702,7 @@ describe('Spot / Futures at the signal and the eligibility class', () => {
       status: 'UNKNOWN',
       reasons: ['FUTURES_EVIDENCE_CONFLICT'],
     });
+    // Recorded: CMC maps the MON perpetual to MoneyByte (5066); a same-ticker contract is not proof.
     expect(futuresAtSignal({ cmc: no, lbank: lbank('ABC', '5'), coinSymbol: 'ABC' })).toMatchObject(
       {
         status: 'UNKNOWN',

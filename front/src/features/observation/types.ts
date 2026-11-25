@@ -1,8 +1,16 @@
-// API shapes of the LBank Spot Price Observation (GET /api/observations…). Prices and percentages
-// are exact decimal strings from the server; they are formatted for display only.
+// API shapes of the LBank Spot Price Observation (GET /api/observations…, rules lbank-spot-obs-2).
+// Prices and percentages are exact decimal strings from the server; they are formatted for display
+// only. Every price is an LBank Spot trade; the CMC price is context.
 
 export type ObsStatus =
-  'ACTIVE' | 'FINAL' | 'PARTIAL' | 'DATA_UNAVAILABLE' | 'MAPPING_AMBIGUOUS' | 'ELIGIBILITY_UNKNOWN';
+  | 'ACTIVE'
+  | 'FINAL'
+  | 'PARTIAL'
+  | 'DATA_UNAVAILABLE'
+  | 'MAPPING_AMBIGUOUS'
+  | 'ELIGIBILITY_UNKNOWN'
+  | 'NO_TRADES'
+  | 'UNVERIFIABLE';
 
 export type Eligibility =
   | 'PENDING'
@@ -14,7 +22,29 @@ export type Eligibility =
   | 'MAPPING_AMBIGUOUS';
 
 export type ObsSort =
-  'detected' | 'stars' | 'points' | 'rise' | 'drop' | 'entryDelay' | 'coverage' | 'symbol';
+  | 'detected'
+  | 'start'
+  | 'stars'
+  | 'points'
+  | 'highest'
+  | 'lowest'
+  | 'referenceDelay'
+  | 'coverage'
+  | 'symbol';
+
+export interface Gap {
+  from: string;
+  to: string;
+  state: string;
+  detail?: string;
+}
+
+export interface Extreme {
+  price: string;
+  at: string;
+  tradeId: string;
+  pct: string | null;
+}
 
 export interface ObservationRow {
   id: string;
@@ -26,49 +56,120 @@ export interface ObservationRow {
   stars: number;
   points: number | null;
   scoreComplete: boolean | null;
-  signalAt: string;
-  windowEnd: string;
+  /** t0: the hourly CMC crawl start (identity and routing only). */
+  crawlAt: string;
+  cmcQuoteAt: string;
   cmcPriceUsd: string;
+  /** [start, end): from the proven moment the signal was usable, exactly 168 h. */
+  window: {
+    start: string;
+    end: string;
+    source: 'SCAN_COMMIT' | 'EVENT_COMMIT' | 'JOB_FIRST_SEEN' | string;
+    uncertain: boolean;
+    afterCrawlMs: number;
+  } | null;
   pair: { symbol: string | null; quote: string | null; mapping: string };
   eligibility: Eligibility;
   eligibilityLabel: string;
   spot: string;
   spotTrading: string | null;
   futures: string;
-  entry: {
-    at: string;
-    price: string;
-    delayMs: number;
-    stale: boolean | null;
-    lastTradeAt: string | null;
-  } | null;
-  high: { price: string; barAt: string } | null;
-  low: { price: string; barAt: string } | null;
-  maxRisePct: string | null;
-  maxDropPct: string | null;
-  lowBeforeHigh: { price: string; barAt: string } | null;
-  extremeOrder: 'HIGH_FIRST' | 'LOW_FIRST' | 'SAME_BAR' | null;
-  coverage: {
-    expectedBars: number;
-    coveredBars: number;
-    missingBars: number;
-    tradedBars: number;
-    observedThrough: string | null;
-    complete: boolean;
-    startUnobservedMs: number;
-    boundaryUnobservedMs: number;
-    missingRanges: Array<[string, string]>;
+  reference: {
+    status: 'PENDING' | 'VERIFIED' | 'NO_TRADE' | 'UNVERIFIED' | string;
+    tradeId: string | null;
+    at: string | null;
+    price: string | null;
+    qty: string | null;
+    delayMs: number | null;
+    delayed: boolean | null;
   };
+  highest: Extreme | null;
+  lowest: Extreme | null;
+  lowBeforeHighest: { price: string; at: string; tradeId: string | null } | null;
+  order: 'HIGH_FIRST' | 'LOW_FIRST' | 'SAME_MS' | null;
+  extremesProven: boolean;
+  coverage: {
+    minutesExpected: number | null;
+    minutesPresent: number;
+    minutesTraded: number;
+    minutesMissing: number;
+    complete: boolean;
+    gaps: Gap[];
+  };
+  freshness: {
+    dataThrough: string | null;
+    lastSourceFetchAt: string | null;
+    lastFetchAttemptAt: string | null;
+    lastFetchError: string | null;
+    retryUntil: string | null;
+    lastRecomputedAt: string | null;
+  };
+  flags: string[];
   status: ObsStatus;
   provisional: boolean;
   reasons: string[];
-  lastUpdateAt: string | null;
   finalizedAt: string | null;
   rulesVersion: string;
   resultVersion: number;
   coinEvents: number;
   overlapping: number;
   isLive: boolean;
+}
+
+/** GET /api/observations/:id */
+export interface ObservationDetail extends ObservationRow {
+  displayedRulesVersion: string;
+  event: {
+    detectedUtcDate: string;
+    crawlAt: string;
+    cmcQuoteAt: string;
+    sourceBatchId: string;
+    slotTime: string;
+    createdAt: string;
+    rank: number | null;
+    rulesetVersion: string;
+  };
+  actionableEvidence: Record<string, unknown> | null;
+  referenceEvidence: Record<string, unknown> | null;
+  extremesEvidence: Record<string, ExtremeEvidence | null> | null;
+  flagsEvidence: Record<string, unknown> | null;
+  evidenceSha256: string | null;
+  mappingEvidence: Record<string, unknown> | null;
+  eligibilityEvidence: Record<string, unknown> | null;
+  pairState: Record<string, unknown> | null;
+  legacyV1: Record<string, unknown> | null;
+  rulesChanges: Array<{
+    from: string;
+    to: string;
+    fromStatus: string;
+    fromResultVersion: number;
+    fromFinalizedAt: string | null;
+    changedAt: string;
+    reason: string;
+  }>;
+  results: Array<{
+    version: number;
+    status: string;
+    rulesVersion: string;
+    highestReturnPct: string | null;
+    lowestReturnPct: string | null;
+    referencePrice: string | null;
+    observationStart: string | null;
+    flags: string[];
+    v1MaxRisePct: string | null;
+    v1MaxDropPct: string | null;
+    evidenceSha256: string | null;
+    computedAt: string;
+    reasons: string[];
+  }>;
+}
+
+export interface ExtremeEvidence {
+  best: { id: string; time: string; price: string; qty: string } | null;
+  minute: string | null;
+  proven: boolean;
+  checked: Array<{ minute: string; candle: string; traded: string | null; check: string }>;
+  blocking: Array<{ from: string; to: string; kind: string; state: string }>;
 }
 
 /** GET /api/observations/:id/overlaps */
@@ -121,8 +222,7 @@ export interface ObservationSummary {
   priceSource: string;
   rulesVersion: string;
   windowHours: number;
-  maxEntryDelayMs: number;
-  maxEntryStalenessMs: number;
+  retryHours: number;
   cutover: {
     providerId: string;
     cutoverAt: string | null;
@@ -138,21 +238,37 @@ export interface ObservationSummary {
     startedAt: string;
     finishedAt: string | null;
     notes: string[];
+    fetchedNewData: boolean | null;
+    candlesStored: number | null;
+    tradeMinutesChecked: number | null;
   } | null;
   lastSuccessfulRunAt: string | null;
+  freshness: {
+    activeObservations: number;
+    oldestOpenDataThrough: string | null;
+    oldestOpenLagMs: number | null;
+    lastSourceFetchAt: string | null;
+    pairsWithFetchErrors: number;
+    observationsAwaitingVerification: number;
+  };
   summary: {
+    rulesVersion: string;
     total: Count;
     byStatus: Record<ObsStatus, Count>;
     byEligibility: Record<Eligibility, Count>;
     final: Count & {
-      rise: StatsJson;
-      drop: StatsJson;
-      byStars: Array<Count & { key: string; rise: StatsJson; drop: StatsJson }>;
+      highest: StatsJson;
+      lowest: StatsJson;
+      byStars: Array<Count & { key: string; highest: StatsJson; lowest: StatsJson }>;
       byEligibility: Array<
-        Count & { key: string; label: string; rise: StatsJson; drop: StatsJson }
+        Count & { key: string; label: string; highest: StatsJson; lowest: StatsJson }
       >;
+      flagged: { singleTrade: Count; delayedReference: Count };
     };
     provisional: Count;
+    partial: Count;
+    noTrades: Count;
+    unverifiable: Count;
     unmeasured: Count;
     correlation: {
       coinsWithSeveralEvents: number;

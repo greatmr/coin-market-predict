@@ -40,14 +40,20 @@ never real orders. Spec: `docs/strategy-two-tier-vmc.md`. Purpose and open decis
   `observation:cutover`, immutable once passed). Before it events go to the legacy forward test,
   at or after it to the LBank observation; database triggers refuse the wrong side. Never route
   by anything but the detection time.
-- **LBank Spot Price Observation** (`src/modules/lbank-observation/`, `docs/lbank-spot-observation.md`):
-  its own tables (`lbank_obs_event`, `lbank_observation` with a unique event FK, shared
-  `lbank_spot_candle` per pair and minute, append-only results), its own job and lease
-  (`LBANK_OBSERVATION_CRON`), LBank's public REST API (`api.lbkex.com`, provider `lbank_spot`) or
-  the synthetic fixture. Every price is LBank Spot (the CMC price is context and an identity check
-  only); exactly t0 + 168 h; entry = OPEN of the first 1-minute bar at or after t0; extremes from
-  bars with trades only, never the bar straddling the cutoff. Pure rules in `observation-rules.ts`;
-  a rule change bumps `OBSERVATION_RULES_VERSION` and the doc. FINAL only with full coverage; the
+- **LBank Spot Price Observation** (`src/modules/lbank-observation/`, `docs/lbank-spot-observation.md`,
+  rules `lbank-spot-obs-2`, `docs/adr/0010-lbank-observation-v2.md`): its own tables
+  (`lbank_obs_event`, `lbank_observation` with a unique event FK, shared `lbank_spot_candle`,
+  `lbank_spot_trade` and `lbank_spot_trade_minute` per pair, day archives, append-only results and
+  rules-change log), its own job and lease (`LBANK_OBSERVATION_CRON`), LBank's public REST API
+  (`api.lbkex.com`, provider `lbank_spot`) or the synthetic fixture. Every price is an LBank Spot
+  trade (the CMC price is context and a review flag only). The window is exactly
+  `[observation_start, +168 h)` from the proven publication (`observation-timing.ts`: scan commit,
+  never the crawl time, which only names the event); the reference is the first verified trade at
+  or after the start; extremes are verified trades (candles only locate candidates: a candle OPEN is
+  the previous close and High / Low can be it); `trades.do` returns trades strictly after `time`.
+  No invented thresholds; gaps of every kind are retried until end + 24 h. Pure rules in
+  `observation-rules.ts`; a rule change bumps `OBSERVATION_RULES_VERSION` and the doc, and rows move
+  only through `lbank_obs_rules_change` (trigger). FINAL only with full verified coverage; the
   legacy tracker retires itself once every pre-cutover event has a terminal closure.
 - **Storage scope** (`docs/adr/0008-storage-scope.md`, D4): every coin is screened hourly and kept
   in the registry, but only ranks 1–1200 are stored as snapshots and only Review Queue rows as

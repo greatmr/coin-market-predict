@@ -314,26 +314,31 @@ the UTC day containing detection + 168 h. Rules, statuses, fields and gaps:
 
 ## 5b. LBank Spot Price Observation
 
-Since the cutover, new CMC star events are observed on LBank Spot instead of the legacy forward test:
-the entry is the OPEN of the first LBank Spot 1-minute bar at or after the signal, and the page
-shows the highest High and lowest Low over exactly 168 h, with Spot / Futures eligibility at the
-signal. Rules, evidence and statuses: [lbank-spot-observation.md](lbank-spot-observation.md).
+Since the cutover, new CMC star events are observed on LBank Spot instead of the legacy forward test
+(rules `lbank-spot-obs-2`): the window starts when the star signal was proven usable (the Review
+Queue's publication) and lasts exactly 168 h; the reference price is the first verified LBank Spot
+trade after the start; the page shows the highest and lowest verified trades, with Spot / Futures
+evidence around the signal. Rules, evidence and statuses: [lbank-spot-observation.md](lbank-spot-observation.md).
 
 - **LBank Spot** page: only the table and its filters; each row shows its status with the reasons in
-  words and, when the same coin's windows overlap, an _N overlapping_ button listing those events.
-  The summary (cutover, Final-only statistics by stars and Spot / Futures class, the legacy
-  wind-down), _Export CSV_ and _Update now_ are on the **Data** page.
+  words, its coverage and data freshness, review flags (delayed reference, thin-market extreme,
+  CMC deviation, old mapping) and _Details_ with every piece of evidence; when the same coin's
+  windows overlap, an _N overlapping_ button lists those events. The summary (cutover, Final-only
+  statistics by stars and Spot / Futures class, data freshness, the legacy wind-down), _Export CSV_
+  and _Update now_ (which says whether it fetched new data or only recomputed) are on the **Data**
+  page.
 
 - **Cutover** (once): `npm run cli -- observation:cutover --at <YYYY-MM-DD>T00:00:00Z` — a UTC
   midnight at least 2 h ahead. Check it with `observation:cutover`; it cannot change once passed.
-  Runbook with backup, checks and rollback: [lbank-spot-observation.md § 10](lbank-spot-observation.md#10-cutover-runbook-plan-c).
+  Runbook with backup, checks and rollback: [lbank-spot-observation.md § 10](lbank-spot-observation.md#10-runbook).
 - **Daily check**: `observation:status` (and `observation:check` after each day: routing ok, no batch
   without intake, no event in both trackers); the _LBank Spot observation_ page; `forward:legacy` for
   the legacy events still finishing. The legacy page disappears from the navigation by itself once
   every legacy event has a terminal outcome; its data and exports stay.
 - **Settings**: `LBANK_OBSERVATION_CRON` (15 min), `LBANK_SYNC_INTERVAL_MINUTES` (60),
-  `LBANK_CANDLE_RETENTION_DAYS` (7), `LBANK_API_BASE_URL` (`https://api.lbkex.com`),
-  `LBANK_OBSERVATION_ENABLED` (pause the job; events are still recorded).
+  `LBANK_CANDLE_RETENTION_DAYS` (7: raw candles; older days are archived first, archives and
+  trades are kept), `LBANK_API_BASE_URL` (`https://api.lbkex.com`), `LBANK_REQUESTS_PER_MINUTE`
+  (60), `LBANK_OBSERVATION_ENABLED` (pause the job; events are still recorded).
 
 ## 6. Command reference
 

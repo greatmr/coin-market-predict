@@ -23,11 +23,14 @@ and an owner-only Claude agent that, on request, reads one coin's stored data an
 view on a pump within 7 days. That view is kept as history and treated as review material, like
 everything else here.
 
-Added 2026-11-24 (`docs/lbank-spot-observation.md`, `docs/adr/0009-lbank-spot-observation.md`): the
+Added 2026-11-24 (`docs/lbank-spot-observation.md`, `docs/adr/0009-lbank-spot-observation.md`;
+corrected 2026-11-25 by `docs/adr/0010-lbank-observation-v2.md`, rules `lbank-spot-obs-2`): the
 **LBank Spot Price Observation** replaces the forward test for star events detected at or after a
-persisted UTC-midnight cutover: LBank Spot becomes the source of the entry reference and of every
-later price, and each event's highest High and lowest Low are recorded over exactly t0 + 168 h
-from LBank Spot 1-minute candles, with Spot / Futures eligibility judged at the signal. The legacy
+persisted UTC-midnight cutover: LBank Spot becomes the source of the reference price and of every
+later price. Each event is observed for exactly 168 h from the moment the star signal was proven
+usable (the Review Queue's publication, never the crawl time): the first verified LBank Spot trade
+after it is the reference, and the highest and lowest verified trades in the window are recorded,
+with Spot / Futures evidence around the signal (Futures as listing evidence only). The legacy
 forward test finishes its pre-cutover events, records an explicit terminal outcome for each, and
 then retires. Observation only: no trades, stops, targets, fees, funding or profit.
 

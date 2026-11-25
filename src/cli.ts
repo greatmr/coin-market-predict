@@ -93,7 +93,8 @@ const HELP = `Coins Predicts CLI — Two-Tier VMC strategy (docs/strategy-two-ti
   observation:update           Run the observation job now (evidence, LBank candles, results)
   observation:probe [--symbol btc_usdt]
                                Read-only check that this host reaches LBank: one 1-minute kline page
-                               (closed bars, server time) and the Spot pair and Futures contract lists
+                               (closed bars, server time), one trades page, and the Spot pair and
+                               Futures contract lists
   observation:list [--status S] [--json]
                                Observations, newest signal first
   observation:check            Routing check: every post-cutover queue row accounted for, no event in
@@ -490,6 +491,9 @@ async function main() {
         const symbol = (arg('--symbol') ?? 'btc_usdt').toLowerCase();
         const k = await src.klines(symbol, Date.now() - 10 * 60_000, 10);
         const r = k.response;
+        // Trades strictly after `time` (ms): one page from ten minutes ago.
+        const tr = await src.trades(symbol, Date.now() - 10 * 60_000, 5);
+        const trr = tr.response;
         const [spot, fut] = [await src.spotPairs(), await src.futuresContracts()];
         out({
           source: src.id,
@@ -509,12 +513,28 @@ async function main() {
                 }
               : { code: r.code, message: r.message }),
           },
+          trades: {
+            url: tr.url,
+            ms: tr.durationMs,
+            result: trr.kind,
+            ...(trr.kind === 'ok'
+              ? {
+                  rows: trr.rows.length,
+                  first: trr.rows[0]
+                    ? {
+                        time: new Date(trr.rows[0].timeMs).toISOString(),
+                        price: trr.rows[0].price.toFixed(),
+                      }
+                    : null,
+                }
+              : { code: trr.code, message: trr.message }),
+          },
           spotPairs: spot.ok
             ? { count: spot.items.length, listed: spot.items.includes(symbol) }
             : { error: spot.error },
           futuresContracts: fut.ok ? { count: fut.items.length } : { error: fut.error },
         });
-        if (r.kind !== 'ok' || !spot.ok || !fut.ok) process.exitCode = 1;
+        if (r.kind !== 'ok' || trr.kind !== 'ok' || !spot.ok || !fut.ok) process.exitCode = 1;
         break;
       }
       case 'observation:list': {
@@ -524,10 +544,10 @@ async function main() {
           process.argv.includes('--json')
             ? r
             : [
-                `${r.total} observations (prices: LBank Spot 1-minute; provisional unless FINAL)`,
+                `${r.total} observations (prices: LBank Spot trades; provisional unless FINAL)`,
                 ...r.rows.map(
                   (o) =>
-                    `${o.signalAt}  ${o.symbol.padEnd(10)} ${o.stars}★  ${(o.pair.symbol ?? '—').padEnd(14)} ${o.eligibilityLabel.padEnd(32)} ${o.status.padEnd(19)} entry ${o.entry?.price ?? '—'}  rise ${o.maxRisePct ? `${Number(o.maxRisePct).toFixed(2)}%` : '—'}  drop ${o.maxDropPct ? `${Number(o.maxDropPct).toFixed(2)}%` : '—'}  bars ${o.coverage.coveredBars}/${o.coverage.expectedBars}`,
+                    `${o.crawlAt}  start ${o.window?.start ?? 'pending'} (${o.window?.source ?? '—'})  ${o.symbol.padEnd(10)} ${o.stars}★  ${(o.pair.symbol ?? '—').padEnd(14)} ${o.status.padEnd(16)} ref ${o.reference.price ?? '—'}${o.reference.delayMs !== null ? ` +${(o.reference.delayMs / 1000).toFixed(3)}s` : ''}  highest ${o.highest?.pct ? `${Number(o.highest.pct).toFixed(3)}%` : '—'}  lowest ${o.lowest?.pct ? `${Number(o.lowest.pct).toFixed(3)}%` : '—'}  minutes ${o.coverage.minutesPresent}/${o.coverage.minutesExpected ?? '—'}${o.flags.length ? `  flags ${o.flags.join(',')}` : ''}`,
                 ),
               ].join('\n'),
         );
@@ -739,9 +759,11 @@ function renderObservationStatus(
         .filter(([, c]) => c.events)
         .map(([k, c]) => `${k} ${c.events}`)
         .join(', '),
-    `FINAL (denominator): ${f.events} events, ${f.coins} coins — max rise median ${pct(f.rise.median)}, mean ${pct(f.rise.mean)}; max drop median ${pct(f.drop.median)}, mean ${pct(f.drop.mean)}`,
-    `provisional (ACTIVE / PARTIAL, not in statistics): ${s.summary.provisional.events}; no measurement: ${s.summary.unmeasured.events}`,
-    `routing check: ${s.routing.ok ? 'ok' : 'PROBLEM'} (${s.routing.batchesAfterCutover} batches after the cutover, ${s.routing.batchesWithoutIntake.length} without intake, ${s.routing.legacyEventsAfterCutover} legacy events after it, ${s.routing.eventsWithoutObservation} events without observation, ${s.routing.duplicateKeysAcrossTrackers} keys in both)`,
+    `FINAL ${s.rulesVersion} (denominator): ${f.events} events, ${f.coins} coins — highest return median ${pct(f.highest.median)}, mean ${pct(f.highest.mean)}; lowest return median ${pct(f.lowest.median)}, mean ${pct(f.lowest.mean)}; flagged single-trade extremes ${f.flagged.singleTrade.events}, delayed references ${f.flagged.delayedReference.events}`,
+    `not in statistics: ACTIVE ${s.summary.provisional.events}, PARTIAL ${s.summary.partial.events}, NO_TRADES ${s.summary.noTrades.events}, UNVERIFIABLE ${s.summary.unverifiable.events}, no measurement ${s.summary.unmeasured.events}`,
+    `freshness: ${s.freshness.activeObservations} active; oldest open data through ${s.freshness.oldestOpenDataThrough ?? '—'}${s.freshness.oldestOpenLagMs !== null ? ` (${Math.round(s.freshness.oldestOpenLagMs / 60_000)} min behind)` : ''}; last LBank fetch ${s.freshness.lastSourceFetchAt ?? 'never'}; ${s.freshness.pairsWithFetchErrors} pairs with fetch errors; ${s.freshness.observationsAwaitingVerification} awaiting trade checks`,
+    `last run fetched new data: ${s.lastRun?.fetchedNewData ?? '—'} (candles stored ${s.lastRun?.candlesStored ?? '—'}, trade minutes checked ${s.lastRun?.tradeMinutesChecked ?? '—'})`,
+    `routing check: ${s.routing.ok ? 'ok' : 'PROBLEM'} (${s.routing.batchesAfterCutover} batches after the cutover, ${s.routing.batchesWithoutIntake.length} without intake, ${s.routing.legacyEventsAfterCutover} legacy events after it, ${s.routing.eventsWithoutObservation} events without observation, ${s.routing.duplicateKeysAcrossTrackers} keys in both, ${s.routing.observationsWithoutStart} without a start yet)`,
   ].join('\n');
 }
 

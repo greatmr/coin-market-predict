@@ -1,8 +1,10 @@
-// LBank Spot Price Observation (docs/lbank-spot-observation.md): each CMC 1/2/3-star event since the
-// cutover, observed on LBank Spot 1-minute candles for exactly t0 + 168 h. Only the table and its
-// filters: the summary, export and "Update now" are on the Data page (ObservationInsights), the
-// rules behind the help button. Every price is LBank Spot. List state lives in the URL:
-//   /lbank-spot?status=FINAL&elig=SPOT_ONLY&stars=3&cov=complete&from=2026-11-26&q=btc&sort=rise&dir=desc&page=2
+// LBank Spot price observation (docs/lbank-spot-observation.md, rules lbank-spot-obs-2): each CMC
+// 1/2/3-star event since the cutover, observed on LBank Spot from the moment the signal was proven
+// usable for exactly 168 h: the first verified trade after it (reference), the highest and lowest
+// verified trades. Only the table and its filters: the summary, export and "Update now" are on the
+// Data page (ObservationInsights), every detail behind a row's "Details", the rules behind the help
+// button. List state lives in the URL:
+//   /lbank-spot?status=FINAL&elig=SPOT_ONLY&stars=3&cov=complete&flags=spike&from=2026-11-26&q=btc&sort=highest&dir=desc&page=2
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { SearchField } from '../../components/icons';
@@ -18,18 +20,24 @@ import {
 } from '../../components/ui';
 import { api, errorMessage } from '../../lib/api';
 import { humanize } from '../../lib/constants';
-import { fmtInt, fmtPct, fmtPrice, fmtTime, utc } from '../../lib/format';
+import { fmtAgo, fmtInt, fmtPct, fmtPrice, fmtTime, utc } from '../../lib/format';
 import { useQueryState } from '../../lib/routes';
 import { useApp } from '../../state/app';
 
+import { openObservationDetail } from './ObservationDetail';
 import { openObservationOverlaps } from './Overlaps';
 import {
   ELIGIBILITY,
+  FLAG,
+  FUTURES_TEXT,
+  GAP_TEXT,
   LISTING_TEXT,
   MAPPING_TEXT,
   ORDER,
   STATUS,
+  TIMING_TEXT,
   TRADING_TEXT,
+  delayText,
   obsReasonText,
 } from './labels';
 import type { ObsSort, ObservationPage, ObservationRow, ObservationSummary } from './types';
@@ -48,8 +56,15 @@ const ELIG_FILTERS: readonly (readonly [string, string])[] = [
 ];
 const COVERAGE_FILTERS: readonly (readonly [string, string])[] = [
   ['', 'Any coverage'],
-  ['complete', 'Complete so far'],
-  ['partial', 'Missing bars'],
+  ['complete', 'No gap so far'],
+  ['partial', 'With gaps'],
+];
+const FLAG_FILTERS: readonly (readonly [string, string])[] = [
+  ['', 'Any flags'],
+  ['any', 'Flagged'],
+  ['spike', 'Thin-market extreme'],
+  ['delayed', 'Delayed reference'],
+  ['none', 'No flag'],
 ];
 const STAR_FILTERS: readonly (readonly [string, string])[] = [
   ['', 'All'],
@@ -59,21 +74,23 @@ const STAR_FILTERS: readonly (readonly [string, string])[] = [
 ];
 const SORTS: readonly ObsSort[] = [
   'detected',
+  'start',
   'stars',
   'points',
-  'rise',
-  'drop',
-  'entryDelay',
+  'highest',
+  'lowest',
+  'referenceDelay',
   'coverage',
   'symbol',
 ];
 const SORT_LABEL: Record<ObsSort, string> = {
-  detected: 'signal time',
+  detected: 'CMC crawl time',
+  start: 'window start',
   stars: 'stars',
   points: 'points',
-  rise: 'maximum rise',
-  drop: 'maximum drop',
-  entryDelay: 'entry delay',
+  highest: 'highest return',
+  lowest: 'lowest return',
+  referenceDelay: 'reference delay',
   coverage: 'coverage',
   symbol: 'coin',
 };
@@ -82,8 +99,6 @@ const isIn = (list: readonly (readonly [string, string])[], v: string) =>
   list.some(([k]) => k === v);
 const isSort = (v: string): v is ObsSort => (SORTS as readonly string[]).includes(v);
 const pctText = (v: string | null | undefined) => (v === null || v === undefined ? '—' : fmtPct(v));
-const delayText = (ms: number) =>
-  ms < 60_000 ? `${(ms / 1000).toFixed(1)} s` : `${(ms / 60_000).toFixed(1)} min`;
 
 function SortHead({
   k,
@@ -161,14 +176,31 @@ function Select({
   );
 }
 
-function ExtremeCell({ v, at }: { v: { price: string; barAt: string } | null; at?: string }) {
-  if (!v) return <span className="muted">—</span>;
+function ExtremeCell({
+  r,
+  v,
+  kind,
+}: {
+  r: ObservationRow;
+  v: ObservationRow['highest'];
+  kind: 'highest' | 'lowest';
+}) {
+  if (!v) return <span className="muted">{r.status === 'NO_TRADES' ? 'no trade' : '—'}</span>;
   return (
     <span
-      title={`LBank Spot ${fmtPrice(v.price)} in the 1-minute bar opening ${utc(v.barAt)}${at ? ` (${at})` : ''}`}
+      className={r.provisional ? 'muted' : undefined}
+      title={[
+        `${kind === 'highest' ? 'Highest' : 'Lowest'} verified LBank Spot trade ${v.price} at ${utc(v.at)} (trade ${v.tradeId})`,
+        `${pctText(v.pct)} vs the reference trade; not profit${kind === 'lowest' ? ', not a stop loss' : ''}`,
+        r.order ? ORDER[r.order] : '',
+        r.provisional ? 'provisional (not Final)' : '',
+      ]
+        .filter(Boolean)
+        .join('\n')}
     >
-      {fmtPrice(v.price)}
-      <span className="muted small">{` · ${fmtTime(v.barAt)}`}</span>
+      {pctText(v.pct)}
+      {r.provisional ? ' *' : ''}
+      <span className="muted small">{` · ${fmtPrice(v.price)} · ${fmtTime(v.at)}`}</span>
     </span>
   );
 }
@@ -179,6 +211,7 @@ export default function Observation() {
     status: '',
     elig: '',
     cov: '',
+    flags: '',
     stars: '',
     from: '',
     to: '',
@@ -190,6 +223,7 @@ export default function Observation() {
   const status = isIn(STATUS_FILTERS, query.status) ? query.status : '';
   const elig = isIn(ELIG_FILTERS, query.elig) ? query.elig : '';
   const cov = isIn(COVERAGE_FILTERS, query.cov) ? query.cov : '';
+  const flags = isIn(FLAG_FILTERS, query.flags) ? query.flags : '';
   const stars = isIn(STAR_FILTERS, query.stars) ? query.stars : '';
   const from = /^\d{4}-\d{2}-\d{2}$/.test(query.from) ? query.from : '';
   const to = /^\d{4}-\d{2}-\d{2}$/.test(query.to) ? query.to : '';
@@ -213,13 +247,14 @@ export default function Observation() {
     if (status) q.set('status', status);
     if (elig) q.set('eligibility', elig);
     if (cov) q.set('coverage', cov);
+    if (flags) q.set('flags', flags);
     if (stars) q.set('stars', stars);
-    // UTC calendar dates of the CMC signal time ([from 00:00, to + 1 day 00:00)).
+    // UTC calendar dates of the CMC crawl (the event's date; [from 00:00, to + 1 day 00:00)).
     if (from) q.set('from', `${from}T00:00:00Z`);
     if (to) q.set('to', new Date(Date.parse(`${to}T00:00:00Z`) + 86_400_000).toISOString());
     if (search) q.set('search', search);
     return q;
-  }, [status, elig, cov, stars, from, to, search]);
+  }, [status, elig, cov, flags, stars, from, to, search]);
 
   const load = useCallback(async () => {
     const q = new URLSearchParams(filters);
@@ -282,16 +317,32 @@ export default function Observation() {
           r.points === null ? '—' : `${r.points}${r.scoreComplete === false ? ' ≥' : ''}`,
       },
       {
-        label: head('detected', 'CMC signal (t0)'),
+        label: head('detected', 'CMC crawl'),
         title:
-          'The CMC star event time (the batch crawl time); the window ends exactly 168 h later',
+          'The hourly CMC crawl that found the event (its identity and UTC date); the window starts later, when the signal was usable',
         render: (r) => (
           <span
-            title={`${utc(r.signalAt)} · window ends ${utc(r.windowEnd)} · CMC price ${r.cmcPriceUsd} USD (context only)`}
+            title={`crawl ${utc(r.crawlAt)} · CMC quote ${utc(r.cmcQuoteAt)} · CMC price ${r.cmcPriceUsd} USD (context only)`}
           >
-            {fmtTime(r.signalAt)}
+            {fmtTime(r.crawlAt)}
           </span>
         ),
+      },
+      {
+        label: head('start', 'Window start'),
+        title:
+          'When the star signal was proven usable (the Review Queue was published); the window is exactly 168 h from here',
+        render: (r) =>
+          r.window ? (
+            <span
+              title={`${utc(r.window.start)} – ${utc(r.window.end)}\nproven by: ${TIMING_TEXT[r.window.source] ?? r.window.source}${r.window.uncertain ? ' (later than the earliest usable moment)' : ''}`}
+            >
+              {fmtTime(r.window.start)}
+              <span className="muted small">{` · ${delayText(r.window.afterCrawlMs)} after crawl`}</span>
+            </span>
+          ) : (
+            <span className="muted">pending</span>
+          ),
       },
       {
         label: 'LBank Spot pair',
@@ -309,67 +360,37 @@ export default function Observation() {
           ),
       },
       {
-        label: 'Spot / Futures',
+        label: head('referenceDelay', 'Reference'),
         title:
-          'At the signal, from evidence before and after it; Unknown is never shown as Yes or No',
-        render: (r) => (
-          <Lab
-            map={ELIGIBILITY}
-            k={r.eligibility}
-            title={`At the signal: Spot ${LISTING_TEXT[r.spot] ?? humanize(r.spot).toLowerCase()}${r.spotTrading ? ` (${TRADING_TEXT[r.spotTrading] ?? humanize(r.spotTrading).toLowerCase()})` : ''} · Futures ${LISTING_TEXT[r.futures] ?? humanize(r.futures).toLowerCase()}`}
-          />
-        ),
-      },
-      {
-        label: head('entryDelay', 'LBank entry'),
-        title:
-          'OPEN of the first 1-minute LBank Spot bar opening at or after t0, and its delay after t0',
+          'Reference price: the first verified LBank Spot trade at or after the window start, and its delay. An observed trade, not an executed order.',
         render: (r) =>
-          r.entry ? (
+          r.reference.price !== null && r.reference.delayMs !== null ? (
             <span
-              title={`bar ${utc(r.entry.at)}; last trade before it in the bar of ${r.entry.lastTradeAt ? utc(r.entry.lastTradeAt) : 'none within 60 min'}`}
+              title={`trade ${r.reference.tradeId} at ${utc(r.reference.at)} · qty ${r.reference.qty}${r.reference.delayed ? '\ndelayed: a whole minute after the start passed without a trade' : ''}`}
             >
-              {fmtPrice(r.entry.price)}
-              <span className="muted small">{` · +${delayText(r.entry.delayMs)}${r.entry.stale ? ' · stale' : ''}`}</span>
+              {fmtPrice(r.reference.price)}
+              <span className="muted small">{` · ${delayText(r.reference.delayMs)}`}</span>
+              {r.reference.delayed ? <span className="chip warn small">delayed</span> : null}
             </span>
           ) : (
-            <span className="muted">—</span>
+            <span className="muted">
+              {r.status === 'NO_TRADES' ? 'no trade' : humanize(r.reference.status).toLowerCase()}
+            </span>
           ),
       },
       {
-        label: head('rise', 'Max rise'),
-        num: true,
-        title: '100 × (highest LBank Spot High ÷ entry − 1). Not profit. Provisional unless Final.',
-        render: (r) => (
-          <span className={r.provisional ? 'muted' : undefined}>
-            {pctText(r.maxRisePct)}
-            {r.provisional && r.maxRisePct !== null ? ' *' : ''}
-          </span>
-        ),
-      },
-      {
-        label: head('drop', 'Max drop'),
+        label: head('highest', 'Highest'),
         num: true,
         title:
-          '100 × (lowest LBank Spot Low ÷ entry − 1), negative for a decline. Not a tested stop loss.',
-        render: (r) => (
-          <span className={r.provisional ? 'muted' : undefined}>
-            {pctText(r.maxDropPct)}
-            {r.provisional && r.maxDropPct !== null ? ' *' : ''}
-          </span>
-        ),
+          'Maximum rise: 100 × (highest verified trade ÷ reference − 1), never below 0. Not profit. * provisional unless Final.',
+        render: (r) => <ExtremeCell r={r} v={r.highest} kind="highest" />,
       },
       {
-        label: 'Highest High',
-        render: (r) => (
-          <ExtremeCell v={r.high} at={r.extremeOrder ? ORDER[r.extremeOrder] : undefined} />
-        ),
-      },
-      {
-        label: 'Lowest Low',
-        render: (r) => (
-          <ExtremeCell v={r.low} at={r.extremeOrder ? ORDER[r.extremeOrder] : undefined} />
-        ),
+        label: head('lowest', 'Lowest'),
+        num: true,
+        title:
+          'Maximum decline: 100 × (lowest verified trade ÷ reference − 1), never above 0. Independent of the highest; not a stop loss.',
+        render: (r) => <ExtremeCell r={r} v={r.lowest} kind="lowest" />,
       },
       {
         label: 'Status',
@@ -385,29 +406,59 @@ export default function Observation() {
       {
         label: head('coverage', 'Coverage'),
         title:
-          '1-minute bars present of those expected so far; the minute straddling t0 + 168 h is never counted',
+          'Minutes of the window with an LBank candle, gaps by kind, and how fresh the data is (not the last recomputation)',
         render: (r) => (
           <span
             title={[
-              `${fmtInt(r.coverage.tradedBars)} bars with trades`,
-              r.coverage.missingBars
-                ? `missing ${fmtInt(r.coverage.missingBars)}: ${r.coverage.missingRanges
-                    .slice(0, 3)
-                    .map(([a, b]) => `${utc(a)}–${utc(b)}`)
-                    .join(', ')}`
-                : '',
-              `unobserved: ${delayText(r.coverage.startUnobservedMs)} after t0, ${delayText(r.coverage.boundaryUnobservedMs)} before the cutoff`,
-              r.lastUpdateAt ? `updated ${utc(r.lastUpdateAt)}` : '',
+              `${fmtInt(r.coverage.minutesTraded)} minutes with trades`,
+              ...r.coverage.gaps
+                .slice(0, 4)
+                .map(
+                  (g) => `${utc(g.from)}–${utc(g.to)}: ${GAP_TEXT[g.state] ?? humanize(g.state)}`,
+                ),
+              `data through ${utc(r.freshness.dataThrough)}`,
+              `last LBank fetch ${utc(r.freshness.lastSourceFetchAt)}`,
+              r.freshness.lastFetchError ? `last error: ${r.freshness.lastFetchError}` : '',
+              `recomputed ${utc(r.freshness.lastRecomputedAt)}`,
             ]
               .filter(Boolean)
               .join('\n')}
           >
-            {`${fmtInt(r.coverage.coveredBars)} / ${fmtInt(r.coverage.expectedBars)}`}
-            {r.coverage.missingBars ? (
-              <span className="muted small">{` · ${fmtInt(r.coverage.missingBars)} missing`}</span>
+            {`${fmtInt(r.coverage.minutesPresent)} / ${fmtInt(r.coverage.minutesExpected)}`}
+            {r.coverage.gaps.length ? (
+              <span className="muted small">{` · ${r.coverage.gaps.length} gap${r.coverage.gaps.length > 1 ? 's' : ''}`}</span>
             ) : null}
+            <span className="muted small">{` · data ${fmtAgo(r.freshness.dataThrough)}`}</span>
           </span>
         ),
+      },
+      {
+        label: 'Spot / Futures',
+        title:
+          'Spot at the signal from LBank’s candles and pair list; Futures = listing evidence from snapshots before and after the signal (never a Futures price)',
+        render: (r) => (
+          <Lab
+            map={ELIGIBILITY}
+            k={r.eligibility}
+            title={`Spot at the signal: ${LISTING_TEXT[r.spot] ?? humanize(r.spot).toLowerCase()}${r.spotTrading ? ` (${TRADING_TEXT[r.spotTrading] ?? humanize(r.spotTrading).toLowerCase()})` : ''} · Futures: ${FUTURES_TEXT[r.futures] ?? humanize(r.futures).toLowerCase()}`}
+          />
+        ),
+      },
+      {
+        label: 'Flags',
+        title: 'Review flags: kept and shown, never excluded',
+        render: (r) =>
+          r.flags.length ? (
+            <span className="chips">
+              {r.flags.map((f) => (
+                <span key={f} className="chip warn small" title={FLAG[f]?.[1] ?? humanize(f)}>
+                  {FLAG[f]?.[0] ?? humanize(f)}
+                </span>
+              ))}
+            </span>
+          ) : (
+            <span className="muted">—</span>
+          ),
       },
       {
         label: 'Overlaps',
@@ -426,6 +477,20 @@ export default function Observation() {
           ) : (
             <span className="muted">—</span>
           ),
+      },
+      {
+        label: '',
+        title: 'Everything behind this observation: evidence, gaps, flags, history',
+        render: (r) => (
+          <button
+            type="button"
+            className="chip link-chip"
+            aria-label={`Details of ${r.symbol} ${r.stars} stars`}
+            onClick={() => openObservationDetail(r)}
+          >
+            Details
+          </button>
+        ),
       },
     ];
   }, [sort, dir, onSort]);
@@ -459,7 +524,14 @@ export default function Observation() {
           value={cov}
           onPick={(v) => setQuery({ cov: v, page: null }, { push: true })}
         />
-        <label className="select-field" title="UTC date of the CMC signal, from">
+        <Select
+          label="Flags"
+          items={FLAG_FILTERS}
+          value={flags}
+          onPick={(v) => setQuery({ flags: v, page: null }, { push: true })}
+          title="Review flags are kept in every count; this only filters the table"
+        />
+        <label className="select-field" title="UTC date of the CMC crawl (the event's date), from">
           <span>From</span>
           <input
             type="date"
@@ -467,7 +539,7 @@ export default function Observation() {
             onChange={(e) => setQuery({ from: e.target.value, page: null }, { push: true })}
           />
         </label>
-        <label className="select-field" title="UTC date of the CMC signal, to (inclusive)">
+        <label className="select-field" title="UTC date of the CMC crawl, to (inclusive)">
           <span>To</span>
           <input
             type="date"

@@ -3,26 +3,32 @@ import { D, type DValue } from '../../common/utils/decimal.js';
 import {
   ELIGIBILITY_CLASSES,
   type EligibilityClass,
+  OBSERVATION_RULES_VERSION,
   OBSERVATION_STATUSES,
+  OBS_FLAG,
   type ObservationStatus,
 } from './observation.constants.js';
 
 /**
- * Summary statistics of LBank observations (docs/lbank-spot-observation.md § 7), pure and exact.
- * Maximum rise and maximum drop are two independent price extremes, never profit or a tested stop.
- * Only FINAL observations enter the statistics; every count states its denominator, in events and
- * in distinct coins, because one coin's overlapping events are correlated, not independent.
+ * Summary statistics of LBank observations (docs/lbank-spot-observation.md § 8), pure and exact.
+ * Highest and lowest return are two independent price extremes relative to the reference trade,
+ * never profit, never summed and never a tested stop. Only FINAL observations of the current rules
+ * enter the statistics; every count states its denominator in events and in distinct coins,
+ * because one coin's overlapping events follow one price path and are correlated, not independent.
+ * No coin-level weighting is applied (none is defined).
  */
 export interface StatsRow {
   id: string;
   cmcId: number;
   stars: number;
   status: ObservationStatus;
+  rulesVersion: string;
   eligibility: EligibilityClass;
-  t0Ms: number;
-  windowEndMs: number;
-  maxRisePct: DValue | null;
-  maxDropPct: DValue | null;
+  startMs: number | null;
+  endMs: number | null;
+  highestPct: DValue | null;
+  lowestPct: DValue | null;
+  flags: readonly string[];
 }
 
 export interface Stats {
@@ -71,18 +77,32 @@ const count = (rows: readonly StatsRow[]): Count => ({
 
 export interface FinalGroup extends Count {
   key: string;
-  rise: Stats;
-  drop: Stats;
+  highest: Stats;
+  lowest: Stats;
 }
 
 export interface ObservationSummary {
+  rulesVersion: string;
   total: Count;
   byStatus: Record<ObservationStatus, Count>;
   byEligibility: Record<EligibilityClass, Count>;
-  /** FINAL observations only: the denominator of every statistic below. */
-  final: Count & { rise: Stats; drop: Stats; byStars: FinalGroup[]; byEligibility: FinalGroup[] };
-  /** ACTIVE and PARTIAL: provisional extremes, shown but never in a statistic. */
+  /** FINAL observations of the current rules only: the denominator of every statistic below. */
+  final: Count & {
+    highest: Stats;
+    lowest: Stats;
+    byStars: FinalGroup[];
+    byEligibility: FinalGroup[];
+    /** Final events carrying a single-trade (thin-market) extreme or a delayed reference: kept. */
+    flagged: { singleTrade: Count; delayedReference: Count };
+  };
+  /** ACTIVE: provisional values, shown but never in a statistic. */
   provisional: Count;
+  /** PARTIAL: window over, coverage incomplete after the retries (values over the covered part). */
+  partial: Count;
+  /** NO_TRADES: the complete window held no trade (no return exists). */
+  noTrades: Count;
+  /** UNVERIFIABLE: no provable reference trade. */
+  unverifiable: Count;
   /** DATA_UNAVAILABLE, MAPPING_AMBIGUOUS, ELIGIBILITY_UNKNOWN: no LBank measurement. */
   unmeasured: Count;
   correlation: {
@@ -98,10 +118,12 @@ function finalGroup(key: string, rows: readonly StatsRow[]): FinalGroup {
   return {
     key,
     ...count(rows),
-    rise: stats(rows.map((r) => r.maxRisePct!)),
-    drop: stats(rows.map((r) => r.maxDropPct!)),
+    highest: stats(rows.map((r) => r.highestPct!)),
+    lowest: stats(rows.map((r) => r.lowestPct!)),
   };
 }
+
+const SINGLE_TRADE: readonly string[] = [OBS_FLAG.singleTradeHigh, OBS_FLAG.singleTradeLow];
 
 export function summarize(rows: readonly StatsRow[]): ObservationSummary {
   const byStatus = Object.fromEntries(
@@ -111,7 +133,11 @@ export function summarize(rows: readonly StatsRow[]): ObservationSummary {
     ELIGIBILITY_CLASSES.map((c) => [c, count(rows.filter((r) => r.eligibility === c))]),
   ) as Record<EligibilityClass, Count>;
   const final = rows.filter(
-    (r) => r.status === 'FINAL' && r.maxRisePct !== null && r.maxDropPct !== null,
+    (r) =>
+      r.status === 'FINAL' &&
+      r.rulesVersion === OBSERVATION_RULES_VERSION &&
+      r.highestPct !== null &&
+      r.lowestPct !== null,
   );
   const perCoin = new Map<number, StatsRow[]>();
   for (const r of rows) perCoin.set(r.cmcId, [...(perCoin.get(r.cmcId) ?? []), r]);
@@ -123,19 +149,23 @@ export function summarize(rows: readonly StatsRow[]): ObservationSummary {
       several++;
       severalEvents += list.length;
     }
-    const sorted = [...list].sort((a, b) => a.t0Ms - b.t0Ms);
-    for (let i = 0; i < sorted.length; i++)
-      for (let j = i + 1; j < sorted.length && sorted[j]!.t0Ms < sorted[i]!.windowEndMs; j++)
+    const timed = list
+      .filter((r) => r.startMs !== null && r.endMs !== null)
+      .sort((a, b) => a.startMs! - b.startMs!);
+    for (let i = 0; i < timed.length; i++)
+      for (let j = i + 1; j < timed.length && timed[j]!.startMs! < timed[i]!.endMs!; j++)
         overlapping++;
   }
+  const is = (...s: ObservationStatus[]) => count(rows.filter((r) => s.includes(r.status)));
   return {
+    rulesVersion: OBSERVATION_RULES_VERSION,
     total: count(rows),
     byStatus,
     byEligibility,
     final: {
       ...count(final),
-      rise: stats(final.map((r) => r.maxRisePct!)),
-      drop: stats(final.map((r) => r.maxDropPct!)),
+      highest: stats(final.map((r) => r.highestPct!)),
+      lowest: stats(final.map((r) => r.lowestPct!)),
       byStars: [1, 2, 3].map((s) =>
         finalGroup(
           String(s),
@@ -148,16 +178,16 @@ export function summarize(rows: readonly StatsRow[]): ObservationSummary {
           final.filter((r) => r.eligibility === c),
         ),
       ).filter((g) => g.events > 0),
+      flagged: {
+        singleTrade: count(final.filter((r) => r.flags.some((f) => SINGLE_TRADE.includes(f)))),
+        delayedReference: count(final.filter((r) => r.flags.includes(OBS_FLAG.referenceDelayed))),
+      },
     },
-    provisional: count(rows.filter((r) => r.status === 'ACTIVE' || r.status === 'PARTIAL')),
-    unmeasured: count(
-      rows.filter(
-        (r) =>
-          r.status === 'DATA_UNAVAILABLE' ||
-          r.status === 'MAPPING_AMBIGUOUS' ||
-          r.status === 'ELIGIBILITY_UNKNOWN',
-      ),
-    ),
+    provisional: is('ACTIVE'),
+    partial: is('PARTIAL'),
+    noTrades: is('NO_TRADES'),
+    unverifiable: is('UNVERIFIABLE'),
+    unmeasured: is('DATA_UNAVAILABLE', 'MAPPING_AMBIGUOUS', 'ELIGIBILITY_UNKNOWN'),
     correlation: {
       coinsWithSeveralEvents: several,
       eventsOfThoseCoins: severalEvents,

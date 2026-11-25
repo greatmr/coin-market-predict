@@ -1,5 +1,5 @@
-// The same coin's other LBank observations whose 168-hour windows overlap a row's window, loaded
-// when the dialog opens (like the forward test's overlap list). Correlated: one price path.
+// The same coin's other LBank observations whose 168-hour windows overlap a row's window (each from
+// its own proven start), loaded when the dialog opens. Correlated: one price path.
 import { useEffect, useState } from 'react';
 
 import { Lab, Stars } from '../../components/ui';
@@ -33,7 +33,7 @@ function OverlapList({ id }: { id: string }) {
   return (
     <div className="fwd-explain">
       <p>
-        {`This event: ${o.symbol} ${o.stars}★, signal ${fmtTime(o.signalAt)}, window to ${fmtTime(o.windowEnd)}${o.entry ? `, LBank entry ${fmtPrice(o.entry.price)}` : ''}.`}
+        {`This event: ${o.symbol} ${o.stars}★, CMC crawl ${fmtTime(o.crawlAt)}, window ${o.window ? `${fmtTime(o.window.start)} – ${fmtTime(o.window.end)}` : 'start pending'}${o.reference.price ? `, reference ${fmtPrice(o.reference.price)}` : ''}.`}
       </p>
       <p className="muted small">
         {`${o.symbol} has ${data.coin.events} observations in all. Those below share part of this window: each is its own event (one per coin, UTC day and star count), but they follow the same LBank price, so their results are correlated rather than independent. This row is not included. * = provisional.`}
@@ -44,15 +44,15 @@ function OverlapList({ id }: { id: string }) {
             <thead>
               <tr>
                 <th scope="col">Stars</th>
-                <th scope="col">Signal</th>
+                <th scope="col">Window start</th>
                 <th scope="col" className="num">
-                  LBank entry
+                  Reference
                 </th>
                 <th scope="col" className="num">
-                  Max rise
+                  Highest
                 </th>
                 <th scope="col" className="num">
-                  Max drop
+                  Lowest
                 </th>
                 <th scope="col">Status</th>
                 <th scope="col">Why it overlaps</th>
@@ -64,10 +64,12 @@ function OverlapList({ id }: { id: string }) {
                   <td>
                     <Stars n={x.stars} />
                   </td>
-                  <td title={utc(x.signalAt)}>{fmtTime(x.signalAt)}</td>
-                  <td className="num">{x.entry ? fmtPrice(x.entry.price) : '—'}</td>
-                  <td className="num">{pct(x.maxRisePct, x.provisional)}</td>
-                  <td className="num">{pct(x.maxDropPct, x.provisional)}</td>
+                  <td title={`crawl ${utc(x.crawlAt)}`}>
+                    {x.window ? fmtTime(x.window.start) : '—'}
+                  </td>
+                  <td className="num">{x.reference.price ? fmtPrice(x.reference.price) : '—'}</td>
+                  <td className="num">{pct(x.highest?.pct ?? null, x.provisional)}</td>
+                  <td className="num">{pct(x.lowest?.pct ?? null, x.provisional)}</td>
                   <td>
                     <Lab map={STATUS} k={x.status} />
                   </td>

@@ -15,14 +15,18 @@ import { StarEventsModule } from '../star-events/star-events.module.js';
 import { StrategyModule } from '../strategy/index.js';
 
 import { CandleStoreService } from './candle-store.service.js';
+import { CandleArchive } from './entities/candle-archive.entity.js';
 import { MarketListFetch } from './entities/market-list-fetch.entity.js';
 import { ObsEvent } from './entities/obs-event.entity.js';
 import { ObsIntakeRun } from './entities/obs-intake-run.entity.js';
 import { ObsRun } from './entities/obs-run.entity.js';
 import { ObservationResult } from './entities/observation-result.entity.js';
 import { Observation } from './entities/observation.entity.js';
+import { ObsRulesChange } from './entities/rules-change.entity.js';
 import { SpotCandle } from './entities/spot-candle.entity.js';
 import { SpotPair } from './entities/spot-pair.entity.js';
+import { SpotTrade } from './entities/spot-trade.entity.js';
+import { TradeMinute } from './entities/trade-minute.entity.js';
 import { lbankResponseStatus } from './kline.js';
 import {
   FixtureLbankSource,
@@ -36,6 +40,7 @@ import { ObservationIntakeService } from './observation-intake.service.js';
 import { ObservationReadService } from './observation-read.service.js';
 import { ObservationUpdateService } from './observation-update.service.js';
 import { ObservationService } from './observation.service.js';
+import { TradeStoreService } from './trade-store.service.js';
 
 /**
  * The market source: LBank's official public API for a live data source, the synthetic fixture
@@ -97,6 +102,10 @@ export function createLbankSource(
       Observation,
       ObservationResult,
       ObsRun,
+      SpotTrade,
+      TradeMinute,
+      CandleArchive,
+      ObsRulesChange,
     ]),
     AppStateModule,
     SourcesModule,
@@ -111,6 +120,7 @@ export function createLbankSource(
     },
     LeaseService,
     CandleStoreService,
+    TradeStoreService,
     ListingEvidenceService,
     ObservationIntakeService,
     ObservationUpdateService,

@@ -1,4 +1,5 @@
 import {
+  Check,
   Column,
   Entity,
   Index,
@@ -21,15 +22,21 @@ import type { DValue } from '../../../common/utils/decimal.js';
 import { Provider } from '../../sources/entities/provider.entity.js';
 import {
   ELIGIBILITY_CLASSES,
+  EXTREMES_ORDERS,
   EXTREME_ORDERS,
   type EligibilityClass,
   type ExtremeOrder,
+  type ExtremesOrder,
   LISTING_STATUSES,
   type ListingStatus,
   MAPPING_STATUSES,
   type MappingStatus,
   OBSERVATION_STATUSES,
   type ObservationStatus,
+  REFERENCE_STATUSES,
+  type ReferenceStatus,
+  TIMING_SOURCES,
+  type TimingSource,
 } from '../observation.constants.js';
 
 import { ExactNumericColumn } from './exact-numeric.js';
@@ -39,16 +46,32 @@ import { SpotPair } from './spot-pair.entity.js';
 
 /**
  * The LBank Spot price observation of one CMC star event (docs/lbank-spot-observation.md): its
- * LBank Spot pair and the evidence for it, Spot / Futures eligibility at the signal, the entry
- * reference, the two extremes and coverage over exactly t0 … t0 + 168 h. One per event
- * (`event_id` is a unique foreign key). Updated while ACTIVE; frozen once `finalized_at` is set,
- * when its terminal result is also written to `lbank_observation_result`.
+ * LBank Spot pair and the evidence for it, Spot / Futures evidence at the signal, and (rules v2) the
+ * proven actionable start, the reference trade, the trade-verified extremes, coverage, gaps and data
+ * freshness over exactly [observation_start, observation_start + 168 h). One per event (`event_id`
+ * is a unique foreign key). Updated while ACTIVE; frozen once `finalized_at` is set, when its
+ * terminal result is also written to `lbank_observation_result`. The rules-v1 columns (entry, High /
+ * Low bars, coverage in bars, `window_end`) are an audit record of the first rules and never change
+ * once a row has left v1 (migration M016 trigger).
  */
 @Entity({ name: 'lbank_observation' })
 @Unique('ux_lbank_observation_event', ['eventId'])
 @Index('ix_lbank_observation_status', ['providerId', 'status'])
 @Index('ix_lbank_observation_t0', ['providerId', 't0'])
 @Index('ix_lbank_observation_pair', ['pairId'])
+@Index('ix_lbank_observation_start', ['providerId', 'observationStart'])
+@Check(
+  'lbank_observation_window_exact',
+  `observation_start IS NULL OR observation_end = observation_start + interval '168 hours'`,
+)
+@Check(
+  'lbank_observation_start_after_crawl',
+  'observation_start IS NULL OR observation_start >= t0',
+)
+@Check(
+  'lbank_observation_returns_signed',
+  '(highest_return_pct IS NULL OR highest_return_pct >= 0) AND (lowest_return_pct IS NULL OR lowest_return_pct <= 0)',
+)
 export class Observation {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -70,11 +93,11 @@ export class Observation {
   @Column({ name: 'is_live', type: 'boolean' })
   isLive!: boolean;
 
-  /** The event's immutable CMC signal time. */
+  /** The event's immutable CMC crawl time (t0): identity, UTC date and routing only. */
   @Column({ type: 'timestamptz' })
   t0!: Date;
 
-  /** Exactly t0 + 168 h. */
+  /** Rules v1 audit: t0 + 168 h. The v2 window is [observation_start, observation_end). */
   @Column({ name: 'window_end', type: 'timestamptz' })
   windowEnd!: Date;
 
@@ -151,7 +174,7 @@ export class Observation {
   @JoinColumn({ name: 'futures_list_fetch_id' })
   futuresListFetch?: Relation<MarketListFetch> | null;
 
-  // ── Entry reference ──────────────────────────────────────────────────────────────────────
+  // ── Rules v1 audit (candle-OPEN entry from the crawl time; never drives a v2 value) ─────────
   /** Open time of the entry bar (the first 1-minute bar opening at or after t0). */
   @Column({ name: 'entry_at', type: 'timestamptz', nullable: true })
   entryAt!: Date | null;
@@ -170,7 +193,6 @@ export class Observation {
   @Column({ name: 'entry_stale', type: 'boolean', nullable: true })
   entryStale!: boolean | null;
 
-  // ── Extremes (LBank Spot only) ───────────────────────────────────────────────────────────
   @ExactNumericColumn({ name: 'high_price', nullable: true })
   highPrice!: DValue | null;
 
@@ -204,31 +226,188 @@ export class Observation {
   })
   extremeOrder!: ExtremeOrder | null;
 
-  // ── Coverage ─────────────────────────────────────────────────────────────────────────────
-  @Column({ name: 'expected_bars', type: 'integer' })
-  expectedBars!: number;
+  @Column({ name: 'expected_bars', type: 'integer', nullable: true })
+  expectedBars!: number | null;
 
   @Column({ name: 'observed_through', type: 'timestamptz', nullable: true })
   observedThrough!: Date | null;
 
-  @Column({ name: 'covered_bars', type: 'integer', default: 0 })
-  coveredBars!: number;
+  @Column({ name: 'covered_bars', type: 'integer', nullable: true })
+  coveredBars!: number | null;
 
-  @Column({ name: 'traded_bars', type: 'integer', default: 0 })
-  tradedBars!: number;
+  @Column({ name: 'traded_bars', type: 'integer', nullable: true })
+  tradedBars!: number | null;
 
-  @Column({ name: 'missing_bars', type: 'integer', default: 0 })
-  missingBars!: number;
+  @Column({ name: 'missing_bars', type: 'integer', nullable: true })
+  missingBars!: number | null;
 
   /** `[[fromIso, toIso), …]` of minutes the API answered without a bar. */
-  @Column({ name: 'missing_ranges', type: 'jsonb' })
-  missingRanges!: Array<[string, string]>;
+  @Column({ name: 'missing_ranges', type: 'jsonb', nullable: true })
+  missingRanges!: Array<[string, string]> | null;
 
-  @Column({ name: 'start_unobserved_ms', type: 'integer' })
-  startUnobservedMs!: number;
+  @Column({ name: 'start_unobserved_ms', type: 'integer', nullable: true })
+  startUnobservedMs!: number | null;
 
-  @Column({ name: 'boundary_unobserved_ms', type: 'integer' })
-  boundaryUnobservedMs!: number;
+  @Column({ name: 'boundary_unobserved_ms', type: 'integer', nullable: true })
+  boundaryUnobservedMs!: number | null;
+
+  /** SHA-256 of the canonical bars the v1 extremes were computed from. */
+  @Column({ name: 'series_sha256', type: 'text', nullable: true })
+  seriesSha256!: string | null;
+
+  // ── Rules v2: actionable start ───────────────────────────────────────────────────────────
+  /** The earliest proven moment the star signal was usable (never the crawl time). */
+  @Column({ name: 'actionable_at', type: 'timestamptz', nullable: true })
+  actionableAt!: Date | null;
+
+  @Column({
+    name: 'actionable_source',
+    type: 'enum',
+    enum: [...TIMING_SOURCES],
+    enumName: 'lbank_obs_timing_source',
+    nullable: true,
+  })
+  actionableSource!: TimingSource | null;
+
+  @Column({ name: 'actionable_evidence', type: 'jsonb', default: () => "'{}'" })
+  actionableEvidence!: Record<string, unknown>;
+
+  @Column({ name: 'observation_start', type: 'timestamptz', nullable: true })
+  observationStart!: Date | null;
+
+  /** Exactly observation_start + 168 h (exclusive end). */
+  @Column({ name: 'observation_end', type: 'timestamptz', nullable: true })
+  observationEnd!: Date | null;
+
+  // ── Rules v2: reference (the first verified trade at or after the start) ──────────────────
+  @Column({
+    name: 'reference_status',
+    type: 'enum',
+    enum: [...REFERENCE_STATUSES],
+    enumName: 'lbank_obs_reference_status',
+    default: 'PENDING',
+  })
+  referenceStatus!: ReferenceStatus;
+
+  @Column({ name: 'reference_trade_id', type: 'text', nullable: true })
+  referenceTradeId!: string | null;
+
+  @Column({ name: 'reference_at', type: 'timestamptz', nullable: true })
+  referenceAt!: Date | null;
+
+  @ExactNumericColumn({ name: 'reference_price', nullable: true })
+  referencePrice!: DValue | null;
+
+  @ExactNumericColumn({ name: 'reference_qty', nullable: true })
+  referenceQty!: DValue | null;
+
+  /** reference_at − observation_start (ms). */
+  @Column({ name: 'reference_delay_ms', type: 'integer', nullable: true })
+  referenceDelayMs!: number | null;
+
+  /** At least one whole minute after the start was verified silent before the reference trade. */
+  @Column({ name: 'reference_delayed', type: 'boolean', nullable: true })
+  referenceDelayed!: boolean | null;
+
+  @Column({ name: 'reference_evidence', type: 'jsonb', default: () => "'{}'" })
+  referenceEvidence!: Record<string, unknown>;
+
+  // ── Rules v2: extremes (verified LBank Spot trades only) ─────────────────────────────────
+  @ExactNumericColumn({ name: 'highest_price', nullable: true })
+  highestPrice!: DValue | null;
+
+  @Column({ name: 'highest_at', type: 'timestamptz', nullable: true })
+  highestAt!: Date | null;
+
+  @Column({ name: 'highest_trade_id', type: 'text', nullable: true })
+  highestTradeId!: string | null;
+
+  /** 100 × (highest / reference − 1) ≥ 0. Not profit. */
+  @DecimalColumn(65, 30, { name: 'highest_return_pct', nullable: true })
+  highestReturnPct!: DValue | null;
+
+  @ExactNumericColumn({ name: 'lowest_price', nullable: true })
+  lowestPrice!: DValue | null;
+
+  @Column({ name: 'lowest_at', type: 'timestamptz', nullable: true })
+  lowestAt!: Date | null;
+
+  @Column({ name: 'lowest_trade_id', type: 'text', nullable: true })
+  lowestTradeId!: string | null;
+
+  /** 100 × (lowest / reference − 1) ≤ 0. Not a stop loss. */
+  @DecimalColumn(65, 30, { name: 'lowest_return_pct', nullable: true })
+  lowestReturnPct!: DValue | null;
+
+  @ExactNumericColumn({ name: 'low_before_highest_price', nullable: true })
+  lowBeforeHighestPrice!: DValue | null;
+
+  @Column({ name: 'low_before_highest_at', type: 'timestamptz', nullable: true })
+  lowBeforeHighestAt!: Date | null;
+
+  @Column({ name: 'low_before_highest_trade_id', type: 'text', nullable: true })
+  lowBeforeHighestTradeId!: string | null;
+
+  @Column({
+    name: 'extremes_order',
+    type: 'enum',
+    enum: [...EXTREMES_ORDERS],
+    enumName: 'lbank_obs_extremes_order',
+    nullable: true,
+  })
+  extremesOrder!: ExtremesOrder | null;
+
+  /** Every minute that could hold a more extreme price was checked (or ruled out by its candle). */
+  @Column({ name: 'extremes_proven', type: 'boolean', default: false })
+  extremesProven!: boolean;
+
+  @Column({ name: 'extremes_evidence', type: 'jsonb', default: () => "'{}'" })
+  extremesEvidence!: Record<string, unknown>;
+
+  @TextArrayColumn('flags')
+  flags!: string[];
+
+  @Column({ name: 'flags_evidence', type: 'jsonb', default: () => "'{}'" })
+  flagsEvidence!: Record<string, unknown>;
+
+  // ── Rules v2: coverage, gaps and data freshness ──────────────────────────────────────────
+  @Column({ name: 'minutes_expected', type: 'integer', nullable: true })
+  minutesExpected!: number | null;
+
+  @Column({ name: 'minutes_present', type: 'integer', default: 0 })
+  minutesPresent!: number;
+
+  @Column({ name: 'minutes_traded', type: 'integer', default: 0 })
+  minutesTraded!: number;
+
+  @Column({ name: 'minutes_missing', type: 'integer', default: 0 })
+  minutesMissing!: number;
+
+  /** `[{ from, to, state, detail? }]` (GAP_STATES), oldest first. */
+  @Column({ type: 'jsonb', default: () => "'[]'" })
+  gaps!: Array<{ from: string; to: string; state: string; detail?: string }>;
+
+  /** Exclusive end of the window part the candles were fetched through (data freshness). */
+  @Column({ name: 'data_through', type: 'timestamptz', nullable: true })
+  dataThrough!: Date | null;
+
+  /** The pair's last successful LBank fetch (candles or trades). */
+  @Column({ name: 'last_source_fetch_at', type: 'timestamptz', nullable: true })
+  lastSourceFetchAt!: Date | null;
+
+  @Column({ name: 'last_fetch_attempt_at', type: 'timestamptz', nullable: true })
+  lastFetchAttemptAt!: Date | null;
+
+  @Column({ name: 'last_fetch_error', type: 'text', nullable: true })
+  lastFetchError!: string | null;
+
+  /** Gaps are retried until this (observation_end + 24 h), then the status is terminal. */
+  @Column({ name: 'retry_until', type: 'timestamptz', nullable: true })
+  retryUntil!: Date | null;
+
+  /** SHA-256 of the candles and trades the terminal result rests on. */
+  @Column({ name: 'evidence_sha256', type: 'text', nullable: true })
+  evidenceSha256!: string | null;
 
   // ── State ────────────────────────────────────────────────────────────────────────────────
   @Column({
@@ -247,11 +426,7 @@ export class Observation {
   @Column({ name: 'result_version', type: 'integer', default: 0 })
   resultVersion!: number;
 
-  /** SHA-256 of the canonical bars the extremes were computed from. */
-  @Column({ name: 'series_sha256', type: 'text', nullable: true })
-  seriesSha256!: string | null;
-
-  /** The last successful computation. */
+  /** The last recomputation (not data freshness: see data_through / last_source_fetch_at). */
   @Column({ name: 'last_update_at', type: 'timestamptz', nullable: true })
   lastUpdateAt!: Date | null;
 

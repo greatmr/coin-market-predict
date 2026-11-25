@@ -94,80 +94,94 @@ export const GUIDES: Record<GuideKey, Guide> = {
     doc: 'docs/strategy-two-tier-vmc.md',
   },
   observation: {
-    title: 'How the LBank Spot observation works',
+    title: 'How the LBank Spot price observation works',
     intro:
-      'Each 1, 2 or 3-star event found by the hourly screen since the cutover is followed on LBank Spot for exactly 168 hours, to see how far the price rose and fell.',
+      'Each 1, 2 or 3-star event found by the hourly screen since the cutover is followed on LBank Spot for exactly 168 hours from the moment the signal could be used, to see how far the price rose and fell. Rules lbank-spot-obs-2.',
     sections: [
       {
         h: 'Events',
         items: [
-          'One event per coin, UTC day and star count: the same stars again that day add nothing; more stars open a new event.',
-          'The signal time (t0) is the hourly batch’s crawl time. The CMC price at t0 is context only and never used in a result.',
-          'Events of the same coin can overlap in time: they follow one price path, so they are correlated. Click “overlap” in a row to see them.',
+          'One event per coin, UTC day and star count: a different star count on the same UTC day opens a new event whether the count is higher or lower; the same count again that day adds nothing; a new UTC day starts over.',
+          'The CMC crawl time names the event (its UTC date) and decides the tracker at the cutover. The CMC price is context only and never used in a result.',
+          'Events of the same coin can overlap in time: they follow one price path, so they are correlated. Click “overlapping” in a row to see them.',
         ],
       },
       {
-        h: 'Prices (all LBank Spot, 1-minute candles)',
+        h: 'The window',
         items: [
-          'Entry: the opening price of the first 1-minute bar at or after t0. More than 2 minutes late → no entry; no trade in the hour before → the entry is stale.',
-          'Maximum rise = highest High ÷ entry − 1. Maximum drop = lowest Low ÷ entry − 1.',
-          'Only minutes with trades count. The window ends exactly at t0 + 168 h; the minute that straddles the end is not used.',
-          'If the High and the Low fall in the same minute, their order is unknown.',
+          'It starts when the star signal was proven usable: the moment the Review Queue holding it was published (normally seconds, at 00:07 UTC several minutes, after the crawl). Never the crawl time.',
+          'It ends exactly 168 hours later; a trade at the start counts, one at the end does not. It is never stretched to the end of a day.',
+          'Without a publication record the start is when the event itself was stored (marked as later than the earliest possible moment).',
         ],
       },
       {
-        h: 'Spot / Futures at the signal',
+        h: 'Prices (all LBank Spot trades)',
         items: [
-          'Spot comes from LBank’s own candles and pair list around t0. Futures needs CMC’s LBank Futures list before t0 and LBank’s contract list after t0 to agree.',
-          'Anything not proven stays Unknown: it is never shown as Yes or No.',
+          'Reference price: the first LBank Spot trade at or after the start, with its exact time and delay. An observed trade, not an order that could have been filled.',
+          'Delayed: at least one whole minute after the start passed without any trade. The delay is always shown; nothing is excluded.',
+          'Highest and lowest: real trades only. 1-minute candles only point to where to look; a candle’s High or Low can be the previous close without any trade, so every deciding minute is checked trade by trade.',
+          'Maximum rise = highest ÷ reference − 1 (never below 0). Maximum decline = lowest ÷ reference − 1 (never above 0). Two independent extremes: never summed, not profit, not a stop loss.',
+          'Thin high / thin low: the extreme was set in a minute with a single trade. Flagged for review, never removed.',
+        ],
+      },
+      {
+        h: 'Spot / Futures',
+        items: [
+          'Spot comes from LBank’s own candles and pair list around the signal.',
+          'Futures is listing evidence only: a snapshot before (CMC’s LBank Futures list) and after (LBank’s contract list) the signal. It does not prove a contract was tradable at that instant, never blocks a Spot result, and no number on this page is a Futures price or a leveraged return.',
         ],
       },
       {
         h: 'Status',
         items: [
-          'Active: the window is running or its last minutes are still being fetched. Values are provisional (marked *).',
-          'Final: the 168 hours passed with every minute present, a fresh entry and at least one trade. Only Final events enter the statistics.',
-          'Partial: the window is over but minutes were missing, the entry was stale or nothing traded.',
-          'Data unavailable, Mapping ambiguous, Eligibility unknown: no usable LBank price, the pair cannot be tied to the coin, or Spot at the signal stayed unknown.',
+          'Active: the window is running or its data is still being fetched or verified. Values are provisional (marked *).',
+          'Final: the 168 hours passed, the reference and every deciding trade verified, and no minute missing. Only Final events enter the statistics.',
+          'No trades in window: every minute was verified and nothing traded (no percentage exists).',
+          'Partial: the window is over but some minutes could not be fetched or verified after a day of retries; values cover the rest. Unverifiable: no first trade could be proven.',
+          'Data unavailable, Mapping ambiguous, Eligibility unknown: no usable LBank pair, the pair cannot be tied to the coin, or Spot at the signal stayed unknown.',
+          'A failed or rate-limited request is never read as a quiet market: it is a gap, retried until a day after the window.',
         ],
       },
       {
         h: 'Updates',
         items: [
-          'A background job runs every 15 minutes; “Update now” on the Data page starts it at once.',
-          'Statistics, the cutover and the export are on the Data page.',
+          'A background job runs every 15 minutes; “Update now” on the Data page starts it at once and says whether it fetched new data or only recomputed.',
+          'Each row shows how far its data reaches and the last successful fetch; “Details” lists every gap and the evidence behind each number.',
         ],
       },
       {
         h: 'Remember',
         items: [
-          'Two independent price extremes, not a trade: no stop, target, fee, leverage or profit is modelled, and Futures is an eligibility label only.',
+          'A measurement, not a trade: no order, stop, target, fee, leverage or profit is modelled. 1-minute candles cannot tell the order of trades inside a minute.',
         ],
       },
     ],
-    doc: 'docs/lbank-spot-observation.md',
+    doc: 'docs/lbank-spot-observation.md (rules lbank-spot-obs-2)',
   },
   observationResults: {
     title: 'Reading the observation results',
-    intro: 'Summary of the LBank Spot observation, counted on Final events only.',
+    intro:
+      'Summary of the LBank Spot price observation (rules lbank-spot-obs-2), counted on Final events only.',
     sections: [
       {
         h: 'Tiles',
         items: [
           'Cutover: from this UTC midnight new star events go to the LBank observation; earlier ones stay in the legacy forward test.',
-          'Final is the denominator of every statistic. Provisional (active, partial) and unmeasured events are counted apart and never mixed in.',
-          'Last update: the most recent run of the 15-minute job.',
+          'Final is the denominator of every statistic, in events and in distinct coins. Active, partial, no-trade, unverifiable and unmeasured events are counted apart and never mixed in.',
+          'Data freshness: how far behind the oldest open window’s LBank data is, and the last successful fetch, separate from when the job last ran.',
+          'Last update: the most recent run of the 15-minute job and whether it fetched new LBank data or only recomputed.',
         ],
       },
       {
         h: 'Table',
         items: [
-          'Median, 25th and 75th percentile of maximum rise and maximum drop, per star count and per Spot / Futures class.',
-          'Events of one coin are correlated: the coin count shows how many independent price paths stand behind a row.',
+          'Median and 25th–75th percentile of the highest and the lowest return, per star count and per Spot / Futures evidence class.',
+          'Events of one coin are correlated: the coin count shows how many independent price paths stand behind a row. No coin weighting is applied.',
+          'Flagged events (thin-market extremes, delayed references) stay in the statistics; the tile shows how many.',
         ],
       },
     ],
-    doc: 'docs/lbank-spot-observation.md § 6',
+    doc: 'docs/lbank-spot-observation.md § 8',
   },
   forward: {
     title: 'How the forward test works',
@@ -295,7 +309,7 @@ export const GUIDES: Record<GuideKey, Guide> = {
         h: 'What is kept',
         items: [
           'Hourly snapshots of ranks 1–1,200 are kept in full for the detail window; afterwards only the queue’s inputs, forward-test snapshots and BTC / ETH stay.',
-          'LBank 1-minute candles are shared per pair and deleted after their retention once no unfinished observation needs them. Results keep a hash of the exact candles used.',
+          'LBank 1-minute candles are shared per pair; after their retention (once no unfinished observation needs them) each UTC day is archived compressed before the raw rows go. Verified trades are kept; results keep a hash of the candles and trades used.',
           'Review queue rows, daily rows, reviews and tracker data are never pruned.',
         ],
       },

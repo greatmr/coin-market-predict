@@ -22,14 +22,18 @@ import { CmcAsset } from '../modules/ingestion/entities/cmc-asset.entity.js';
 import { CrawlBatch } from '../modules/ingestion/entities/crawl-batch.entity.js';
 import { DiscoveryRun } from '../modules/ingestion/entities/discovery-run.entity.js';
 import { MarketSnapshot } from '../modules/ingestion/entities/market-snapshot.entity.js';
+import { CandleArchive } from '../modules/lbank-observation/entities/candle-archive.entity.js';
 import { MarketListFetch } from '../modules/lbank-observation/entities/market-list-fetch.entity.js';
 import { ObsEvent } from '../modules/lbank-observation/entities/obs-event.entity.js';
 import { ObsIntakeRun } from '../modules/lbank-observation/entities/obs-intake-run.entity.js';
 import { ObsRun } from '../modules/lbank-observation/entities/obs-run.entity.js';
 import { ObservationResult } from '../modules/lbank-observation/entities/observation-result.entity.js';
 import { Observation } from '../modules/lbank-observation/entities/observation.entity.js';
+import { ObsRulesChange } from '../modules/lbank-observation/entities/rules-change.entity.js';
 import { SpotCandle } from '../modules/lbank-observation/entities/spot-candle.entity.js';
 import { SpotPair } from '../modules/lbank-observation/entities/spot-pair.entity.js';
+import { SpotTrade } from '../modules/lbank-observation/entities/spot-trade.entity.js';
+import { TradeMinute } from '../modules/lbank-observation/entities/trade-minute.entity.js';
 import { JobLease } from '../modules/pipeline/entities/job-lease.entity.js';
 import { PipelineRun } from '../modules/pipeline/entities/pipeline-run.entity.js';
 import { PipelineStage } from '../modules/pipeline/entities/pipeline-stage.entity.js';
@@ -103,6 +107,10 @@ export const ENTITIES = [
   Observation,
   ObservationResult,
   ObsRun,
+  SpotTrade,
+  TradeMinute,
+  CandleArchive,
+  ObsRulesChange,
   // Claude coin agent (docs/adr/0005-coin-agent.md)
   AgentAnalysis,
 ];

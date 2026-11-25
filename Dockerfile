@@ -17,7 +17,13 @@ RUN npx tsc -p tsconfig.build.json && npm prune --omit=dev \
     && rm -rf node_modules/@anthropic-ai/claude-agent-sdk-linux-*-musl
 
 FROM node:24-bookworm-slim AS runtime
-ENV NODE_ENV=production
+# The commit and time this image was built from (deploy: GIT_COMMIT=$(git rev-parse HEAD)), shown on
+# /healthz so the served API can be matched to the code.
+ARG GIT_COMMIT=unknown
+ARG BUILD_TIME=unknown
+ENV NODE_ENV=production \
+    APP_BUILD_COMMIT=$GIT_COMMIT \
+    APP_BUILD_TIME=$BUILD_TIME
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tini \
     && rm -rf /var/lib/apt/lists/*

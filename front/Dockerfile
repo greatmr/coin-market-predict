@@ -14,6 +14,9 @@ RUN npm ci --no-audit --no-fund
 COPY tsconfig.json vite.config.ts index.html ./
 COPY public ./public
 COPY src ./src
+# The commit the bundle is built from, shown on the Data page next to the API's (/healthz).
+ARG GIT_COMMIT=unknown
+ENV VITE_BUILD_COMMIT=$GIT_COMMIT
 # Type-checks (strict TypeScript), then bundles into dist/.
 RUN npm run build
 

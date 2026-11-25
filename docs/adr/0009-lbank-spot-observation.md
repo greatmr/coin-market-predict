@@ -2,6 +2,10 @@
 
 **Status:** Accepted, 2026-11-24 (operator request: "LBank Spot Price Observation page"; the new
 tracker gets its own tables, backend and page; the legacy forward test finishes its own events).
+**Amended 2026-11-25 by [ADR-0010](0010-lbank-observation-v2.md)** (rules `lbank-spot-obs-2`): the
+window starts at the proven publication instead of the crawl time, the reference is the first
+verified trade instead of a candle OPEN, and the extremes are verified trades. The measurement
+bullet below describes rules v1 (kept as audit values).
 
 ## Context
 
@@ -30,7 +34,7 @@ their own rules and then the legacy tracker retired.
   verified on real events to serve contiguous, exact 1-minute history far beyond 168 h, with the
   documented rate limit; stored bars only once closed, exact digits, immutable. No WebSocket, no
   third-party feed, no CMC price in any LBank number.
-- **Measurement rules** in pure functions with a version (`lbank-spot-obs-1`): entry = OPEN of the
+- **Measurement rules** (v1, superseded by ADR-0010) in pure functions with a version (`lbank-spot-obs-1`): entry = OPEN of the
   first bar opening at or after t0 (≤ 2 min, not stale); extremes from bars with trades only, never
   from the bar straddling the cutoff; explicit statuses; FINAL only with full coverage after the
   window; statistics from FINAL observations only, with event and coin denominators.

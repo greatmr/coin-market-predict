@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import type { DataSource, EntityManager } from 'typeorm';
+import { type DataSource, type EntityManager, In, IsNull } from 'typeorm';
 
 import type { DValue } from '../../common/utils/decimal.js';
 
@@ -17,8 +17,13 @@ import { CandleStoreService } from './candle-store.service.js';
 import { ObsEvent } from './entities/obs-event.entity.js';
 import { type IntakeDetails, ObsIntakeRun } from './entities/obs-intake-run.entity.js';
 import { Observation } from './entities/observation.entity.js';
-import { observationWindow, resolveSpotPair } from './observation-rules.js';
-import { OBSERVATION_RULES_VERSION } from './observation.constants.js';
+import { resolveSpotPair } from './observation-rules.js';
+import {
+  type ActionableTiming,
+  type TimingRecords,
+  actionableTiming,
+} from './observation-timing.js';
+import { newObservationValues, timingValues } from './observation-values.js';
 
 export interface IntakeReport {
   batchId: string;
@@ -43,6 +48,11 @@ const text = (v: DValue | null) => (v === null ? null : v.toFixed());
  * (CMC id, UTC date, star count) with the shared star-event rule — first insert wins — and its
  * observation in the same transaction. Rows that cannot open an event are recorded with reasons.
  * Rerunning a batch creates nothing new.
+ *
+ * The event key, its UTC date and the routing use the crawl time (t0) exactly as before; the
+ * observation's start is the moment the queue row was proven usable (§ 2a): the pipeline's scan
+ * stage finish (SCAN_COMMIT), else a time measured right after this intake committed
+ * (EVENT_COMMIT). Never the crawl time.
  */
 @Injectable()
 export class ObservationIntakeService {
@@ -58,7 +68,7 @@ export class ObservationIntakeService {
 
   async intakeBatch(
     batchId: string,
-    opts: { now: Date; pipelineRunId?: string | null },
+    opts: { now: Date; pipelineRunId?: string | null; clock?: () => Date },
   ): Promise<IntakeReport | IntakeSkipped> {
     const q = await this.queue.queueRows(batchId);
     const detectedAt = q.batch.crawledAt ?? q.rows.find((r) => r.observedAt)?.observedAt ?? null;
@@ -78,9 +88,15 @@ export class ObservationIntakeService {
     queueStatus: QueueStatus | null,
     rows: readonly TriggerRow[],
     cutoverAt: Date,
-    opts: { now: Date; pipelineRunId?: string | null },
+    opts: {
+      now: Date;
+      pipelineRunId?: string | null;
+      /** Clock read right after the intake commits (EVENT_COMMIT fallback); default: wall clock. */
+      clock?: () => Date;
+    },
   ): Promise<IntakeReport> {
     const maxAge = this.strategy.maxQuoteAgeMs;
+    const scanRecords = await this.scanRecords(batch.id, opts.pipelineRunId ?? null);
     const ctx = {
       queueStatus,
       batchStatus: batch.status,
@@ -145,7 +161,7 @@ export class ObservationIntakeService {
           });
           continue;
         }
-        const id = await this.insertEvent(m, batch, runId, row, opts.now);
+        const id = await this.insertEvent(m, batch, runId, row, opts.now, scanRecords);
         if (id) {
           r.created.push({ eventId: id, cmcId: row.cmcId!, stars: row.stars });
           continue;
@@ -177,10 +193,67 @@ export class ObservationIntakeService {
       );
       return r;
     });
+    // Without a scan record the start is this commit, read after it (never the crawl time).
+    if (report.created.length) {
+      const committedAt = (opts.clock ?? (() => new Date()))();
+      const pending = await this.db.getRepository(Observation).find({
+        where: { eventId: In(report.created.map((c) => c.eventId)), observationStart: IsNull() },
+      });
+      const cmcOf = new Map(report.created.map((c) => [c.eventId, c.cmcId]));
+      for (const o of pending) {
+        const row = rows.find((r) => r.cmcId === cmcOf.get(o.eventId));
+        const timing = actionableTiming({
+          ...scanRecords,
+          crawlAt: o.t0,
+          cmcQuoteAt: row?.sourceUpdatedAt ?? null,
+          intakeAt: opts.now,
+          eventCommittedAt: committedAt,
+          jobSeenAt: null,
+        });
+        if (timing)
+          await this.db.getRepository(Observation).update({ id: o.id }, timingValues(timing));
+      }
+    }
     this.log.log(
       `LBank observation intake ${batch.slotTime.toISOString()}: ${report.queueRows} queue rows → ${report.created.length} new events, ${report.ignored.length} already recorded, ${report.rejected.length} rejected`,
     );
     return report;
+  }
+
+  /** The server's records of the batch's publication: the run's scan stage and the scan run. */
+  private async scanRecords(
+    batchId: string,
+    pipelineRunId: string | null,
+  ): Promise<Pick<TimingRecords, 'pipelineRunId' | 'scanStage' | 'scanRun'>> {
+    const [stage] = pipelineRunId
+      ? ((await this.db.query(
+          `SELECT status, started_at, finished_at, attempts FROM pipeline_stage WHERE run_id = $1 AND stage = 'scan'`,
+          [pipelineRunId],
+        )) as Array<{
+          status: string;
+          started_at: Date | null;
+          finished_at: Date | null;
+          attempts: number;
+        }>)
+      : [];
+    const [scan] = (await this.db.query(
+      `SELECT finished_at, attempts, queue_status FROM scan_run WHERE batch_id = $1`,
+      [batchId],
+    )) as Array<{ finished_at: Date | null; attempts: number; queue_status: string | null }>;
+    return {
+      pipelineRunId,
+      scanStage: stage
+        ? {
+            status: stage.status,
+            startedAt: stage.started_at,
+            finishedAt: stage.finished_at,
+            attempts: stage.attempts,
+          }
+        : null,
+      scanRun: scan
+        ? { finishedAt: scan.finished_at, attempts: scan.attempts, queueStatus: scan.queue_status }
+        : null,
+    };
   }
 
   /** The event (first insert wins) and its observation; null when the key already exists. */
@@ -190,6 +263,7 @@ export class ObservationIntakeService {
     intakeRunId: string,
     row: TriggerRow,
     now: Date,
+    scan: Pick<TimingRecords, 'pipelineRunId' | 'scanStage' | 'scanRun'>,
   ): Promise<string | null> {
     const detectedAt = row.observedAt!;
     const inserted = (await m
@@ -245,47 +319,33 @@ export class ObservationIntakeService {
       .execute()) as { raw: Array<{ id: string }> };
     const id = inserted.raw[0]?.id ?? null;
     if (!id) return null;
-    const w = observationWindow(detectedAt);
     const mapping = resolveSpotPair(row.lbankPairs);
     const pairId =
       mapping.status === 'OK'
         ? await this.candles.ensurePair(m, mapping.symbol!, mapping.base!, mapping.quote!)
         : null;
+    // The scan commit is known now; otherwise the start is set right after this commit.
+    const timing: ActionableTiming | null = actionableTiming({
+      ...scan,
+      crawlAt: detectedAt,
+      cmcQuoteAt: row.sourceUpdatedAt,
+      intakeAt: now,
+      eventCommittedAt: null,
+      jobSeenAt: null,
+    });
     await m
       .createQueryBuilder()
       .insert()
       .into(Observation)
       .values({
-        eventId: id,
-        providerId: batch.providerId,
-        isLive: batch.isLive,
-        t0: detectedAt,
-        windowEnd: new Date(w.cutoffMs),
-        pairId,
-        pairSymbol: mapping.symbol,
-        quoteAsset: mapping.quote,
-        mappingStatus: mapping.status,
-        mappingEvidence: {
-          ...mapping.evidence,
-          reasons: mapping.reasons,
-          decidedAt: now.toISOString(),
-        } as never,
-        spotStatus: 'UNKNOWN',
-        spotTrading: null,
-        futuresStatus: 'UNKNOWN',
-        eligibility: 'PENDING',
-        eligibilityEvidence: {} as never,
-        expectedBars: w.expectedBars,
-        coveredBars: 0,
-        tradedBars: 0,
-        missingBars: 0,
-        missingRanges: [] as never,
-        startUnobservedMs: w.startUnobservedMs,
-        boundaryUnobservedMs: w.boundaryUnobservedMs,
-        status: 'ACTIVE',
-        reasons: mapping.reasons,
-        rulesVersion: OBSERVATION_RULES_VERSION,
-        resultVersion: 0,
+        ...newObservationValues(
+          { id, isLive: batch.isLive, detectedAt },
+          batch.providerId,
+          pairId,
+          mapping,
+          now,
+        ),
+        ...(timing?.source === 'SCAN_COMMIT' ? timingValues(timing) : {}),
       })
       .orIgnore()
       .updateEntity(false)
