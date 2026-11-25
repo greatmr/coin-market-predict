@@ -463,6 +463,53 @@ export class ObservationReadService {
     };
   }
 
+  /**
+   * The same coin's other observations whose windows share at least one moment with this one's
+   * (correlated: one price path), with the shared interval. Null when the observation is unknown.
+   */
+  async overlaps(id: string): Promise<{
+    observation: ObservationRow;
+    coin: { cmcId: number; events: number };
+    overlaps: Array<
+      ObservationRow & {
+        relation: 'same_utc_day' | 'earlier' | 'later';
+        overlapStart: string;
+        overlapEnd: string;
+        overlapHours: string;
+      }
+    >;
+  } | null> {
+    const [me] = (await this.db.query(this.select('o.id = $1 AND o.provider_id = $2', ''), [
+      id,
+      this.providerId,
+    ])) as RawRow[];
+    if (!me) return null;
+    const others = (await this.db.query(
+      this.select(
+        'o.provider_id = $1 AND e.cmc_id = $2 AND o.id <> $3 AND o.t0 < $4 AND $5 < o.window_end',
+        'ORDER BY o.t0, o.id',
+      ),
+      [this.providerId, me.cmc_id, me.id, me.window_end, me.t0],
+    )) as RawRow[];
+    const day = (d: Date) => d.toISOString().slice(0, 10);
+    return {
+      observation: this.toRow(me),
+      coin: { cmcId: me.cmc_id, events: Number(me.coin_events) },
+      overlaps: others.map((x) => {
+        const start = Math.max(x.t0.getTime(), me.t0.getTime());
+        const end = Math.min(x.window_end.getTime(), me.window_end.getTime());
+        return {
+          ...this.toRow(x),
+          relation: day(x.t0) === day(me.t0) ? 'same_utc_day' : x.t0 < me.t0 ? 'earlier' : 'later',
+          overlapStart: new Date(start).toISOString(),
+          overlapEnd: new Date(end).toISOString(),
+          // Display only (hours of shared window), never a strategy input.
+          overlapHours: ((end - start) / 3_600_000).toFixed(1),
+        };
+      }),
+    };
+  }
+
   /** Every filtered observation as CSV (full precision; one row per event). */
   async csv(q: Omit<ObservationQuery, 'limit' | 'offset'>): Promise<string> {
     const header = [

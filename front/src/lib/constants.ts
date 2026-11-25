@@ -45,8 +45,32 @@ export const RUN: StatusMap = {
   missed: ['', 'Missed'],
   interrupted: ['critical', 'Interrupted'],
 };
+/**
+ * A server code (`SPOT_FUTURES_UNKNOWN`, `spot_pairs`, `lease_held`) as words for people
+ * ("Spot futures unknown"): the fallback for any code without its own label, so no raw enum or
+ * snake_case value is shown as a label.
+ */
+export function humanize(code: string | null | undefined): string {
+  if (!code) return '';
+  const words = String(code)
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .trim()
+    .toLowerCase();
+  return words ? words[0]!.toUpperCase() + words.slice(1) : '';
+}
+
 export const statusText = (map: StatusMap, key: string | null | undefined): string =>
-  (key && map[key]?.[1]) || key || '—';
+  (key && map[key]?.[1]) || humanize(key) || '—';
+
+/** Who started a run. */
+export const TRIGGER_TEXT: Record<string, string> = {
+  schedule: 'scheduled',
+  manual: 'started from the dashboard',
+  cli: 'started from the command line',
+};
+export const triggerText = (t: string | null | undefined) =>
+  (t && TRIGGER_TEXT[t]) || humanize(t).toLowerCase();
 
 export const STAGES: readonly (readonly [string, string])[] = [
   ['discover', 'Discover'],
@@ -93,8 +117,8 @@ const REASON_TEXT: Record<string, string> = {
 export function reasonText(code: string | null | undefined): string {
   if (!code) return '';
   const [k = '', detail] = String(code).split(':');
-  const base = REASON_TEXT[k] || k.replace(/_/g, ' ').toLowerCase();
-  return `${base}${detail ? ` (${detail.replace(/_/g, ' ').toLowerCase()})` : ''}`;
+  const base = REASON_TEXT[k] || humanize(k).toLowerCase();
+  return `${base}${detail ? ` (${humanize(detail).toLowerCase()})` : ''}`;
 }
 
 /* Multiples are drawn on a log scale up to 6×, so the 1.5× line sits at a fixed spot. */

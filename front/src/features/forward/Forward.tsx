@@ -18,6 +18,7 @@ import {
   Table,
 } from '../../components/ui';
 import { api } from '../../lib/api';
+import { humanize } from '../../lib/constants';
 import { fmtAgo, fmtInt, fmtPrice, fmtTime, utc } from '../../lib/format';
 import { useQueryState } from '../../lib/routes';
 import { useApp } from '../../state/app';
@@ -94,7 +95,7 @@ function ListsLine({ lists }: { lists: ExchangeListStatus[] }) {
             : '',
           l.staleAt ? `Counts until ${fmtTime(l.staleAt)}.` : '',
           l.lastAttempt
-            ? `Last attempt ${fmtTime(l.lastAttempt.at)}: ${l.lastAttempt.status}${l.lastAttempt.error ? ` (${l.lastAttempt.error})` : ''}.`
+            ? `Last attempt ${fmtTime(l.lastAttempt.at)}: ${humanize(l.lastAttempt.status).toLowerCase()}${l.lastAttempt.error ? ` (${l.lastAttempt.error})` : ''}.`
             : '',
         ]
           .filter(Boolean)

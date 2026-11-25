@@ -81,6 +81,18 @@ export class ObservationController {
     return d;
   }
 
+  /** The same coin's other observations whose windows overlap this one (correlated). */
+  @Get(':id/overlaps')
+  async overlaps(@Param('id', new ZodValidationPipe(UuidSchema)) id: string) {
+    const o = await this.read.overlaps(id);
+    if (!o)
+      throw new NotFoundException({
+        message: 'no observation with this id',
+        code: ErrorCodes.OBSERVATION_NOT_FOUND,
+      });
+    return o;
+  }
+
   /** Run the observation job now, in the background under its own lease. */
   @RequirePermission('scan:operate')
   @Post('update')

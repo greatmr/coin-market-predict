@@ -1,7 +1,9 @@
 // Data: the latest batch's data quality (quotes, LBank mapping, the LBank list, scan warnings, last
-// export) and why coins are left out of the screen. Since D4 these counts are the only record of
+// export), why coins are left out of the screen, database storage, and the summaries of the LBank
+// Spot observation and the legacy forward test (their pages keep only the tables). Since D4 these counts are the only record of
 // coins outside the review queue: no per-coin row is stored for them (any coin still opens on its
 // coin page, evaluated on request).
+import { HelpButton } from '../../components/Help';
 import { HBars } from '../../components/charts';
 import { SkeletonBlock } from '../../components/ui';
 import { reasonText } from '../../lib/constants';
@@ -9,11 +11,14 @@ import { fmtInt } from '../../lib/format';
 import { useApp } from '../../state/app';
 
 import ForwardInsights from '../forward/ForwardInsights';
+import ObservationInsights from '../observation/ObservationInsights';
 import Quality, { qualityMeta } from '../overview/Quality';
 import type { ScanCountsDetail } from '../overview/types';
 
+import StoragePanel from './StoragePanel';
+
 export default function Data() {
-  const { overview: ov } = useApp();
+  const { overview: ov, can } = useApp();
   const sc = ov ? ov.scan : null;
   const c: ScanCountsDetail = (sc?.counts as ScanCountsDetail | undefined) ?? {};
   const reasons = Object.entries(c.reasons ?? {}).sort((x, y) => y[1] - x[1]);
@@ -36,6 +41,7 @@ export default function Data() {
         <div className="panel">
           <div className="panel-head">
             <h2>Data quality</h2>
+            <HelpButton topic="dataQuality" />
             <span className="hint">{qualityMeta(ov)}</span>
           </div>
           <div>{ov ? <Quality ov={ov} sc={sc} c={c} /> : <SkeletonBlock height={320} />}</div>
@@ -43,6 +49,7 @@ export default function Data() {
         <div className="panel">
           <div className="panel-head">
             <h2>Why coins are left out</h2>
+            <HelpButton topic="exclusions" />
             <span className="hint">
               {c.screened !== undefined
                 ? `${fmtInt(c.screened)} coins ranked 1–1,200 screened; one can have several reasons`
@@ -58,7 +65,9 @@ export default function Data() {
           </div>
         </div>
       </div>
+      <ObservationInsights />
       <ForwardInsights />
+      {can('health:read') ? <StoragePanel /> : null}
     </>
   );
 }

@@ -3,6 +3,7 @@
 // A descriptive measurement, not a trade or a signal (docs/forward-test.md).
 import { useCallback, useEffect, useState } from 'react';
 
+import { HelpButton } from '../../components/Help';
 import { HBars } from '../../components/charts';
 import {
   Chip,
@@ -18,19 +19,12 @@ import { api, apiPost, errorMessage } from '../../lib/api';
 import { apiUrl } from '../../lib/config';
 import { RUN, reasonText } from '../../lib/constants';
 import { toast } from '../../lib/feedback';
-import { fmtAgo, fmtDay, fmtInt, fmtPct, fmtTime, tz } from '../../lib/format';
+import { fmtAgo, fmtDay, fmtInt, fmtPct, fmtTime } from '../../lib/format';
 import { useApp } from '../../state/app';
 
 import StarSummary from './StarSummary';
 import UpdatePanel, { checksLine } from './UpdatePanel';
-import {
-  AVERAGE_RETURN_EXPLAINED,
-  CHECK,
-  DAY0_EXPLAINED,
-  LISTINGS_EXPLAINED,
-  OVERLAP_EXPLAINED,
-  utcMidnightLocal,
-} from './labels';
+import { warningText } from './labels';
 import type { CohortGroup, ForwardRejection, ForwardSummary, ForwardUpdateResult } from './types';
 
 const EXPORT_FILES = ['events_final.csv', 'events_active.csv', 'cohort_summary.csv'];
@@ -67,9 +61,7 @@ const REJECTION_COLS: Column<ForwardRejection>[] = [
     render: (r) => (
       <span className="chips">
         {r.reasons.map((x) => (
-          <Chip key={x} title={x}>
-            {reasonText(x)}
-          </Chip>
+          <Chip key={x}>{reasonText(x)}</Chip>
         ))}
       </span>
     ),
@@ -141,87 +133,6 @@ function SummaryTiles({ s }: { s: ForwardSummary }) {
   );
 }
 
-/** Definitions behind every column: Return, the window, days and time zones, checks, notes. */
-function HowToRead({ s }: { s: ForwardSummary | undefined }) {
-  return (
-    <details className="panel rules">
-      <summary>
-        <h2>How to read the forward test</h2>
-        <span className="hint">Return, days and time zones, High checks, notes</span>
-      </summary>
-      <div>
-        <ul className="rule-list fwd-defs">
-          <li>
-            <b>Return</b> is the peak return: the highest High confirmed after identification ÷ the
-            CMC price recorded at identification − 1. It is the maximum price increase, not trading
-            profit: the price may have hit a stop before it rose. A value with ≥ is so far (the
-            window is still open or a day is missing); FINAL values are exact.
-          </li>
-          <li>
-            <b>Window.</b> 168 hours from identification, checked through the end of the UTC day in
-            which those 168 hours expire. {s ? s.horizon.days : ''}
-          </li>
-          <li>
-            <b>Time zones.</b>{' '}
-            {`Days are counted in UTC. Times on this page are shown in ${tz()}, where a UTC day starts at ${utcMidnightLocal()}. Hover a time for its UTC value.`}
-          </li>
-          <li>
-            <b>Window column.</b> “Day 3 of 7” is the UTC day the window is in now (day 0 = the
-            identification date). “2 of 3 closed days checked” counts the ended UTC days of the
-            window that have a usable daily High stored, from day 0 on.
-          </li>
-          <li>
-            <b>When Highs are checked.</b> Once per closed UTC day, by the first hourly run after
-            00:00 UTC; again every few hours while a closed day&apos;s High is missing; and when
-            someone clicks <i>Update Highs now</i>. Never when the page opens, and never by the
-            hourly scan itself. The High check column shows each event&apos;s last check and the
-            date it is checked through; the tile above shows the last run.
-          </li>
-          <li>
-            <b>High check results.</b>{' '}
-            {(
-              [
-                'NOT_CHECKED',
-                'NEW_RECORD',
-                'UNCHANGED',
-                'DATA_UNAVAILABLE',
-                'RETRIEVAL_ERROR',
-              ] as const
-            )
-              .map((k) => `${CHECK[k][1]}: ${CHECK[k][2]}`)
-              .join(' ')}
-          </li>
-          <li>
-            <b>Highest High time</b> is when the price reached that High, as published by CMC
-            (timeHigh, minute precision), not when it was retrieved or checked. Highs come only from
-            the coin&apos;s CMC USD daily OHLC: never Close, sampled prices or LBank.
-          </li>
-          <li>
-            <b>Day 0 (yellow).</b> {DAY0_EXPLAINED}
-          </li>
-          <li>
-            <b>Overlapping.</b> {OVERLAP_EXPLAINED}
-          </li>
-          <li>
-            <b>Average Return (coin).</b> {AVERAGE_RETURN_EXPLAINED}
-          </li>
-          <li>
-            <b>LBank Spot / Futures and Bithumb.</b> {LISTINGS_EXPLAINED}
-          </li>
-          <li>
-            <b>At identification.</b> Stars, points and the 3d / 7d / 30d ratios are recorded when
-            the coin is identified and never change. The coin page shows its current values.
-          </li>
-          <li>
-            <b>Duplicates.</b> One event per coin, UTC day and star count: the same stars again that
-            day add nothing; a different star count opens its own event.
-          </li>
-        </ul>
-      </div>
-    </details>
-  );
-}
-
 export default function ForwardInsights() {
   const { can, dataVersion, setNavCount } = useApp();
   const [s, setS] = useState<ForwardSummary | null>(null);
@@ -282,7 +193,8 @@ export default function ForwardInsights() {
   return (
     <>
       <div className="panel-head">
-        <h2>Star Event Forward Test</h2>
+        <h2>Forward test (legacy)</h2>
+        <HelpButton topic="forwardResults" />
         <span className="row-actions">
           {s && can('exports:read')
             ? EXPORT_FILES.map((f) => (
@@ -312,10 +224,9 @@ export default function ForwardInsights() {
             .filter((w) => !w.startsWith('SYNTHETIC'))
             .map((w, i) => (
               <div key={i} className="banner inline">
-                {w}
+                {warningText(w)}
               </div>
             ))}
-          <p className="muted small fwd-notice">{s.notice}</p>
           <SummaryTiles s={s} />
         </>
       ) : (
@@ -346,7 +257,6 @@ export default function ForwardInsights() {
           {s ? <StarSummary groups={s.cohort} /> : <SkeletonTable rows={4} />}
         </div>
       </div>
-      <HowToRead s={s ?? undefined} />
       <div className="grid-2">
         <div className="panel">
           <div className="panel-head">

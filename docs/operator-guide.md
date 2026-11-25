@@ -34,7 +34,7 @@ exports and the Telegram summary. Missed hours are recorded, never invented.
 | Overview            | Run ring (progress while a run is going, otherwise a countdown to the next run) with the stage list; a funnel from every listed coin to ranks 1–1200, eligible and the review queue; review-queue cards; the forward test at a glance (results by stars, the last High check, a link to the full table); window results (YES / NO / N/A per window), eligibility donut, stars and the rule list              |
 | Review queue        | ELIGIBLE coins with at least one YES among 3d / 7d / 30d, ranked by stars, then weighted points (3d 60 · 7d 25 · 30d 15 per YES; `≥ n` = lower bound because a window is N/A), complete scores first, weighted strength, the 3-day multiple and CMC id ([strategy § 6a](strategy-two-tier-vmc.md#6a-weighted-star-ranking-weighted_star_v1-operator-decision-d3)). A 2-star row always precedes a 1-star row |
 | Forward test        | Star Event Forward Test: the events table with its filters, High-check status, window progress and notes; the summary, results by stars, rejected triggers and _Update Highs now_ are on the Data page ([§ 5a](#5a-star-event-forward-test))                                                                                                                                                                 |
-| Data                | Data quality of the latest batch (quote and LBank status, LBank list age and _Refresh LBank list now_, scan warnings, last export) and why coins are left out: coins ranked above 1200 or unranked, and every exclusion reason (the only per-batch record of coins outside the queue, D4)                                                                                                                    |
+| Data                | Data quality of the latest batch (quote and LBank status, LBank list age and _Refresh LBank list now_, scan warnings, last export); why coins are left out: coins ranked above 1200 or unranked, and every exclusion reason (the only per-batch record of coins outside the queue, D4); the LBank Spot observation and forward-test summaries with their exports and update buttons; and _Database storage_ (size on disk by area and the largest tables, `health:read`) |
 | Runs & health       | Source, circuit and request budget; the latest run's stages on a timeline; hourly crawl batches (missing / duplicate ranks); runs; open LBank mapping tasks                                                                                                                                                                                                                                                  |
 | Telegram            | Missed reports, pending requests, members                                                                                                                                                                                                                                                                                                                                                                    |
 
@@ -55,8 +55,13 @@ its foot. The round button on the sidebar's edge collapses it to icons on deskto
 opens it over the page on tablet; collapsed items show their name on hover or touch.
 **Preferences** holds your sign-in details, what your role allows, the colour theme (auto / light /
 dark) and whether the desktop sidebar starts collapsed. On phones the bottom bar keeps Overview,
-Review queue, Forward test and Data; **More** opens the other sections (Preferences included) and
+Review queue and LBank Spot; **More** opens the other sections (Data and Preferences included) and
 _Sign out_. A _Back to top_ button appears on every device once a page is scrolled down.
+
+Every page has a **?** button beside its title, and the Data page one per section: it opens a short
+guide to how that part of the platform works (condensed from these docs), so the pages themselves
+keep only their tables, tiles and filters. Codes from the server (statuses, reasons, warnings) are
+always shown in words.
 
 Window cells show the multiple and a bar against the 1.5× tick (YES in amber), or `N/A`. Hover an N/A for its reason:
 `DAILY_ROW_MISSING` / `DAILY_ROW_INVALID` (a day in that window is missing or invalid — other
@@ -264,8 +269,8 @@ the UTC day containing detection + 168 h. Rules, statuses, fields and gaps:
   distribution, identification hours, the event list (filters by status, result, LBank market,
   Bithumb and stars; sort by Return, stars, points, identification time or a 3d / 7d / 30d ratio),
   rejected triggers, downloads
-  (needs `exports:read`) and _Update Highs now_ (needs `scan:operate`). _How to read the forward
-  test_ on the page defines every column.
+  (needs `exports:read`) and _Update Highs now_ (needs `scan:operate`). The **?** buttons on the
+  page and its Data-page summary explain every column.
 - **Return** is the peak return: the highest High confirmed after identification against the CMC
   price recorded at identification — the maximum increase, not a trade or realized profit (a stop
   could have been hit first), and no "pumped" threshold exists. `≥ x %` is so far (window open,
@@ -313,6 +318,11 @@ Since the cutover, new CMC star events are observed on LBank Spot instead of the
 the entry is the OPEN of the first LBank Spot 1-minute bar at or after the signal, and the page
 shows the highest High and lowest Low over exactly 168 h, with Spot / Futures eligibility at the
 signal. Rules, evidence and statuses: [lbank-spot-observation.md](lbank-spot-observation.md).
+
+- **LBank Spot** page: only the table and its filters; each row shows its status with the reasons in
+  words and, when the same coin's windows overlap, an _N overlapping_ button listing those events.
+  The summary (cutover, Final-only statistics by stars and Spot / Futures class, the legacy
+  wind-down), _Export CSV_ and _Update now_ are on the **Data** page.
 
 - **Cutover** (once): `npm run cli -- observation:cutover --at <YYYY-MM-DD>T00:00:00Z` — a UTC
   midnight at least 2 h ahead. Check it with `observation:cutover`; it cannot change once passed.

@@ -394,7 +394,7 @@ export function NotesCell({ r }: { r: ForwardEventRow }) {
             {flagText(f)}
           </button>
         ) : (
-          <Chip key={f} tone={/^(INCOMPLETE|HIGH_)/.test(f) ? 'warn' : undefined} title={f}>
+          <Chip key={f} tone={/^(INCOMPLETE|HIGH_)/.test(f) ? 'warn' : undefined}>
             {flagText(f)}
           </Chip>
         ),

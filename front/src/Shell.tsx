@@ -6,7 +6,9 @@ import { NavLink, Navigate, Outlet, useLocation, useMatches, useNavigate } from 
 
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { DialogHost, Tip } from './components/Feedback';
+import { HelpButton } from './components/Help';
 import Splash from './components/Splash';
+import { GUIDES } from './components/guides';
 import { Icon } from './components/icons';
 import Palette from './features/palette/Palette';
 import { api, apiPost, errorMessage } from './lib/api';
@@ -394,7 +396,12 @@ function SignedIn({ me, cfg }: { me: User; cfg: AppConfig }) {
             </button>
           </div>
           <div className="title-block">
-            <h1>{title}</h1>
+            <div className="title-line">
+              <h1>{title}</h1>
+              {section && !pageHead && GUIDES[section.key] ? (
+                <HelpButton topic={section.key} />
+              ) : null}
+            </div>
             <p className="page-sub">
               {sub}
               {note ? ` ${note}` : ''}

@@ -2410,9 +2410,6 @@ select option {
 }
 
 /* Forward test */
-.fwd-notice {
-  margin: 0 0 4px;
-}
 #tab-forward .toolbar .row-actions {
   margin-left: auto;
 }
@@ -2638,13 +2635,6 @@ button.chip:hover {
 .fwd-update .item-progress {
   gap: 7px;
 }
-.fwd-defs {
-  grid-template-columns: minmax(0, 1fr);
-  gap: 10px;
-}
-.fwd-defs b {
-  color: var(--text);
-}
 .fwd-explain {
   display: flex;
   flex-direction: column;
@@ -2665,6 +2655,82 @@ button.chip:hover {
 }
 .dialog-box.wide {
   width: min(960px, 100%);
+}
+
+/* Help (?) buttons and the guides they open. */
+.help-btn {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid var(--edge);
+  background: var(--glass);
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  align-self: center;
+}
+.help-btn:hover,
+.help-btn:focus-visible {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.title-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.title-line .help-btn {
+  width: 28px;
+  height: 28px;
+  font-size: 15px;
+}
+.panel-head .help-btn {
+  align-self: center;
+}
+.guide {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  color: var(--text-2);
+}
+.guide p {
+  margin: 0;
+}
+.guide-intro {
+  color: var(--text);
+}
+.guide h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+  color: var(--text);
+}
+.guide ul {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 5px;
+}
+.guide li::marker {
+  color: var(--mean);
+}
+
+/* Storage: share of the database per area. */
+.storage-total {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.storage-total b {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
 
 /* Tiles (runs & health) */
@@ -3892,8 +3958,8 @@ body.signed-out .shell {
   }
 }
 
-/* Phone bottom bar: only the main sections (Overview, Review queue, Forward test, Data) and
-   "More"; the rest, settings and sign out live in the More sheet. */
+/* Phone bottom bar: only the main sections (Overview, Review queue, LBank Spot) and "More"; the
+   rest (Data included), settings and sign out live in the More sheet. */
 @media (max-width: 720px) {
   .rail-items {
     overflow: visible;
@@ -4731,4 +4797,14 @@ fieldset.plain {
   margin: 0;
   padding: 0;
   min-width: 0;
+}
+
+/* LBank Spot observation: status with its reasons in words underneath. */
+.obs-status {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 12em;
+  max-width: 22em;
+  white-space: normal;
 }

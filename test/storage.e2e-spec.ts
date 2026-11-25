@@ -20,6 +20,7 @@ import {
   utcDayStart,
 } from '../src/modules/pipeline/retention.service.js';
 import { ReadModelService } from '../src/modules/read-model/read-model.service.js';
+import { StorageReportService } from '../src/modules/read-model/storage-report.service.js';
 import { ScanResult } from '../src/modules/scan/entities/scan-result.entity.js';
 import { ScanService } from '../src/modules/scan/scan.service.js';
 
@@ -287,5 +288,25 @@ describe('storage cleanup keeps what the strategy and the forward test need', ()
         String(was.snapshotId),
       ]);
     }
+  });
+});
+
+describe('storage report (Data page)', () => {
+  it('reports the database size and every table, largest first, from catalog sizes', async () => {
+    const r = await ctx.app.get(StorageReportService).report();
+    expect(r.databaseBytes).toBeGreaterThan(0);
+    const names = r.tables.map((t) => t.name);
+    expect(names).toEqual(
+      expect.arrayContaining(['market_snapshot', 'scan_result', 'lbank_spot_candle']),
+    );
+    const totals = r.tables.map((t) => t.totalBytes);
+    expect(totals).toEqual([...totals].sort((a, b) => b - a));
+    for (const t of r.tables)
+      expect(t.totalBytes).toBeGreaterThanOrEqual(t.tableBytes + t.indexBytes);
+    expect(r.tables.reduce((s, t) => s + t.totalBytes, 0)).toBeLessThanOrEqual(r.databaseBytes);
+    expect(r.retention).toMatchObject({
+      detailDays: expect.any(Number),
+      candleDays: expect.any(Number),
+    });
   });
 });

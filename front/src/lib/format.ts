@@ -106,6 +106,18 @@ export function fmtSpan(seconds: number): string {
 }
 export const fmtMs = (ms: Maybe<number>): string =>
   isNum(ms) ? (ms < 1000 ? `${Math.round(ms)} ms` : fmtSpan(ms / 1000)) : '';
+/** Bytes in binary units, e.g. 612 MB, 1.4 GB (display only). */
+export function fmtBytes(n: Maybe<number>): string {
+  if (!isNum(n)) return '—';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let v = n;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+}
 export const utc = (iso: Maybe<string>): string => (iso ? String(iso).replace('.000Z', 'Z') : '—');
 export const shortId = (id: Maybe<string>): string => String(id || '').slice(0, 8);
 

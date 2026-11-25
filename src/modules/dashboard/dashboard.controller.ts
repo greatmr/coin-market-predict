@@ -5,6 +5,7 @@ import { APP_CONFIG, type AppConfig } from '../../config/index.js';
 import { RequirePermission } from '../auth/auth.guard.js';
 import { nextCronRun } from '../pipeline/progress.js';
 import { ReadModelService } from '../read-model/read-model.service.js';
+import { StorageReportService } from '../read-model/storage-report.service.js';
 import { StrategyService } from '../strategy/index.js';
 
 /** Configuration, overview and operational history for the dashboard (read-only; history needs health:read). */
@@ -13,6 +14,7 @@ export class DashboardController {
   constructor(
     private readonly read: ReadModelService,
     private readonly strategy: StrategyService,
+    private readonly storage: StorageReportService,
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
   ) {}
 
@@ -60,6 +62,13 @@ export class DashboardController {
   @Get('runs')
   runs() {
     return this.read.runs(48);
+  }
+
+  /** Database size on disk, per table (catalog sizes only). */
+  @RequirePermission('health:read')
+  @Get('storage')
+  storageReport() {
+    return this.storage.report();
   }
 
   @RequirePermission('telegram:manage')

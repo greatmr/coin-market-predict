@@ -71,6 +71,32 @@ export interface ObservationRow {
   isLive: boolean;
 }
 
+/** GET /api/observations/:id/overlaps */
+export interface ObservationOverlaps {
+  observation: ObservationRow;
+  coin: { cmcId: number; events: number };
+  overlaps: (ObservationRow & {
+    relation: 'same_utc_day' | 'earlier' | 'later';
+    overlapStart: string;
+    overlapEnd: string;
+    overlapHours: string;
+  })[];
+}
+
+/** GET /api/storage (health:read) */
+export interface StorageReport {
+  measuredAt: string;
+  databaseBytes: number;
+  tables: {
+    name: string;
+    totalBytes: number;
+    tableBytes: number;
+    indexBytes: number;
+    rowsEstimate: number | null;
+  }[];
+  retention: { detailDays: number; snapshotDays: number; candleDays: number };
+}
+
 export interface ObservationPage {
   rows: ObservationRow[];
   total: number;

@@ -49,7 +49,7 @@ export const SECTIONS: readonly Section[] = [
     path: '/',
     label: 'Overview',
     title: 'Overview',
-    sub: 'Hourly Tier 1 screen of every listed coin. Research only: nothing here is a buy signal and no order is placed.',
+    sub: 'Hourly Tier 1 screen of every listed coin. Research only: no buy signal, no order.',
   },
   {
     key: 'queue',
@@ -58,7 +58,7 @@ export const SECTIONS: readonly Section[] = [
     path: '/queue',
     label: 'Review queue',
     title: 'Review queue',
-    sub: 'Eligible coins whose rolling-24h VMC is at least 1.5× one of their own 3, 7 or 30-day means, ranked by stars, then weighted points (3d 60 · 7d 25 · 30d 15). For human chart review.',
+    sub: 'Coins with unusual volume against their own history, ranked for human chart review.',
     counted: true,
   },
   {
@@ -67,7 +67,7 @@ export const SECTIONS: readonly Section[] = [
     path: '/forward',
     label: 'Forward test',
     title: 'Forward test',
-    sub: 'Legacy tracker: events detected before the cutover, followed to the end of the UTC day containing detection + 168 h on CMC daily Highs. It takes no new events; it is hidden from navigation once every event has a terminal outcome.',
+    sub: 'Legacy tracker of star events from before the LBank cutover, on CMC daily Highs. Takes no new events.',
     counted: true,
   },
   {
@@ -77,17 +77,16 @@ export const SECTIONS: readonly Section[] = [
     path: '/lbank-spot',
     label: 'LBank Spot',
     title: 'LBank Spot price observation',
-    sub: 'Each CMC 1, 2 and 3-star event since the cutover, observed on LBank Spot 1-minute candles for exactly 168 hours: the entry reference, the highest High and the lowest Low. Two independent price extremes, not a trade, not profit, not a stop.',
+    sub: 'Each star event since the cutover, followed on LBank Spot for exactly 168 hours: entry, highest High, lowest Low.',
     counted: true,
   },
   {
     key: 'data',
     group: 'data',
-    primary: true,
     path: '/data',
     label: 'Data',
     title: 'Data',
-    sub: 'Data quality of the latest batch (quotes, LBank mapping and list, scan warnings, last export), how many coins were screened and why the others are left out. Only the review queue is stored per coin.',
+    sub: 'Batch quality, why coins are left out, tracker summaries and database storage.',
   },
   {
     key: 'batches',

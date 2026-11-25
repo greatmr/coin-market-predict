@@ -517,6 +517,17 @@ describe('LBank Spot measurement', () => {
     expect(b.entryAt!.toISOString()).toBe('2030-01-02T06:07:00.000Z');
     expect([a.entryDelayMs, b.entryDelayMs]).toEqual([0, 0]);
 
+    // Same coin, same UTC day, windows sharing 162 h: each lists the other, never itself.
+    const read = app.get(ObservationReadService);
+    const ov = (await read.overlaps(a.id))!;
+    expect(ov.coin).toEqual({ cmcId: 1, events: 2 });
+    expect(ov.overlaps.map((x) => [x.id, x.relation, x.overlapHours])).toEqual([
+      [b.id, 'same_utc_day', '162.0'],
+    ]);
+    expect(ov.overlaps[0]!.overlapStart).toBe('2030-01-02T06:07:00.000Z');
+    expect((await read.overlaps(b.id))!.overlaps.map((x) => x.id)).toEqual([a.id]);
+    expect(await read.overlaps('00000000-0000-4000-8000-000000000000')).toBeNull();
+
     // Retention: never a bar an unfinished observation needs; old bars once every one is final.
     const candles = app.get(CandleStoreService);
     expect(await candles.prune(t('2030-01-20T00:00:00Z'), 7)).toBe(0);

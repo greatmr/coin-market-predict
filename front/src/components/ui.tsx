@@ -2,7 +2,7 @@
 // as HTML, because it comes from external sources or reviewers.
 import { type KeyboardEvent, type MouseEvent, type ReactNode, useState } from 'react';
 
-import { type StatusMap, type Tone, multPos, reasonText } from '../lib/constants';
+import { type StatusMap, type Tone, multPos, reasonText, statusText } from '../lib/constants';
 import { fmtInt, fmtMult, isNum, num } from '../lib/format';
 import { useApp } from '../state/app';
 import type { Num } from '../types/api';
@@ -31,9 +31,7 @@ export const Lab = ({
   map: StatusMap;
   k: string | null | undefined;
   title?: string;
-}) => (
-  <StatusLabel dot={(k && map[k]?.[0]) || ''} text={(k && map[k]?.[1]) || k || '—'} title={title} />
-);
+}) => <StatusLabel dot={(k && map[k]?.[0]) || ''} text={statusText(map, k)} title={title} />;
 
 export const Chip = ({
   children,

@@ -23,6 +23,7 @@ import { VenueDecision } from '../venues/entities/venue-decision.entity.js';
 import { VenueMappingTask } from '../venues/entities/venue-mapping-task.entity.js';
 
 import { ReadModelService } from './read-model.service.js';
+import { StorageReportService } from './storage-report.service.js';
 
 /** Read-only projections (sheets, calculation traces, batches, exports, runs) for the dashboard, MCP, Telegram and the CLI. */
 @Module({
@@ -50,7 +51,7 @@ import { ReadModelService } from './read-model.service.js';
     ]),
     ScanModule,
   ],
-  providers: [ReadModelService],
-  exports: [ReadModelService],
+  providers: [ReadModelService, StorageReportService],
+  exports: [ReadModelService, StorageReportService],
 })
 export class ReadModelModule {}

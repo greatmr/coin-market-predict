@@ -1,7 +1,6 @@
 // Vocabulary of the forward-test page: event and check statuses, note chips, list filters and the
-// plain-language definitions shown under "How to read this table" (docs/forward-test.md).
-import type { StatusMap } from '../../lib/constants';
-import { tz } from '../../lib/format';
+// plain-language definitions used in its dialogs (docs/forward-test.md).
+import { type StatusMap, humanize } from '../../lib/constants';
 
 import type {
   BithumbFilter,
@@ -64,7 +63,7 @@ export const DAY0_FLAGS = new Set(['DAY0_UNRESOLVED', 'INCOMPLETE_DAY0']);
 
 export function flagText(code: string): string {
   const [k = '', ...rest] = String(code).split(':');
-  return `${FLAG_TEXT[k] || k.replace(/_/g, ' ').toLowerCase()}${rest.length ? ` ${rest.join(':')}` : ''}`;
+  return `${FLAG_TEXT[k] || humanize(k).toLowerCase()}${rest.length ? ` ${rest.join(':')}` : ''}`;
 }
 
 /** The status filter: the URL's `view` holds a group of statuses or one status. */
@@ -146,24 +145,22 @@ export const SORT_LABEL: Record<EventSort, string> = {
   multiple30d: '30d ratio',
 };
 
-/** Local clock time of 00:00 UTC in the display timezone, e.g. "03:30". */
-export function utcMidnightLocal(): string {
-  return new Date('2026-01-01T00:00:00Z').toLocaleTimeString('en-GB', {
-    timeZone: tz(),
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
-}
-
 export const DAY0_EXPLAINED =
   "Day 0 is the UTC day of identification. Its daily High can come from before identification, so it counts only when CMC's own time of that High is at or after identification. Otherwise it is shown in yellow, kept out of Return and of every statistic, and settled only if a later day's High reaches it.";
 
 export const OVERLAP_EXPLAINED =
   'Other events of the same coin (any star count) whose windows share at least one moment with this one. Each is its own event, one per coin, UTC day and star count, but they follow the same price path, so they are correlated rather than independent. The count does not include this row.';
 
-export const AVERAGE_RETURN_EXPLAINED =
-  "The arithmetic mean of the Returns shown for the coin's events, over every stored event of the coin (same CMC id, any status and star count, whatever the filters or page), with the number of events and how many have a Return. An event without a Return is left out, never counted as 0 %. If any of those Returns is still so far or a lower bound (≥), the average is a lower bound too and is marked ≥: not a final result. It is a peak return, not trading profit, and the events of one coin follow one price path.";
-
-export const LISTINGS_EXPLAINED =
-  "Whether the coin is listed now in LBank's Spot markets, LBank's Futures markets (perpetual contracts) and Bithumb's Spot markets. Each comes from that exchange's own markets list on CoinMarketCap, matched by CMC id: Futures is checked in LBank's Futures list, never inferred from a Spot listing. Unknown means that list is not verified (not fetched yet, failed, incomplete or too old), so it is never shown as No. A listing, not a trading-status check; LBank Futures and Bithumb never change Tier 1 eligibility, stars or points.";
+/** The server's summary warnings start with a code (`FRESHNESS: …`): shown as words instead. */
+const WARNING_TITLE: Record<string, string> = {
+  FRESHNESS: 'Daily High check overdue',
+  UPDATE_FAILED: 'Last daily High check failed',
+  UPDATE_PARTIAL: 'Last daily High check incomplete',
+  INCOMPLETE_DAY0: 'Day 0 never confirmed',
+};
+export function warningText(w: string): string {
+  const m = /^([A-Z0-9_]+)( \([^)]*\))?: ?(.*)$/s.exec(w);
+  if (!m) return w;
+  const [, code = '', when, rest = ''] = m;
+  return `${WARNING_TITLE[code] ?? humanize(code)}${when ?? ''}: ${rest}`;
+}
