@@ -31,6 +31,31 @@ type Json = Record<string, unknown>;
 const obj = (v: unknown): Json => (v && typeof v === 'object' ? (v as Json) : {});
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 
+/** Why an extreme is not proven for the whole window yet (an open window is not a defect). */
+function provenText(ev: ExtremeEvidence): string {
+  if (ev.proven) return 'yes: no other minute of the window could hold a more extreme price';
+  const open = ev.blocking.filter(
+    (b) => b.kind === 'gap' && (b.state === 'FUTURE' || b.state === 'NOT_FETCHED'),
+  );
+  // Categories, not counts: the stored list is capped at 25 entries.
+  const checks = ev.blocking.some((b) => b.kind === 'check');
+  const gaps =
+    ev.blocking.length > open.length + ev.blocking.filter((b) => b.kind === 'check').length;
+  const parts: string[] = [];
+  if (checks) parts.push('candidate minutes whose trades are not verified yet');
+  if (gaps) parts.push('gaps being retried (see Coverage)');
+  if (open.length) {
+    // The window's last (boundary) minute is listed first: name the earliest open minute.
+    const from = utc(open.map((b) => b.from).sort((a, b) => Date.parse(a) - Date.parse(b))[0]!);
+    parts.push(
+      checks || gaps
+        ? `minutes from ${from} on are not fetched yet`
+        : `the window is still running: every minute before ${from} is settled, later ones are not fetched yet`,
+    );
+  }
+  return `not yet: ${parts.join('; ') || 'pending'}`;
+}
+
 function Extreme({
   label,
   ev,
@@ -47,10 +72,7 @@ function Extreme({
         pairs={[
           [label, `${fmtPrice(ev.best.price)} (${pct === null ? '—' : fmtPct(pct)} vs reference)`],
           ['Trade', `${utc(ev.best.time)} · id ${ev.best.id} · qty ${ev.best.qty}`],
-          [
-            'Proven',
-            ev.proven ? 'yes: no other minute could hold a more extreme price' : 'not yet',
-          ],
+          ['Proven', provenText(ev)],
         ]}
       />
       {ev.checked.length ? (

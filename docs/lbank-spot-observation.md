@@ -166,7 +166,10 @@ max decline %  = 100 × (lowest / reference − 1)    ≤ 0
   remaining candle could hold a higher (lower) price or an equal one earlier — a High that was only
   the carried OPEN is passed over once its trades show it. The reference's own minute (trades at or
   after the reference) and the last partial minute (trades before `end`) come from trades only.
-  Ties go to the earliest trade.
+  Ties go to the earliest trade. **Proven** (`extremes_proven`) means for the whole window, so it
+  stays false while the window runs; until then the values are exact up to the data freshness
+  (`data_through`) whenever no candidate minute awaits a check (`VERIFICATION_PENDING`), and the
+  detail view says which of the two holds.
 - **Order.** By the extremes' trade times; different trades in one millisecond: `SAME_MS` (unknown).
 - **Lowest up to the highest** (descriptive, labelled so): the lowest verified trade from the
   reference through the highest trade, by the same method.
