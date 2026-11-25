@@ -738,6 +738,47 @@ describe('LBank Spot measurement (rules v2)', () => {
     expect((await runJob(new Date(end + 70 * MIN).toISOString())).finalized).toBe(0);
   });
 
+  it('trades.do boundary: a trade exactly at the start is the reference; one exactly at the end is not counted', async () => {
+    await setCutover();
+    await futuresList('2030-01-01T20:00:00Z');
+    const S = t('2030-01-02T00:15:32.457Z').getTime();
+    const sm = t('2030-01-02T00:15:00Z').getTime();
+    const end = S + 168 * H;
+    const em = Math.floor(end / MIN) * MIN;
+    minute('abc_usdt', sm, [
+      [32_456, '7'], // 1 ms before the start: never counted
+      [32_457, '1'], // exactly at the start: the reference
+      [40_000, '1.02'],
+    ]);
+    minute('abc_usdt', em, [
+      [32_456, '0.9'], // 1 ms before the end: counted
+      [32_457, '0.1'], // exactly at the end: not counted
+      [50_000, '9'], // after the end: not counted
+    ]);
+    await intake(row(1, 'abc', 3, '2030-01-02T00:07:00.078Z', { price: new D('1.003') }), {
+      scanCommitAt: '2030-01-02T00:15:32.457Z',
+    });
+    await runJob('2030-01-02T00:20:00Z');
+    let o = await obsOf(1);
+    expect(o.observationStart!.getTime()).toBe(S);
+    expect(o.referenceTradeId).toBe(`abc_usdt-${sm}-1`);
+    expect(o.referenceAt!.getTime()).toBe(S);
+    expect(o.referenceDelayMs).toBe(0);
+    // Each minute is read from time = minute − 1 ms: LBank returns trades strictly after `time`.
+    const after = () =>
+      lbank.tradeRequests.filter((r) => r.symbol === 'abc_usdt').map((r) => r.afterMs);
+    expect(after()).toContain(sm - 1);
+
+    await runJob(new Date(end + 10 * MIN).toISOString());
+    o = await obsOf(1);
+    expect(o.status).toBe('FINAL');
+    expect(after()).toContain(em - 1);
+    expect(o.lowestTradeId).toBe(`abc_usdt-${em}-0`);
+    expect(o.lowestPrice!.toFixed()).toBe('0.9');
+    expect(o.lowestAt!.getTime()).toBe(end - 1);
+    expect(o.highestPrice!.toFixed()).toBe('1.02'); // not the pre-start 7 nor the post-end 9
+  });
+
   it('overlapping events share candles and trade checks; each has its own window; archives keep the path', async () => {
     await setCutover();
     await intake(row(1, 'abc', 1, '2030-01-02T00:07:00Z'), {
