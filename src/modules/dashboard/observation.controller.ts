@@ -41,6 +41,12 @@ export class ObservationController {
     return this.read.summary({ ...q, search: q.search || undefined });
   }
 
+  /** Change token: the page reloads when the latest run or stored change differs. */
+  @Get('version')
+  version() {
+    return this.read.version();
+  }
+
   /** The job's recent runs. */
   @Get('runs')
   runs() {

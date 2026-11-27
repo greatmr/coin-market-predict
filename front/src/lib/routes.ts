@@ -75,9 +75,9 @@ export const SECTIONS: readonly Section[] = [
     group: 'screen',
     primary: true,
     path: '/lbank-spot',
-    label: 'LBank Spot',
-    title: 'LBank Spot price observation',
-    sub: 'Each star event since the cutover, followed on LBank Spot for exactly 168 hours: entry, highest High, lowest Low.',
+    label: 'LBank',
+    title: 'LBank price observation',
+    sub: 'Each star event since the cutover, followed for exactly 168 hours from its publication: LBank Spot from verified trades, LBank Futures from sampled snapshots, each against its own reference.',
     counted: true,
   },
   {

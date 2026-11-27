@@ -68,6 +68,7 @@ export const TRIGGER_TEXT: Record<string, string> = {
   schedule: 'scheduled',
   manual: 'started from the dashboard',
   cli: 'started from the command line',
+  'follow-up': 'follow-up for a new reference',
 };
 export const triggerText = (t: string | null | undefined) =>
   (t && TRIGGER_TEXT[t]) || humanize(t).toLowerCase();

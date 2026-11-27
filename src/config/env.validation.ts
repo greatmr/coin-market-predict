@@ -140,6 +140,13 @@ const schema = z
     /** Official public REST hosts (LBank "API Update" notice, 2023-08-07: api.lbkex.com). */
     LBANK_API_BASE_URL: z.string().url().default('https://api.lbkex.com'),
     LBANK_FUTURES_API_BASE_URL: z.string().url().default('https://lbkperp.lbank.com'),
+    /**
+     * LBank Futures sampled observation (docs/lbank-spot-observation.md § 13): one official
+     * `marketData` read per tick (all contracts in one request, ≈ 43 000 a month at one a minute,
+     * inside LBANK_MONTHLY_REQUEST_BUDGET). The cadence bounds how tightly a sampled trade is timed.
+     */
+    LBANK_FUTURES_ENABLED: bool.default(true),
+    LBANK_FUTURES_SAMPLE_CRON: z.string().default('* * * * *'),
     /** Our own pace (LBank allows 200 requests / 10 s on public endpoints). */
     LBANK_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(1000).default(60),
     LBANK_MONTHLY_REQUEST_BUDGET: z.coerce.number().int().min(100).default(400_000),

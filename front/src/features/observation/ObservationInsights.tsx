@@ -136,6 +136,16 @@ function Tiles({ s }: { s: ObservationSummary }) {
           {`oldest open window through ${fr.oldestOpenDataThrough ? fmtTime(fr.oldestOpenDataThrough) : '—'} · last LBank fetch ${fmtAgo(fr.lastSourceFetchAt)}${fr.pairsWithFetchErrors ? ` · ${fr.pairsWithFetchErrors} pairs failing` : ''}${fr.observationsAwaitingVerification ? ` · ${fr.observationsAwaitingVerification} awaiting trade checks` : ''}`}
         </span>
       </div>
+      <div
+        className="tile"
+        title={`Futures side (${s.futures.rulesVersion}): sampled snapshots, never in the Spot statistics. ${s.futures.priceSource}`}
+      >
+        <span className="tile-label">Futures (sampled)</span>
+        <b>{`${fmtInt(s.futures.byStatus.ACTIVE ?? 0)} sampling · ${fmtInt(s.futures.byStatus.CLOSED ?? 0)} closed`}</b>
+        <span className="muted small">
+          {`${fmtInt(s.futures.byStatus.HISTORY_UNAVAILABLE ?? 0)} not sampled at start · ${fmtInt(s.futures.byStatus.NO_CONTRACT ?? 0)} no contract · ${fmtInt((s.futures.byStatus.MAPPING_AMBIGUOUS ?? 0) + (s.futures.byStatus.MAPPING_UNKNOWN ?? 0))} contract unclear · last snapshot ${s.futures.lastPoll ? `${fmtAgo(s.futures.lastPoll.fetchedAt)}${s.futures.lastPoll.ok ? '' : ' (failed)'}` : 'none'}`}
+        </span>
+      </div>
       <div className="tile">
         <span className="tile-label">Last update</span>
         <b>{s.lastRun ? <Lab map={RUN_STATUS} k={s.lastRun.status} /> : 'Not yet'}</b>

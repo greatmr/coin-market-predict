@@ -13,8 +13,9 @@ retires (§ 9).
 > An observation, not a trade: no order, stop loss, take profit, leverage, liquidation, fee,
 > funding or realized profit is modelled. The _reference price_ is an observed trade, not a claim
 > that an order could have been filled at that price or size. _Maximum rise_ and _maximum decline_
-> are two independent price extremes, never summed. Futures is listing evidence from snapshots, never
-> a Futures price, fill or leveraged return.
+> are two independent price extremes, never summed. The _Futures listing_ class is listing evidence
+> from snapshots; the separate **Futures sampled observation** (§ 13, rules
+> `lbank-futures-sampled-1`) has its own, weaker method and never mixes with Spot.
 
 ## 1. Architecture and cutover points
 
@@ -94,7 +95,7 @@ client (rate limit `LBANK_REQUESTS_PER_MINUTE`, monthly budget, circuit breaker)
 | Same millisecond                  | Several trades can share one ms (e.g. a sweep); LBank's order inside it is the same on every request.                                                                                                                                                                                                                                          |
 | Trades vs candle                  | Over 542 checked minutes (180 probe + 362 on the production copy) no trade lay outside its candle's [Low, High]; trade quantity equalled the candle volume in 167 of the 180 probe minutes and exceeded it (by one in-range trade the candle missed) in 13; never fewer.                                                                                          |
 | `/v2/currencyPairs.do`            | LBank's current Spot pairs (Spot evidence near the signal).                                                                                                                                                                                                                                                                                    |
-| `lbkperp.lbank.com/cfd/openApi/v1/pub/instrument`, `…/marketData` | LBank Futures contracts and 24 h volume, current only (no history).                                                                                                                                                                             |
+| `lbkperp.lbank.com/cfd/openApi/v1/pub/instrument`, `…/marketData` | LBank Futures contracts and one current snapshot per contract (last price, 24 h turnover / volume / high / low, `lastTime` in seconds). **No history**: no kline or trade route exists in the official contract API (tested 2026-11-27: guessed paths → 403); `lastTime` is the snapshot refresh time, not a trade time (§ 13). |
 | Rate limit, errors                | `X-LBank-RateLimit-Limit: 200` per 10 s; 10004 → treated as HTTP 429 (backoff), 10000 → 503 (retried).                                                                                                                                                                                                                                        |
 
 Not used: the WebSocket (collects only from connection time), TradingView (a chart widget), CMC
@@ -220,6 +221,17 @@ the rules ask for, in rounds (a carried-OPEN artefact leads to the next candidat
 pair's observations; (7) recompute every unfinished observation and freeze terminal results; (8)
 archive and prune old candles. The run report says whether it fetched new data or only recomputed.
 
+**Follow-up runs (latency, 2026-11-27).** Besides the cron, a run is started as soon as a new
+observation's start minute has closed (+ the 5 s closed-bar margin + 1 s), triggered by the pipeline's
+`observe` stage, and again every minute while a start younger than one hour still has no reference
+(`trigger = follow-up`). Measured before (SOLV, 2026-11-25): start 16:07:06.894, reference trade
+16:07:07.554 (+0.660 s), observation committed 16:07:15.598, start minute checkable from 16:08:05, but
+the first check only at the 16:15:00 cron tick (run 152.8 s); the page then showed it only after the
+next hourly CMC batch or a manual reload (it reloaded on the CMC batch alone). Now the page polls
+`GET /api/observations/version` every 30 s and reloads when a run stored something new. Trade checks
+record the moment the minute was actually read (`checked_at`; before 2026-11-27 it was the run's
+start). Which trade qualifies as the reference is unchanged.
+
 | Table                       | Content                                                                                                                  |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `signal_cutover`            | the cutover per provider (UTC midnight; immutable once passed)                                                           |
@@ -252,8 +264,8 @@ inside a minute (a future stop / target study needs the trades themselves; not i
 | Surface   | What                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Dashboard | **LBank Spot price observation** (`/lbank-spot`): filters (search, status, Spot / Futures class, coverage, flags, CMC crawl date from / to, stars) and the sortable table (coin, stars, points, CMC crawl, window start and its proof, pair, reference price + delay + _delayed_, highest and lowest (% · price · trade time), status with reasons, coverage with gaps and data freshness, Spot / Futures evidence, flags, _N overlapping_, _Details_: every piece of evidence, gaps, flags with context, results and rules history, rules-v1 audit values). Sorting and filtering use the displayed v2 values. The summary (cutover, Final-only statistics with event and coin denominators, flagged counts, data freshness, the last update and whether it fetched data), CSV export and _Update now_ are on the **Data** page, which also shows the dashboard's and the API's build commit; the rules behind the page's **?** button. |
-| API       | `GET /api/observations` (filters `status`, `eligibility`, `stars`, `coverage`, `flags`, `from`, `to`, `search`, `sort`, `dir`, `limit`, `offset`), `GET /api/observations/summary`, `GET /api/observations/:id` (all evidence, result versions, rules changes, v1 audit, the displayed rules version), `GET /api/observations/:id/overlaps`, `GET /api/observations/runs`, `GET /api/observations/routing-check` (`health:read`), `GET /api/observations/export.csv` (`exports:read`; `rules_version` per row), `POST /api/observations/update` (`scan:operate`); legacy: `GET /api/forward/legacy`, `GET /api/forward/legacy/closures.csv`; `/healthz` names the build |
-| CLI       | `observation:cutover [--at ISO] [--note]`, `observation:status`, `observation:update`, `observation:probe`, `observation:list`, `observation:check`, `forward:legacy`                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| API       | `GET /api/observations` (filters `status`, `futures`, `eligibility`, `stars`, `coverage`, `flags`, `from`, `to`, `search`, `sort` incl. `futuresHighest` / `futuresLowest`, `dir`, `limit`, `offset`; each row carries `futuresSampled`), `GET /api/observations/version` (change token), the detail's `timeline` (crawl → publication → reference trade → verified → stored) and `futuresEvidence`, `GET /api/observations/summary`, `GET /api/observations/:id` (all evidence, result versions, rules changes, v1 audit, the displayed rules version), `GET /api/observations/:id/overlaps`, `GET /api/observations/runs`, `GET /api/observations/routing-check` (`health:read`), `GET /api/observations/export.csv` (`exports:read`; `rules_version` per row), `POST /api/observations/update` (`scan:operate`); legacy: `GET /api/forward/legacy`, `GET /api/forward/legacy/closures.csv`; `/healthz` names the build |
+| CLI       | `observation:cutover [--at ISO] [--note]`, `observation:status`, `observation:update`, `observation:futures [--tick]`, `observation:probe`, `observation:list`, `observation:check`, `forward:legacy`                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 **Statistics**: FINAL observations of the current rules only; median, mean and 25th–75th percentile
 of the highest and lowest return, overall, per star count and per Spot / Futures class; denominators
@@ -316,6 +328,8 @@ job catches up later — candles and trades are historical). Never `db:revert` o
 | L5  | Evidence lists fetched by the job               | if the job is down more than 2 h after a signal, its list evidence is missing (Spot falls back to candles; Futures stays UNKNOWN)                                 |
 | L6  | Starts before rules v2                          | events of 2026-11-25 got `SCAN_COMMIT` from their stored pipeline records; an event without such records would get the job's first sighting (labelled)           |
 | L7  | One-minute candles                              | cannot order trades inside a minute; only checked minutes have trades stored                                                                                      |
+| L8  | No LBank Futures history                        | Futures results exist only for windows sampled from their start (events after 2026-11-27's deploy); earlier ones are `HISTORY_UNAVAILABLE` for good (§ 13)       |
+| L9  | Futures snapshots are samples                   | a sampled trade's time is a range; highest / lowest are bounds; a sampler outage leaves a gap (shown as the longest gap) that no source can fill                  |
 
 ## 12. Rules history
 
@@ -323,7 +337,63 @@ job catches up later — candles and trades are historical). Never `db:revert` o
 | ------------------ | ------------------ | -------------------------------------- | ----------------------------------------------------------- | -------------------------------- |
 | `lbank-spot-obs-1` | 2026-11-24         | crawl time t0 … t0 + 168 h (bars only) | OPEN of the first bar at or after t0 (≤ 2 min, not stale)    | candle High / Low of traded bars |
 | `lbank-spot-obs-2` | 2026-11-25 (M016)  | proven start … start + 168 h, exact    | first verified trade at or after the start                  | verified trades                  |
+| `lbank-futures-sampled-1` (Futures, § 13) | 2026-11-27 (M017) | the same start and end as Spot | first bracketed Futures trade wholly in the window | bounds from bracketed trades |
 
 Every v1 row moved to v2 with an `lbank_obs_rules_change` row holding the values it showed; its v1
 columns stay unchanged as an audit record; a v1 result row (none existed) would stay and the v2 result
 would be the next version. The UI and the CSV show the v2 values and the rules version of each row.
+
+## 13. LBank Futures sampled observation (rules `lbank-futures-sampled-1`)
+
+Operator request 2026-11-27 ([ADR-0011](adr/0011-lbank-futures-sampled.md)): separate Spot and Futures
+results, no cross-venue mixing. Same event, same proven start and end as the Spot observation; its own
+contract, mapping, reference, bounds, coverage, status, rules version and table
+(`lbank_futures_observation`, one per Spot observation). The Spot rows are never written by it.
+
+**What LBank serves (tested 2026-11-27).** The official contract API has `instrument`, `marketData`,
+`marketOrder` and `getTime` only: no trade list and no candles (kline / trade paths answer 403). The
+website's candle route sits behind a client-signed gateway (unsigned → `10006 not open path`); it is not
+used (no evasive access). `marketData` returns every contract's last price, 24 h turnover / volume /
+high / low and `lastTime`. `lastTime` is the snapshot's refresh time: it advanced on all 844 contracts
+within 5 s, also on 107 whose volume and turnover did not move. So a last price alone can be a trade
+from before the window, and nothing in the past can be fetched later.
+
+**Method.** The sampler reads `marketData` once a minute (`LBANK_FUTURES_SAMPLE_CRON`, own lease;
+one request for all contracts) and stores the snapshots of the contracts an open observation needs
+(`lbank_futures_sample`, immutable; every read in `lbank_futures_poll`, append-only):
+
+```
+bracketed trade   = snapshot k whose 24 h turnover > snapshot k−1's: a trade happened in
+                    (time(k−1), time(k) + 1 s), and k's last price is such a trade's price
+reference         = the first bracketed trade with time(k−1) ≥ start and time(k) + 1 s ≤ end,
+                    only if the contract was sampled at the start (a snapshot at or before it)
+highest / lowest  = the highest / lowest bracketed trade in the window      (bounds: the true
+                    Futures extremes are at least as far out)
+rise / decline %  = vs the Futures reference only
+```
+
+- **Contract.** CMC's LBank Futures markets list as of the crawl (the same evidence the listing class
+  uses) gives the contracts attributed to the CMC id, each pinned by its market URL; exactly one that
+  LBank's own contract list has maps (`OK`). Ticker-only matches never map (`AMBIGUOUS`,
+  `FUTURES_TICKER_ONLY`: CMC attributes DYDXUSDT to ethDYDX and MONUSDT to MoneyByte); none → `NONE`;
+  evidence missing → `UNKNOWN`. A reference more than 25 % from the CMC price is flagged
+  (`FUTURES_PRICE_DEVIATION_FROM_CMC`).
+- **Statuses.** `PENDING` (no start or mapping yet), `ACTIVE` (sampling; provisional), `CLOSED` (window
+  over, values as sampled; never FINAL), `NO_REFERENCE` (window over without a bracketed trade),
+  `HISTORY_UNAVAILABLE` (not sampled at the start: every event before this deploy, or a restart that
+  lost the in-memory snapshots from before a new contract was mapped), `NO_CONTRACT`,
+  `MAPPING_AMBIGUOUS`, `MAPPING_UNKNOWN`. Terminal rows are frozen (trigger).
+- **Coverage.** Snapshots in the window, bracketed trades, the longest interval without a snapshot and
+  `sampled_through`; no threshold. LBank's rolling 24 h high / low is shown as context only (its
+  interval is not the window's).
+- **Never**: Spot trades, the listing snapshot, a last price without a bracket, or LBank's 24 h
+  figures as a Futures value; the Spot statistics never include Futures numbers.
+
+**Surfaces.** The page's venue switch (Spot / Futures / Compare), the detail's Futures section and
+card, the `futures_*` CSV columns (e.g. `futures_highest_return_pct_lower_bound`), the Data page tile,
+`observation:futures [--tick]`.
+
+**Rehearsal (production copy, 2026-11-27, live LBank).** 266 observations: 228 with a URL-pinned
+contract (BIGTIME → BIGTIMEUSDT, BABY → BABYUSDT) became `HISTORY_UNAVAILABLE` (their starts predate
+sampling), 35 `NO_CONTRACT`, 3 `MAPPING_AMBIGUOUS` (DYDX, MON: ticker only). Comparable Spot vs Futures
+results exist only for events detected after the deploy.

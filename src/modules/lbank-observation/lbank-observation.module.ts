@@ -16,6 +16,9 @@ import { StrategyModule } from '../strategy/index.js';
 
 import { CandleStoreService } from './candle-store.service.js';
 import { CandleArchive } from './entities/candle-archive.entity.js';
+import { FuturesObservation } from './entities/futures-observation.entity.js';
+import { FuturesPoll } from './entities/futures-poll.entity.js';
+import { FuturesSample } from './entities/futures-sample.entity.js';
 import { MarketListFetch } from './entities/market-list-fetch.entity.js';
 import { ObsEvent } from './entities/obs-event.entity.js';
 import { ObsIntakeRun } from './entities/obs-intake-run.entity.js';
@@ -27,6 +30,7 @@ import { SpotCandle } from './entities/spot-candle.entity.js';
 import { SpotPair } from './entities/spot-pair.entity.js';
 import { SpotTrade } from './entities/spot-trade.entity.js';
 import { TradeMinute } from './entities/trade-minute.entity.js';
+import { FuturesSamplerService } from './futures-sampler.service.js';
 import { lbankResponseStatus } from './kline.js';
 import {
   FixtureLbankSource,
@@ -106,6 +110,9 @@ export function createLbankSource(
       TradeMinute,
       CandleArchive,
       ObsRulesChange,
+      FuturesObservation,
+      FuturesPoll,
+      FuturesSample,
     ]),
     AppStateModule,
     SourcesModule,
@@ -126,8 +133,10 @@ export function createLbankSource(
     ObservationUpdateService,
     ObservationReadService,
     ObservationService,
+    FuturesSamplerService,
   ],
   exports: [
+    FuturesSamplerService,
     ObservationIntakeService,
     ObservationReadService,
     ObservationService,

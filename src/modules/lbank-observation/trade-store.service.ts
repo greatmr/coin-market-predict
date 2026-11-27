@@ -128,6 +128,9 @@ export class TradeStoreService {
     }
     if (notes.length) error = [error, ...new Set(notes)].filter(Boolean).join('; ').slice(0, 500);
     const verified = status === 'VERIFIED';
+    // Provenance: the moment this minute's trade list was actually read, not the run's start
+    // (`now` is the run's clock for the rules; a run can take minutes before it reaches a pair).
+    const checkedAt = new Date(Math.max(Date.now(), now.getTime()));
 
     await this.db.transaction(async (q) => {
       if (verified && trades.length)
@@ -145,7 +148,7 @@ export class TradeStoreService {
                 price: t.price.toFixed() as never,
                 qty: t.qty.toFixed() as never,
                 isBuyerMaker: t.buyerMaker,
-                fetchedAt: now,
+                fetchedAt: checkedAt,
               })),
             )
             .orIgnore()
@@ -174,13 +177,13 @@ export class TradeStoreService {
           pages,
           hashes,
           error,
-          now,
+          checkedAt,
         ],
       );
       const fetchOk = status !== 'FETCH_FAILED' && status !== 'PAIR_UNSUPPORTED';
       const fresh = fetchOk
-        ? { tradesLastAttemptAt: now, tradesLastSuccessAt: now, tradesLastError: null }
-        : { tradesLastAttemptAt: now, tradesLastError: error };
+        ? { tradesLastAttemptAt: checkedAt, tradesLastSuccessAt: checkedAt, tradesLastError: null }
+        : { tradesLastAttemptAt: checkedAt, tradesLastError: error };
       await q.getRepository(SpotPair).update({ id: pair.id }, fresh);
       Object.assign(pair, fresh);
     });

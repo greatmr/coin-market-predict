@@ -10,8 +10,10 @@ import { LBANK } from '../strategy/index.js';
 
 import {
   type FuturesContract,
+  type FuturesMarketRow,
   type KlineResponse,
   type TradesResponse,
+  parseFuturesMarketData,
   parseFuturesResponses,
   parseKlineResponse,
   parsePairsResponse,
@@ -45,7 +47,23 @@ export interface LbankMarketSource {
   spotPairs(): Promise<ListFetch<string>>;
   /** Futures contract list joined with 24 h volume (`/cfd/openApi/v1/pub/instrument` + `marketData`). */
   futuresContracts(): Promise<ListFetch<FuturesContract>>;
+  /**
+   * `GET /cfd/openApi/v1/pub/marketData?productGroup=SwapU`: one snapshot of every contract (the only
+   * official Futures price source; no history). Used by the Futures sampled observation.
+   */
+  futuresMarketData(): Promise<FuturesMarketFetch>;
 }
+
+export type FuturesMarketFetch =
+  | {
+      ok: true;
+      url: string;
+      fetchedAt: Date;
+      rows: FuturesMarketRow[];
+      invalid: number;
+      sha256: string;
+    }
+  | { ok: false; url: string; fetchedAt: Date; error: string };
 
 export interface KlineFetch {
   url: string;
@@ -154,6 +172,31 @@ export class LbankApiSource implements LbankMarketSource {
       return { ok: true, url, fetchedAt, items: r.contracts, sha256: digest(r.contracts) };
     } catch (err) {
       return { ok: false, url, fetchedAt, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  async futuresMarketData(): Promise<FuturesMarketFetch> {
+    const url = `${this.futuresBase}/cfd/openApi/v1/pub/marketData?productGroup=SwapU`;
+    try {
+      const body = await this.http.getText(url);
+      const fetchedAt = this.clock.now();
+      const r = parseFuturesMarketData(body);
+      if (r.kind === 'error') return { ok: false, url, fetchedAt, error: r.message };
+      return {
+        ok: true,
+        url,
+        fetchedAt,
+        rows: r.rows,
+        invalid: r.invalid,
+        sha256: r.responseSha256,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        url,
+        fetchedAt: this.clock.now(),
+        error: err instanceof Error ? err.message : String(err),
+      };
     }
   }
 }
@@ -372,6 +415,44 @@ export class FixtureLbankSource implements LbankMarketSource {
       fetchedAt,
       items,
       sha256: digest(items),
+    };
+  }
+  /**
+   * Synthetic snapshot (labelled fixture): every fixture perpetual contract, stamped with the current
+   * second; the last price follows a deterministic path and the turnover rises on odd minutes only,
+   * so even minutes exercise "price without a proven trade".
+   */
+  async futuresMarketData(): Promise<FuturesMarketFetch> {
+    const fetchedAt = this.clock.now();
+    const list = await this.futuresContracts();
+    if (!list.ok) return { ok: false, url: list.url, fetchedAt, error: list.error };
+    const nowMs = fetchedAt.getTime();
+    const minute = Math.floor(nowMs / MINUTE_MS);
+    const rows: FuturesMarketRow[] = list.items.map((c) => {
+      let h = 0;
+      for (const ch of c.symbol) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+      const base = 1 + (h % 1000) / 100;
+      const price = new D(base).times(1 + Math.sin(minute / 7 + (h % 13)) / 20).toDecimalPlaces(6);
+      const turnover = new D(Math.ceil(minute / 2)).times(1000).plus(h % 97);
+      return {
+        symbol: c.symbol,
+        serverMs: Math.floor(nowMs / 1000) * 1000,
+        lastPrice: price.toFixed(),
+        turnover24h: turnover.toFixed(),
+        volume24h: turnover.toFixed(),
+        high24h: null,
+        low24h: null,
+        markPrice: null,
+        instrumentStatus: '2',
+      };
+    });
+    return {
+      ok: true,
+      url: 'fixture://lbank/cfd/openApi/v1/pub/marketData?productGroup=SwapU',
+      fetchedAt,
+      rows,
+      invalid: 0,
+      sha256: digest(rows),
     };
   }
 }

@@ -23,6 +23,7 @@ import {
 import { CrawlBatch } from '../ingestion/entities/crawl-batch.entity.js';
 import { type CoverageReport, IngestionService } from '../ingestion/ingestion.service.js';
 import { ObservationIntakeService } from '../lbank-observation/observation-intake.service.js';
+import { ObservationService } from '../lbank-observation/observation.service.js';
 import { type ScanOutcome, ScanService } from '../scan/scan.service.js';
 import { SourceUnavailableError } from '../sources/http/polite-client.js';
 import { SourceHealthService } from '../sources/source-health.service.js';
@@ -116,6 +117,7 @@ export class PipelineService {
     private readonly forward: ForwardTestService,
     private readonly retirement: ForwardRetirementService,
     private readonly observationIntake: ObservationIntakeService,
+    private readonly observations: ObservationService,
   ) {}
 
   get providerId() {
@@ -827,6 +829,12 @@ export class PipelineService {
                 ignored: observe.ignored.length,
                 rejected: observe.rejected.length,
               };
+      // New observations: verify their references as soon as the start minute has closed, not at
+      // the observation job's next cron tick (latency only; never changes which trade qualifies).
+      if (observe && !('skipped' in observe) && observe.created.length)
+        await this.observations.nudge().catch((err: unknown) => {
+          this.log.warn(`LBank observation follow-up not scheduled: ${redact(err)}`);
+        });
 
       // Storage policy runs after delivery; a retention problem never invalidates the run.
       metrics.retention = await this.retention

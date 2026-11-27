@@ -11,8 +11,14 @@ import { CutoverService, type CutoverStatus } from '../star-events/cutover.servi
 import { ObsRun } from './entities/obs-run.entity.js';
 import { ObservationResult } from './entities/observation-result.entity.js';
 import { ObsRulesChange } from './entities/rules-change.entity.js';
+import {
+  FUTURES_PRICE_SOURCE,
+  FUTURES_RULES_VERSION,
+  type FuturesStatus,
+} from './futures-rules.js';
 import { type ObservationSummary, type Stats, summarize } from './observation-stats.js';
 import {
+  CLOSED_BAR_MARGIN_MS,
   type CoverageFilter,
   ELIGIBILITY_LABEL,
   type EligibilityClass,
@@ -33,6 +39,7 @@ export interface ObservationQuery {
   stars?: number;
   coverage?: CoverageFilter;
   flags?: FlagFilter;
+  futures?: FuturesStatus;
   /** Crawl time (t0, the event's UTC date) at or after / before (ISO). */
   from?: string;
   to?: string;
@@ -120,6 +127,32 @@ export interface ObservationRow {
   coinEvents: number;
   overlapping: number;
   isLive: boolean;
+  /**
+   * The LBank Futures side (rules `lbank-futures-sampled-1`): its own contract, sampled reference,
+   * bounds and status, relative to its own reference only. Null until the sampler created the row.
+   * (`futures` above stays the listing evidence.)
+   */
+  futuresSampled: FuturesView | null;
+}
+
+export interface FuturesView {
+  rulesVersion: string;
+  status: string;
+  provisional: boolean;
+  mapping: string;
+  contract: string | null;
+  reasons: string[];
+  flags: string[];
+  /** A bracketed trade: its price, and the trade happened strictly between `after` and `before`. */
+  reference: { price: string; after: string; before: string } | null;
+  highest: { price: string; after: string; before: string; pct: string | null } | null;
+  lowest: { price: string; after: string; before: string; pct: string | null } | null;
+  samplesInWindow: number;
+  bracketedInWindow: number;
+  maxGapMs: number;
+  sampledThrough: string | null;
+  lastUpdateAt: string | null;
+  finalizedAt: string | null;
 }
 
 interface RawRow {
@@ -186,6 +219,87 @@ interface RawRow {
   is_live: boolean;
   coin_events: string;
   overlapping: string;
+  f_rules_version: string | null;
+  f_status: string | null;
+  f_mapping_status: string | null;
+  f_contract: string | null;
+  f_reasons: string[] | null;
+  f_flags: string[] | null;
+  f_reference_price: string | null;
+  f_reference_after: Date | null;
+  f_reference_before: Date | null;
+  f_highest_price: string | null;
+  f_highest_after: Date | null;
+  f_highest_before: Date | null;
+  f_highest_return_pct: string | null;
+  f_lowest_price: string | null;
+  f_lowest_after: Date | null;
+  f_lowest_before: Date | null;
+  f_lowest_return_pct: string | null;
+  f_samples_in_window: number | null;
+  f_bracketed_in_window: number | null;
+  f_max_gap_ms: string | null;
+  f_sampled_through: Date | null;
+  f_last_update_at: Date | null;
+  f_finalized_at: Date | null;
+}
+
+function futuresView(r: RawRow): FuturesView {
+  const bracket = (price: string | null, after: Date | null, before: Date | null) =>
+    price !== null && after && before
+      ? { price: plainText(price)!, after: after.toISOString(), before: before.toISOString() }
+      : null;
+  const ref = bracket(r.f_reference_price, r.f_reference_after, r.f_reference_before);
+  const hi = bracket(r.f_highest_price, r.f_highest_after, r.f_highest_before);
+  const lo = bracket(r.f_lowest_price, r.f_lowest_after, r.f_lowest_before);
+  return {
+    rulesVersion: r.f_rules_version!,
+    status: r.f_status!,
+    provisional: r.f_status !== 'CLOSED',
+    mapping: r.f_mapping_status!,
+    contract: r.f_contract,
+    reasons: r.f_reasons ?? [],
+    flags: r.f_flags ?? [],
+    reference: ref,
+    highest: hi && { ...hi, pct: plainText(r.f_highest_return_pct) },
+    lowest: lo && { ...lo, pct: plainText(r.f_lowest_return_pct) },
+    samplesInWindow: r.f_samples_in_window ?? 0,
+    bracketedInWindow: r.f_bracketed_in_window ?? 0,
+    maxGapMs: Number(r.f_max_gap_ms ?? 0),
+    sampledThrough: isoOf(r.f_sampled_through),
+    lastUpdateAt: isoOf(r.f_last_update_at),
+    finalizedAt: isoOf(r.f_finalized_at),
+  };
+}
+
+function futuresCells(f: FuturesView | null): unknown[] {
+  if (!f) return Array.from({ length: 24 }, () => null);
+  return [
+    f.rulesVersion,
+    FUTURES_PRICE_SOURCE,
+    f.status,
+    f.provisional,
+    f.reasons.join(' '),
+    f.mapping,
+    f.contract,
+    f.reference?.price,
+    f.reference?.after,
+    f.reference?.before,
+    f.highest?.price,
+    f.highest?.after,
+    f.highest?.before,
+    f.highest?.pct,
+    f.lowest?.price,
+    f.lowest?.after,
+    f.lowest?.before,
+    f.lowest?.pct,
+    f.samplesInWindow,
+    f.bracketedInWindow,
+    f.maxGapMs,
+    f.sampledThrough,
+    f.flags.join(' '),
+    f.finalizedAt,
+  ];
 }
 
 /** Exact decimal text without trailing zeros (display); null stays null. */
@@ -202,6 +316,8 @@ const SORT_SQL: Record<ObsSortKey, string> = {
   referenceDelay: 'o.reference_delay_ms',
   coverage: '(o.minutes_present::numeric / NULLIF(o.minutes_expected, 0))',
   symbol: 'e.symbol',
+  futuresHighest: 'f.highest_return_pct',
+  futuresLowest: 'f.lowest_return_pct',
 };
 
 /** The v2 window of a row, falling back to the crawl-based v1 window while the start is unknown. */
@@ -243,6 +359,7 @@ export class ObservationReadService {
     if (q.flags === 'spike')
       add('o.flags && ?::text[]', [OBS_FLAG.singleTradeHigh, OBS_FLAG.singleTradeLow]);
     if (q.flags === 'delayed') add('? = ANY (o.flags)', OBS_FLAG.referenceDelayed);
+    if (q.futures) add('f.status = ?', q.futures);
     if (q.from) add('o.t0 >= ?', new Date(q.from));
     if (q.to) add('o.t0 < ?', new Date(q.to));
     if (q.search) {
@@ -269,8 +386,21 @@ export class ObservationReadService {
                    (SELECT count(*) FROM lbank_observation o2 JOIN lbank_obs_event e2 ON e2.id = o2.event_id
                      WHERE o2.provider_id = o.provider_id AND e2.cmc_id = e.cmc_id AND o2.id <> o.id
                        AND coalesce(o2.observation_start, o2.t0) < ${END_SQL}
-                       AND ${START_SQL} < coalesce(o2.observation_end, o2.window_end)) AS overlapping
+                       AND ${START_SQL} < coalesce(o2.observation_end, o2.window_end)) AS overlapping,
+                   f.rules_version AS f_rules_version, f.status AS f_status,
+                   f.mapping_status AS f_mapping_status, f.contract AS f_contract,
+                   f.reasons AS f_reasons, f.flags AS f_flags,
+                   f.reference_price::text AS f_reference_price, f.reference_after AS f_reference_after,
+                   f.reference_before AS f_reference_before,
+                   f.highest_price::text AS f_highest_price, f.highest_after AS f_highest_after,
+                   f.highest_before AS f_highest_before, f.highest_return_pct::text AS f_highest_return_pct,
+                   f.lowest_price::text AS f_lowest_price, f.lowest_after AS f_lowest_after,
+                   f.lowest_before AS f_lowest_before, f.lowest_return_pct::text AS f_lowest_return_pct,
+                   f.samples_in_window AS f_samples_in_window, f.bracketed_in_window AS f_bracketed_in_window,
+                   f.max_gap_ms::text AS f_max_gap_ms, f.sampled_through AS f_sampled_through,
+                   f.last_update_at AS f_last_update_at, f.finalized_at AS f_finalized_at
               FROM lbank_observation o JOIN lbank_obs_event e ON e.id = o.event_id
+              LEFT JOIN lbank_futures_observation f ON f.observation_id = o.id
              WHERE ${where} ${tail}`;
   }
 
@@ -369,6 +499,7 @@ export class ObservationReadService {
       coinEvents: Number(r.coin_events),
       overlapping: Number(r.overlapping),
       isLive: r.is_live,
+      futuresSampled: r.f_status ? futuresView(r) : null,
     };
   }
 
@@ -379,7 +510,8 @@ export class ObservationReadService {
     const limit = Math.min(500, Math.max(1, q.limit ?? 100));
     const offset = Math.max(0, q.offset ?? 0);
     const [{ n }] = (await this.db.query(
-      `SELECT count(*)::int AS n FROM lbank_observation o JOIN lbank_obs_event e ON e.id = o.event_id WHERE ${w.sql}`,
+      `SELECT count(*)::int AS n FROM lbank_observation o JOIN lbank_obs_event e ON e.id = o.event_id
+         LEFT JOIN lbank_futures_observation f ON f.observation_id = o.id WHERE ${w.sql}`,
       w.params,
     )) as [{ n: number }];
     const rows = (await this.db.query(
@@ -420,13 +552,34 @@ export class ObservationReadService {
       observationsAwaitingVerification: number;
     };
     summary: ReturnType<typeof serializeSummary>;
+    futures: {
+      rulesVersion: string;
+      priceSource: string;
+      byStatus: Record<string, number>;
+      lastPoll: {
+        fetchedAt: string;
+        serverAt: string | null;
+        ok: boolean;
+        error: string | null;
+      } | null;
+    };
   }> {
     const w = this.where(q);
+    const futRows = (await this.db.query(
+      `SELECT f.status, count(*)::int AS n
+         FROM lbank_observation o JOIN lbank_obs_event e ON e.id = o.event_id
+         JOIN lbank_futures_observation f ON f.observation_id = o.id WHERE ${w.sql} GROUP BY f.status`,
+      w.params,
+    )) as Array<{ status: string; n: number }>;
+    const [poll] = (await this.db.query(
+      `SELECT fetched_at, server_at, ok, error FROM lbank_futures_poll ORDER BY fetched_at DESC LIMIT 1`,
+    )) as Array<{ fetched_at: Date; server_at: Date | null; ok: boolean; error: string | null }>;
     const rows = (await this.db.query(
       `SELECT o.id, e.cmc_id, e.star_count, o.status, o.rules_version, o.eligibility,
               o.observation_start, o.observation_end, o.flags,
               o.highest_return_pct::text AS highest_return_pct, o.lowest_return_pct::text AS lowest_return_pct
-         FROM lbank_observation o JOIN lbank_obs_event e ON e.id = o.event_id WHERE ${w.sql}`,
+         FROM lbank_observation o JOIN lbank_obs_event e ON e.id = o.event_id
+         LEFT JOIN lbank_futures_observation f ON f.observation_id = o.id WHERE ${w.sql}`,
       w.params,
     )) as Array<{
       id: string;
@@ -516,6 +669,19 @@ export class ObservationReadService {
         observationsAwaitingVerification: fresh.awaiting,
       },
       summary: serializeSummary(s),
+      futures: {
+        rulesVersion: FUTURES_RULES_VERSION,
+        priceSource: FUTURES_PRICE_SOURCE,
+        byStatus: Object.fromEntries(futRows.map((r) => [r.status, r.n])),
+        lastPoll: poll
+          ? {
+              fetchedAt: poll.fetched_at.toISOString(),
+              serverAt: isoOf(poll.server_at),
+              ok: poll.ok,
+              error: poll.error,
+            }
+          : null,
+      },
     };
   }
 
@@ -558,6 +724,22 @@ export class ObservationReadService {
       .find({ where: { observationId: id }, order: { changedAt: 'ASC' } });
     const e = ev[0] ?? {};
     const row = this.toRow(rows[0]);
+    const timeline = await this.timeline(row, o, e);
+    const [fut] = (await this.db.query(
+      `SELECT f.mapping_evidence, f.fold, f.created_at,
+              (SELECT row_to_json(x) FROM (
+                 SELECT s.server_at, s.fetched_at, s.last_price::text, s.high_24h::text, s.low_24h::text,
+                        s.turnover_24h::text
+                   FROM lbank_futures_sample s WHERE s.contract = f.contract
+                  ORDER BY s.server_at DESC LIMIT 1) x) AS last_sample
+         FROM lbank_futures_observation f WHERE f.observation_id = $1`,
+      [id],
+    )) as Array<{
+      mapping_evidence: Record<string, unknown>;
+      fold: Record<string, unknown>;
+      created_at: Date;
+      last_sample: Record<string, unknown> | null;
+    }>;
     const hasV1 =
       o.entry_price !== null || changes.some((c) => c.fromRulesVersion === OBSERVATION_RULES_V1);
     return {
@@ -579,6 +761,17 @@ export class ObservationReadService {
         rulesetVersion: e.ruleset_version,
         lbankPairs: e.lbank_pairs,
       },
+      timeline,
+      futuresEvidence: fut
+        ? {
+            priceSource: FUTURES_PRICE_SOURCE,
+            mappingEvidence: fut.mapping_evidence,
+            fold: fut.fold,
+            createdAt: fut.created_at.toISOString(),
+            // LBank's own rolling 24 h figures at the latest snapshot: context, never a window value.
+            lastSample: fut.last_sample,
+          }
+        : null,
       actionableEvidence: o.actionable_evidence ?? null,
       referenceEvidence: o.reference_evidence ?? null,
       extremesEvidence: o.extremes_evidence ?? null,
@@ -632,6 +825,148 @@ export class ObservationReadService {
         evidenceSha256: r.evidenceSha256 ?? r.seriesSha256,
         computedAt: r.computedAt.toISOString(),
       })),
+    };
+  }
+
+  /**
+   * When each step happened (Issue: "Reference pending for minutes, then a sub-second delay"): three
+   * different delays, never one number. Market delay = start → reference trade (a rule value);
+   * processing delay = trade → its minute's trade list verified by the job; display delay = the run
+   * finished (stored) → the page loaded (the page adds its own load time). Plus the pipeline stages
+   * of the publishing run, which explain the crawl → start interval (e.g. the 00:07 UTC daily stage).
+   */
+  private async timeline(
+    row: ObservationRow,
+    o: Record<string, unknown> & { pair_id: number | null },
+    e: Record<string, unknown>,
+  ) {
+    const ae = (o.actionable_evidence ?? {}) as Record<string, unknown>;
+    const runId = typeof ae.pipelineRunId === 'string' ? ae.pipelineRunId : null;
+    const stages = runId
+      ? ((await this.db.query(
+          `SELECT stage, status, started_at, finished_at, attempts FROM pipeline_stage
+            WHERE run_id = $1 ORDER BY started_at`,
+          [runId],
+        )) as Array<{
+          stage: string;
+          status: string;
+          started_at: Date;
+          finished_at: Date | null;
+          attempts: number;
+        }>)
+      : [];
+    let check: {
+      minute: string;
+      status: string;
+      firstCheckedAt: string;
+      checkedAt: string;
+      attempts: number;
+      stampedWithRunStart: boolean;
+      run: { id: string; trigger: string; startedAt: string; finishedAt: string | null } | null;
+    } | null = null;
+    if (row.reference.at && o.pair_id !== null) {
+      const minute = new Date(Math.floor(Date.parse(row.reference.at) / 60_000) * 60_000);
+      const [m] = (await this.db.query(
+        `SELECT m.status, m.first_checked_at, m.checked_at, m.attempts,
+                r.id AS run_id, r.trigger, r.started_at, r.finished_at
+           FROM lbank_spot_trade_minute m
+           LEFT JOIN LATERAL (
+             SELECT id, trigger, started_at, finished_at FROM lbank_obs_run
+              -- Runs are serialized (lease): the latest one started by the check made it.
+              WHERE provider_id = $3 AND started_at <= m.checked_at
+              ORDER BY started_at DESC LIMIT 1) r ON true
+          WHERE m.pair_id = $1 AND m.minute_at = $2`,
+        [o.pair_id, minute, this.providerId],
+      )) as Array<{
+        status: string;
+        first_checked_at: Date;
+        checked_at: Date;
+        attempts: number;
+        run_id: string | null;
+        trigger: string | null;
+        started_at: Date | null;
+        finished_at: Date | null;
+      }>;
+      if (m)
+        check = {
+          minute: minute.toISOString(),
+          status: m.status,
+          firstCheckedAt: m.first_checked_at.toISOString(),
+          checkedAt: m.checked_at.toISOString(),
+          attempts: m.attempts,
+          // Before 2026-11-27 a check was stamped with its run's start: the actual read lies between
+          // the run's start and its finish.
+          stampedWithRunStart: !!m.started_at && m.started_at.getTime() === m.checked_at.getTime(),
+          run: m.run_id
+            ? {
+                id: m.run_id,
+                trigger: m.trigger!,
+                startedAt: m.started_at!.toISOString(),
+                finishedAt: isoOf(m.finished_at),
+              }
+            : null,
+        };
+    }
+    const start = row.window ? Date.parse(row.window.start) : null;
+    return {
+      crawlAt: row.crawlAt,
+      pipelineRunId: runId,
+      pipelineStages: stages.map((s) => ({
+        stage: s.stage,
+        status: s.status,
+        startedAt: s.started_at.toISOString(),
+        finishedAt: isoOf(s.finished_at),
+        durationMs: s.finished_at ? s.finished_at.getTime() - s.started_at.getTime() : null,
+        attempts: s.attempts,
+      })),
+      publishedAt: row.window?.start ?? null,
+      eventCommittedAt: e.created_at instanceof Date ? e.created_at.toISOString() : null,
+      // The start minute's candle is final (and its trades checkable) from here on.
+      startMinuteReadableAt:
+        start === null
+          ? null
+          : new Date(
+              Math.floor(start / 60_000) * 60_000 + 60_000 + CLOSED_BAR_MARGIN_MS,
+            ).toISOString(),
+      referenceTradeAt: row.reference.at,
+      marketDelayMs: row.reference.delayMs,
+      referenceCheck: check,
+      processingDelayMs:
+        check && row.reference.at
+          ? Date.parse(check.checkedAt) - Date.parse(row.reference.at)
+          : null,
+    };
+  }
+
+  /** A cheap change token for the page's refresh: the latest run and the latest stored change. */
+  async version(): Promise<{
+    lastRunId: string | null;
+    lastRunStatus: string | null;
+    lastRunFinishedAt: string | null;
+    lastChangeAt: string | null;
+    observations: number;
+  }> {
+    const [r] = (await this.db.query(
+      `SELECT (SELECT max(updated_at) FROM lbank_observation WHERE provider_id = $1) AS changed,
+              (SELECT count(*)::int FROM lbank_observation WHERE provider_id = $1) AS n,
+              x.id, x.status, x.finished_at
+         FROM (SELECT 1) one
+         LEFT JOIN LATERAL (SELECT id, status, finished_at FROM lbank_obs_run WHERE provider_id = $1
+                             ORDER BY started_at DESC LIMIT 1) x ON true`,
+      [this.providerId],
+    )) as Array<{
+      changed: Date | null;
+      n: number;
+      id: string | null;
+      status: string | null;
+      finished_at: Date | null;
+    }>;
+    return {
+      lastRunId: r?.id ?? null,
+      lastRunStatus: r?.status ?? null,
+      lastRunFinishedAt: isoOf(r?.finished_at),
+      lastChangeAt: isoOf(r?.changed),
+      observations: r?.n ?? 0,
     };
   }
 
@@ -752,6 +1087,31 @@ export class ObservationReadService {
       'rules_version',
       'result_version',
       'data_label',
+      // The Futures side: its own rules, contract, reference and bounds (never Spot data).
+      'futures_rules_version',
+      'futures_price_source',
+      'futures_status',
+      'futures_provisional',
+      'futures_reasons',
+      'futures_mapping',
+      'futures_contract',
+      'futures_reference_price',
+      'futures_reference_trade_after_utc',
+      'futures_reference_trade_before_utc',
+      'futures_highest_sampled_price',
+      'futures_highest_after_utc',
+      'futures_highest_before_utc',
+      'futures_highest_return_pct_lower_bound',
+      'futures_lowest_sampled_price',
+      'futures_lowest_after_utc',
+      'futures_lowest_before_utc',
+      'futures_lowest_return_pct_upper_bound',
+      'futures_samples_in_window',
+      'futures_bracketed_trades_in_window',
+      'futures_max_sampling_gap_ms',
+      'futures_sampled_through_utc',
+      'futures_flags',
+      'futures_finalized_at_utc',
     ];
     // CSV cell: formula-like text is defused with a leading quote; numbers (also negative) stay as they are.
     const cell = (v: unknown) => {
@@ -831,6 +1191,7 @@ export class ObservationReadService {
             r.rulesVersion,
             r.resultVersion,
             r.isLive ? 'LIVE' : 'SYNTHETIC',
+            ...futuresCells(r.futuresSampled),
           ]
             .map(cell)
             .join(','),

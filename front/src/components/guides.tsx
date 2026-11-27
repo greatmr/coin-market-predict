@@ -94,9 +94,9 @@ export const GUIDES: Record<GuideKey, Guide> = {
     doc: 'docs/strategy-two-tier-vmc.md',
   },
   observation: {
-    title: 'How the LBank Spot price observation works',
+    title: 'How the LBank price observation works',
     intro:
-      'Each 1, 2 or 3-star event found by the hourly screen since the cutover is followed on LBank Spot for exactly 168 hours from the moment the signal could be used, to see how far the price rose and fell. Rules lbank-spot-obs-2.',
+      'Each 1, 2 or 3-star event found by the hourly screen since the cutover is followed for exactly 168 hours from the moment the signal could be used, on LBank Spot (rules lbank-spot-obs-2, verified trades) and separately on LBank Futures (rules lbank-futures-sampled-1, sampled snapshots). Use Spot / Futures / Compare above the table to switch.',
     sections: [
       {
         h: 'Events',
@@ -121,14 +121,24 @@ export const GUIDES: Record<GuideKey, Guide> = {
           'Delayed: at least one whole minute after the start passed without any trade. The delay is always shown; nothing is excluded.',
           'Highest and lowest: real trades only. 1-minute candles only point to where to look; a candle’s High or Low can be the previous close without any trade, so every deciding minute is checked trade by trade.',
           'Maximum rise = highest ÷ reference − 1 (never below 0). Maximum decline = lowest ÷ reference − 1 (never above 0). Two independent extremes: never summed, not profit, not a stop loss.',
-          'Thin high / thin low: the extreme was set in a minute with a single trade. Flagged for review, never removed.',
+          'Thin high: the highest verified price occurred in a minute with exactly one trade. Thin low: the lowest verified price occurred in a minute with exactly one trade. Flags help interpretation; they are not proof of an error and nothing is removed. Overlapping windows are a different thing, not a flag.',
         ],
       },
       {
-        h: 'Spot / Futures',
+        h: 'Futures (sampled, weaker evidence)',
         items: [
-          'Spot comes from LBank’s own candles and pair list around the signal.',
-          'Futures is listing evidence only: a snapshot before (CMC’s LBank Futures list) and after (LBank’s contract list) the signal. It does not prove a contract was tradable at that instant, never blocks a Spot result, and no number on this page is a Futures price or a leveraged return.',
+          'LBank publishes no Futures trade or candle history. Its official market snapshot (every contract’s last price and 24 h turnover) is read every minute. When a contract’s turnover rose between two snapshots, a trade happened between them, and the later last price is such a trade: a real Futures price whose time is only known to lie in that range.',
+          'Reference (sampled): the first such trade wholly inside the window — not necessarily the first Futures trade. Highest ≥ and lowest ≤ are bounds: the real Futures extremes are at least as far out. Percentages are against the Futures reference only.',
+          'Contract: the one LBank Futures contract CMC attributes to this coin’s CMC id (by its market link) and LBank lists; a ticker match alone never counts (Contract ambiguous).',
+          'Not sampled at start: the contract was not being sampled when the window began (every event before the Futures side was added), and no source can fill it. Futures values are never taken from Spot, a listing, or LBank’s 24 h high/low.',
+          'Never Final: a Futures window that ended is “Closed (sampled)”.',
+        ],
+      },
+      {
+        h: 'Listing evidence',
+        items: [
+          'Spot at the signal comes from LBank’s own candles and pair list around the signal.',
+          'Futures listing (the filter under “More filters”) is a snapshot before (CMC’s LBank Futures list) and after (LBank’s contract list) the signal: listing evidence, not proof a contract was tradable at that instant.',
         ],
       },
       {
@@ -145,8 +155,9 @@ export const GUIDES: Record<GuideKey, Guide> = {
       {
         h: 'Updates',
         items: [
-          'A background job runs every 15 minutes; “Update now” on the Data page starts it at once and says whether it fetched new data or only recomputed.',
-          'Each row shows how far its data reaches and the last successful fetch; “Details” lists every gap and the evidence behind each number.',
+          'A background job runs every 15 minutes, and also about a minute after each new event’s start minute closes (and every minute while a new reference is still pending), so a reference shows within a minute or two. “Update now” on the Data page starts it at once and says whether it fetched new data or only recomputed.',
+          'Reference delay (+0.660 s) is market time from the start to the trade. Details → Timing shows separately when the job verified it and when this page showed it. The page reloads within 30 s of a job storing new results.',
+          'Data through = how far LBank data was fetched; last recomputed is not new data. Each row shows its data through; “Details” lists every gap and the evidence behind each number.',
         ],
       },
       {
@@ -156,7 +167,7 @@ export const GUIDES: Record<GuideKey, Guide> = {
         ],
       },
     ],
-    doc: 'docs/lbank-spot-observation.md (rules lbank-spot-obs-2)',
+    doc: 'docs/lbank-spot-observation.md (rules lbank-spot-obs-2; Futures § 13, lbank-futures-sampled-1)',
   },
   observationResults: {
     title: 'Reading the observation results',

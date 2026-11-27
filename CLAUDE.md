@@ -55,6 +55,13 @@ never real orders. Spec: `docs/strategy-two-tier-vmc.md`. Purpose and open decis
   `observation-rules.ts`; a rule change bumps `OBSERVATION_RULES_VERSION` and the doc, and rows move
   only through `lbank_obs_rules_change` (trigger). FINAL only with full verified coverage; the
   legacy tracker retires itself once every pre-cutover event has a terminal closure.
+- **LBank Futures sampled observation** (same module, `futures-rules.ts`, `FuturesSamplerService`,
+  docs § 13, `docs/adr/0011-lbank-futures-sampled.md`, rules `lbank-futures-sampled-1`): one row per
+  Spot observation (`lbank_futures_observation`), same start and end, its own contract (URL-pinned by
+  CMC id, never by ticker), minute `marketData` snapshots; a trade is proven only between two snapshots
+  whose 24 h turnover rose, extremes are bounds, never FINAL. LBank has no Futures history: an
+  unsampled start is `HISTORY_UNAVAILABLE`, never filled from Spot. A rule change bumps
+  `FUTURES_RULES_VERSION`; it never writes a Spot row.
 - **Storage scope** (`docs/adr/0008-storage-scope.md`, D4): every coin is screened hourly and kept
   in the registry, but only ranks 1–1200 are stored as snapshots and only Review Queue rows as
   `scan_result`; other coins are counted on `scan_run.counts` and traced on request

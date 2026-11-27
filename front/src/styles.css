@@ -4808,3 +4808,329 @@ fieldset.plain {
   max-width: 22em;
   white-space: normal;
 }
+
+/* ------------------------------ LBank observation (Spot + Futures) ------------------------------
+   Readable rows: values at 14px with their context underneath, one venue at a time (or a compact
+   side-by-side compare), the freshness of data / job / page always visible above the table. */
+.obs-bar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 10px 20px;
+  padding: 12px 16px;
+  border: 1px solid var(--edge);
+  border-radius: var(--r-lg, 14px);
+  background: var(--glass);
+}
+.obs-bar > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+}
+.obs-bar .k {
+  width: 100%;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.obs-bar b {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.obs-toolbar {
+  row-gap: 10px;
+}
+.obs-more {
+  position: relative;
+}
+.obs-more > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--edge);
+  background: var(--glass);
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+.obs-more > summary::-webkit-details-marker {
+  display: none;
+}
+.obs-more[open] > summary {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.obs-more-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  background: var(--glass-solid);
+}
+.obs-legend {
+  font-size: 13px;
+  color: var(--text-2);
+}
+.obs-legend > summary {
+  cursor: pointer;
+  color: var(--accent);
+  width: fit-content;
+}
+.obs-legend dl {
+  display: grid;
+  grid-template-columns: minmax(130px, max-content) minmax(0, 1fr);
+  gap: 6px 16px;
+  margin: 10px 0 0;
+  max-width: 110ch;
+}
+.obs-legend dl > div {
+  display: contents;
+}
+.obs-legend dt {
+  font-weight: 600;
+  color: var(--text);
+}
+.obs-legend dd {
+  margin: 0;
+}
+.obs-panel table {
+  font-size: 14px;
+}
+.obs-panel td {
+  padding: 11px 14px;
+  vertical-align: top;
+}
+.obs-panel td .coin-text span {
+  max-width: 200px;
+}
+.obs-two {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.obs-two .v {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.obs-two .s {
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.obs-two.muted .v {
+  color: var(--muted);
+}
+.obs-two.prov .v::after {
+  content: '*';
+  color: var(--muted);
+  margin-left: 1px;
+}
+td.num .obs-two {
+  align-items: flex-end;
+}
+.obs-final {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px dashed var(--edge-strong);
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.obs-final.on {
+  border: 1px solid var(--yes);
+  background: var(--yes-soft);
+  color: var(--text);
+}
+.obs-pair {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 10px;
+  align-items: start;
+}
+.obs-pair .venue {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  padding-top: 2px;
+}
+.obs-detail {
+  gap: 12px;
+}
+.obs-ident {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+.obs-venues {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.obs-venue {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  background: var(--glass);
+}
+.obs-venue header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 10px;
+}
+.obs-venue .kv {
+  grid-template-columns: minmax(0, 1fr);
+}
+.obs-sec {
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+}
+.obs-sec > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+  padding: 10px 14px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.obs-sec[open] > summary {
+  border-bottom: 1px solid var(--edge);
+}
+.obs-sec-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+}
+.obs-sec-body ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.obs-sec code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.obs-chain {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.obs-chain li {
+  display: grid;
+  grid-template-columns: minmax(200px, 1fr) minmax(220px, max-content);
+  gap: 0 14px;
+}
+.obs-chain li .small {
+  grid-column: 1 / -1;
+}
+.obs-chain li.pending b {
+  color: var(--muted);
+}
+.obs-gantt {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.obs-gantt .row {
+  display: grid;
+  grid-template-columns: minmax(150px, 190px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  font-size: 12.5px;
+}
+.obs-gantt .track {
+  position: relative;
+  height: 12px;
+  border-radius: 6px;
+  background: var(--track);
+}
+.obs-gantt .bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+}
+.obs-gantt .row.self .bar {
+  background: var(--accent);
+}
+.obs-gantt .row.axis .track {
+  background: none;
+  height: auto;
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+}
+@media (max-width: 760px) {
+  .obs-venues {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .obs-chain li {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.obs-heads {
+  display: inline-flex;
+  gap: 6px;
+}
+.obs-panel .obs-coin {
+  min-width: 0;
+}
+.obs-panel .obs-coin .coin-text b {
+  white-space: nowrap;
+}
+.obs-panel .obs-coin .coin-text span {
+  max-width: 130px;
+}
+.obs-panel .obs-status {
+  min-width: 0;
+  max-width: 17em;
+  gap: 4px;
+}
+.obs-status-line {
+  white-space: nowrap;
+}
+@media (max-width: 1500px) {
+  .obs-panel td,
+  .obs-panel th {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+}
+.obs-two .s {
+  white-space: normal;
+  max-width: 16em;
+}
+.obs-panel .obs-status .chips {
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.obs-ovl td {
+  white-space: nowrap;
+  vertical-align: top;
+}
+.obs-ovl td.wrap {
+  white-space: normal;
+  min-width: 18em;
+}

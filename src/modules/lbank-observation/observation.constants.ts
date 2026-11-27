@@ -266,6 +266,8 @@ export const OBS_SORT_KEYS = [
   'referenceDelay',
   'coverage',
   'symbol',
+  'futuresHighest',
+  'futuresLowest',
 ] as const;
 export type ObsSortKey = (typeof OBS_SORT_KEYS)[number];
 

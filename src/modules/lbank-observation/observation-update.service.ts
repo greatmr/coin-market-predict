@@ -155,7 +155,7 @@ export class ObservationUpdateService {
 
   async run(
     providerId: string,
-    opts: { now: Date; trigger: 'schedule' | 'manual' | 'cli' },
+    opts: { now: Date; trigger: 'schedule' | 'manual' | 'cli' | 'follow-up' },
   ): Promise<ObsRunReport> {
     const { now } = opts;
     if (this.source.isLive) await this.providers.ensureExists(LBANK_SPOT_PROVIDER_INFO);

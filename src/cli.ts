@@ -28,6 +28,7 @@ import {
 } from './modules/forward-test/forward-read.service.js';
 import { ForwardRetirementService } from './modules/forward-test/forward-retirement.service.js';
 import { IngestionService } from './modules/ingestion/ingestion.service.js';
+import { FuturesSamplerService } from './modules/lbank-observation/futures-sampler.service.js';
 import {
   LBANK_MARKET_SOURCE,
   type LbankMarketSource,
@@ -91,6 +92,8 @@ const HELP = `Coins Predicts CLI — Two-Tier VMC strategy (docs/strategy-two-ti
                                observation only; the legacy forward test takes none
   observation:status [--json]  Cutover, last run, final-only statistics, routing check
   observation:update           Run the observation job now (evidence, LBank candles, results)
+  observation:futures [--tick] Futures sampled observation: statuses, last snapshot; --tick reads
+                               LBank's Futures marketData once and folds it (as the 1-minute job)
   observation:probe [--symbol btc_usdt]
                                Read-only check that this host reaches LBank: one 1-minute kline page
                                (closed bars, server time), one trades page, and the Spot pair and
@@ -484,6 +487,26 @@ async function main() {
         const r = await ctx.get(ObservationService).runNow('cli');
         out(r);
         if ('skipped' in r || r.status === 'failed') process.exitCode = 1;
+        break;
+      }
+      case 'observation:futures': {
+        const tick = process.argv.includes('--tick')
+          ? await ctx.get(FuturesSamplerService).tick()
+          : null;
+        const db = ctx.get(DataSource);
+        out({
+          tick,
+          byStatus: Object.fromEntries(
+            (
+              (await db.query(
+                `SELECT status, count(*)::int AS n FROM lbank_futures_observation GROUP BY status ORDER BY status`,
+              )) as Array<{ status: string; n: number }>
+            ).map((r) => [r.status, r.n]),
+          ),
+          lastPolls: await db.query(
+            `SELECT fetched_at, server_at, ok, contracts, stored, error FROM lbank_futures_poll ORDER BY fetched_at DESC LIMIT 3`,
+          ),
+        });
         break;
       }
       case 'observation:probe': {

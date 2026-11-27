@@ -336,3 +336,68 @@ export function parseFuturesResponses(
   contracts.sort((a, b) => a.symbol.localeCompare(b.symbol));
   return { kind: 'ok', contracts };
 }
+
+/** One contract of a `marketData` snapshot (exact decimal text; `serverMs` = `lastTime` × 1000). */
+export interface FuturesMarketRow {
+  symbol: string;
+  /** The snapshot's refresh time (whole seconds), NOT a trade time (measured 2026-11-27). */
+  serverMs: number;
+  lastPrice: string;
+  turnover24h: string;
+  volume24h: string;
+  /** LBank's own 24 h figures (window not aligned to an observation: context only). */
+  high24h: string | null;
+  low24h: string | null;
+  markPrice: string | null;
+  instrumentStatus: string | null;
+}
+
+/**
+ * `GET lbkperp.lbank.com/cfd/openApi/v1/pub/marketData?productGroup=SwapU`: every contract's current
+ * snapshot. Rows without a symbol, a positive last price, a turnover or a `lastTime` are dropped
+ * (counted), never guessed.
+ */
+export function parseFuturesMarketData(
+  body: string,
+):
+  | { kind: 'ok'; rows: FuturesMarketRow[]; invalid: number; responseSha256: string }
+  | { kind: 'error'; message: string; responseSha256: string } {
+  const responseSha256 = sha256(body);
+  const { env, code, message } = parseEnvelope(body);
+  if (!env || code !== 0 || !Array.isArray(env.data))
+    return {
+      kind: 'error',
+      message: `marketData: ${code ?? 'no code'} ${message}`,
+      responseSha256,
+    };
+  const rows: FuturesMarketRow[] = [];
+  let invalid = 0;
+  const text = (v: unknown) => exactNumber(v)?.toFixed() ?? null;
+  for (const r of env.data as Array<Record<string, unknown>>) {
+    const symbol = r && typeof r.symbol === 'string' ? r.symbol.toUpperCase() : null;
+    const t = r ? intOf(r.lastTime) : null;
+    const price = r ? exactNumber(r.lastPrice) : null;
+    const turnover = r ? text(r.turnover) : null;
+    const volume = r ? text(r.volume) : null;
+    if (!symbol || t === null || !price || !price.gt(0) || turnover === null || volume === null) {
+      invalid++;
+      continue;
+    }
+    rows.push({
+      symbol,
+      serverMs: t * 1000,
+      lastPrice: price.toFixed(),
+      turnover24h: turnover,
+      volume24h: volume,
+      high24h: text(r.highestPrice),
+      low24h: text(r.lowestPrice),
+      markPrice: text(r.markedPrice),
+      instrumentStatus:
+        typeof r.instrumentStatus === 'string' || typeof r.instrumentStatus === 'number'
+          ? String(r.instrumentStatus)
+          : null,
+    });
+  }
+  if (!rows.length) return { kind: 'error', message: 'marketData: no usable row', responseSha256 };
+  return { kind: 'ok', rows, invalid, responseSha256 };
+}

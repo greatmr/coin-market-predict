@@ -1,16 +1,17 @@
-// LBank Spot price observation (docs/lbank-spot-observation.md, rules lbank-spot-obs-2): each CMC
-// 1/2/3-star event since the cutover, observed on LBank Spot from the moment the signal was proven
-// usable for exactly 168 h: the first verified trade after it (reference), the highest and lowest
-// verified trades. Only the table and its filters: the summary, export and "Update now" are on the
-// Data page (ObservationInsights), every detail behind a row's "Details", the rules behind the help
-// button. List state lives in the URL:
-//   /lbank-spot?status=FINAL&elig=SPOT_ONLY&stars=3&cov=complete&flags=spike&from=2026-11-26&q=btc&sort=highest&dir=desc&page=2
-import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+// LBank price observation (docs/lbank-spot-observation.md): each CMC 1/2/3-star event since the
+// cutover, observed from the moment the signal was proven usable for exactly 168 h, on two venues
+// kept apart: LBank Spot (rules lbank-spot-obs-2, verified trades) and LBank Futures (rules
+// lbank-futures-sampled-1, sampled snapshots, weaker evidence). A venue switch shows one venue at a
+// time or both side by side; every detail is behind a row's "Details". The page reloads itself when
+// the observation job stores new results (change token, every 30 s while visible). List state lives
+// in the URL:
+//   /lbank-spot?venue=compare&status=FINAL&fut=CLOSED&stars=3&cov=complete&flags=spike&from=2026-11-26&q=btc&sort=highest&dir=desc&page=2
+import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { SearchField } from '../../components/icons';
 import {
-  CoinCell,
   type Column,
+  Logo,
   Lab,
   LoadError,
   Pager,
@@ -19,34 +20,50 @@ import {
   Table,
 } from '../../components/ui';
 import { api, errorMessage } from '../../lib/api';
-import { humanize } from '../../lib/constants';
-import { fmtAgo, fmtInt, fmtPct, fmtPrice, fmtTime, utc } from '../../lib/format';
+import { humanize, triggerText } from '../../lib/constants';
+import { fmtAgo, fmtClock, fmtInt, fmtPct, fmtPrice, fmtTime, tz, utc } from '../../lib/format';
 import { useQueryState } from '../../lib/routes';
-import { useApp } from '../../state/app';
+import { useApp, useNow } from '../../state/app';
 
 import { openObservationDetail } from './ObservationDetail';
 import { openObservationOverlaps } from './Overlaps';
 import {
   ELIGIBILITY,
   FLAG,
-  FUTURES_TEXT,
-  GAP_TEXT,
-  LISTING_TEXT,
-  MAPPING_TEXT,
-  ORDER,
+  FUT_STATUS,
+  FUT_STATUS_TEXT,
   STATUS,
   TIMING_TEXT,
-  TRADING_TEXT,
   delayText,
   obsReasonText,
+  spanText,
 } from './labels';
-import type { ObsSort, ObservationPage, ObservationRow, ObservationSummary } from './types';
+import type {
+  FuturesSampled,
+  ObsSort,
+  ObservationPage,
+  ObservationRow,
+  ObservationSummary,
+  ObservationVersion,
+} from './types';
 
 const PAGE = 100;
+const REFRESH_MS = 30_000;
+
+type Venue = 'spot' | 'futures' | 'compare';
+const VENUES: readonly (readonly [Venue, string])[] = [
+  ['spot', 'Spot'],
+  ['futures', 'Futures'],
+  ['compare', 'Compare'],
+];
 
 const STATUS_FILTERS: readonly (readonly [string, string])[] = [
-  ['', 'All statuses'],
+  ['', 'All'],
   ...Object.entries(STATUS).map(([k, [, label]]) => [k, label] as const),
+];
+const FUT_FILTERS: readonly (readonly [string, string])[] = [
+  ['', 'All'],
+  ...Object.entries(FUT_STATUS).map(([k, [, label]]) => [k, label] as const),
 ];
 const ELIG_FILTERS: readonly (readonly [string, string])[] = [
   ['', 'All'],
@@ -55,15 +72,15 @@ const ELIG_FILTERS: readonly (readonly [string, string])[] = [
     .map(([k, [, label]]) => [k, label] as const),
 ];
 const COVERAGE_FILTERS: readonly (readonly [string, string])[] = [
-  ['', 'Any coverage'],
+  ['', 'Any'],
   ['complete', 'No gap so far'],
   ['partial', 'With gaps'],
 ];
 const FLAG_FILTERS: readonly (readonly [string, string])[] = [
-  ['', 'Any flags'],
-  ['any', 'Flagged'],
-  ['spike', 'Thin-market extreme'],
-  ['delayed', 'Delayed reference'],
+  ['', 'Any'],
+  ['any', 'Any flag'],
+  ['spike', 'Thin high or low'],
+  ['delayed', 'Delayed'],
   ['none', 'No flag'],
 ];
 const STAR_FILTERS: readonly (readonly [string, string])[] = [
@@ -82,17 +99,21 @@ const SORTS: readonly ObsSort[] = [
   'referenceDelay',
   'coverage',
   'symbol',
+  'futuresHighest',
+  'futuresLowest',
 ];
 const SORT_LABEL: Record<ObsSort, string> = {
   detected: 'CMC crawl time',
   start: 'window start',
   stars: 'stars',
   points: 'points',
-  highest: 'highest return',
-  lowest: 'lowest return',
-  referenceDelay: 'reference delay',
+  highest: 'Spot highest return',
+  lowest: 'Spot lowest return',
+  referenceDelay: 'Spot reference delay',
   coverage: 'coverage',
   symbol: 'coin',
+  futuresHighest: 'Futures highest (sampled)',
+  futuresLowest: 'Futures lowest (sampled)',
 };
 
 const isIn = (list: readonly (readonly [string, string])[], v: string) =>
@@ -176,39 +197,254 @@ function Select({
   );
 }
 
-function ExtremeCell({
-  r,
-  v,
-  kind,
-}: {
-  r: ObservationRow;
-  v: ObservationRow['highest'];
-  kind: 'highest' | 'lowest';
-}) {
+/** Today's times as a clock time, other days with their date (display time zone). */
+function fmtShort(iso: string): string {
+  const day = (d: Date) => d.toLocaleDateString('en-GB', { timeZone: tz() });
+  return day(new Date(iso)) === day(new Date()) ? fmtClock(iso) : fmtTime(iso);
+}
+
+/** Coin, stars and weighted points in one cell. */
+const ObsCoin = ({ r }: { r: ObservationRow }) => (
+  <div className="coin obs-coin">
+    <Logo cmcId={r.cmcId} />
+    <div className="coin-text">
+      <b>
+        {r.symbol} <Stars n={r.stars} />
+      </b>
+      <span title={`${r.name} · CMC id ${r.cmcId}${r.points === null ? '' : ` · ${r.points}${r.scoreComplete === false ? ' ≥' : ''} weighted points`}`}>
+        {r.name}
+      </span>
+    </div>
+  </div>
+);
+
+/** A value on top, its context underneath (two lines instead of one crowded line). */
+const Two = ({ v, s, title, tone }: { v: ReactNode; s?: ReactNode; title?: string; tone?: string }) => (
+  <div className={`obs-two${tone ? ` ${tone}` : ''}`} title={title}>
+    <span className="v">{v}</span>
+    {s ? <span className="s">{s}</span> : null}
+  </div>
+);
+
+/** Final or provisional, as a word (never a number's color alone). */
+const Finality = ({ final }: { final: boolean }) => (
+  <span className={`obs-final${final ? ' on' : ''}`}>{final ? 'Final' : 'Provisional'}</span>
+);
+
+// ── Spot cells ─────────────────────────────────────────────────────────────────────────────
+
+/** Why a Spot reference is still pending, from the times alone (no guess about the cause). */
+function pendingText(r: ObservationRow, now: number): string {
+  if (!r.window) return 'waiting for the window start';
+  const readable = Math.floor(Date.parse(r.window.start) / 60_000) * 60_000 + 65_000;
+  if (now < readable) return 'start minute still open';
+  return r.freshness.lastFetchError ? 'last LBank request failed: retried' : 'awaiting the next check';
+}
+
+function SpotReference({ r, now }: { r: ObservationRow; now: number }) {
+  const ref = r.reference;
+  if (ref.price !== null && ref.delayMs !== null)
+    return (
+      <Two
+        v={
+          <>
+            {fmtPrice(ref.price)}
+            {ref.delayed ? <span className="chip warn small">Delayed</span> : null}
+          </>
+        }
+        s={`${delayText(ref.delayMs)} after start`}
+        title={`First verified LBank Spot trade at or after the window start.\ntrade ${ref.tradeId} at ${utc(ref.at)}, qty ${ref.qty}\nThe delay is market time (start → trade), not how long the page took to update.`}
+      />
+    );
+  if (r.status === 'NO_TRADES') return <Two v="no trade" s="none in the whole window" />;
+  if (ref.status === 'PENDING') return <Two v="Pending" s={pendingText(r, now)} tone="muted" />;
+  return <Two v={humanize(ref.status)} s={r.reasons.map(obsReasonText)[0]} tone="muted" />;
+}
+
+function SpotExtreme({ r, kind }: { r: ObservationRow; kind: 'highest' | 'lowest' }) {
+  const v = r[kind];
   if (!v) return <span className="muted">{r.status === 'NO_TRADES' ? 'no trade' : '—'}</span>;
   return (
-    <span
-      className={r.provisional ? 'muted' : undefined}
-      title={[
-        `${kind === 'highest' ? 'Highest' : 'Lowest'} verified LBank Spot trade ${v.price} at ${utc(v.at)} (trade ${v.tradeId})`,
-        `${pctText(v.pct)} vs the reference trade; not profit${kind === 'lowest' ? ', not a stop loss' : ''}`,
-        r.order ? ORDER[r.order] : '',
-        r.provisional ? 'provisional (not Final)' : '',
-      ]
-        .filter(Boolean)
-        .join('\n')}
-    >
-      {pctText(v.pct)}
-      {r.provisional ? ' *' : ''}
-      <span className="muted small">{` · ${fmtPrice(v.price)} · ${fmtTime(v.at)}`}</span>
+    <Two
+      v={pctText(v.pct)}
+      s={fmtPrice(v.price)}
+      tone={r.provisional ? 'prov' : undefined}
+      title={`${kind === 'highest' ? 'Highest' : 'Lowest'} verified LBank Spot trade ${v.price} at ${utc(v.at)} (trade ${v.tradeId})\n${pctText(v.pct)} vs the Spot reference trade. An observed price, not profit${kind === 'lowest' ? ', not a stop' : ''}.${r.provisional ? '\nProvisional: the window is running or data is still being verified.' : ''}`}
+    />
+  );
+}
+
+// ── Futures cells ──────────────────────────────────────────────────────────────────────────
+
+const futMissing = (f: FuturesSampled | null): string =>
+  !f ? 'not created yet' : (FUT_STATUS_TEXT[f.status] ?? humanize(f.status).toLowerCase());
+
+function FuturesReference({ r }: { r: ObservationRow }) {
+  const f = r.futuresSampled;
+  if (!f?.reference || !r.window)
+    return (
+      <span className="muted" title={futMissing(f)}>
+        —
+      </span>
+    );
+  const s = Date.parse(r.window.start);
+  return (
+    <Two
+      v={fmtPrice(f.reference.price)}
+      s={`${delayText(Date.parse(f.reference.after) - s)} … ${delayText(Date.parse(f.reference.before) - s)} after start`}
+      title={`A Futures trade proven by two marketData snapshots (24 h turnover rose between them): price ${f.reference.price}, time strictly between ${utc(f.reference.after)} and ${utc(f.reference.before)}.\nNot necessarily the first Futures trade after the start: LBank publishes no Futures trade list.`}
+    />
+  );
+}
+
+function FuturesExtreme({ r, kind }: { r: ObservationRow; kind: 'highest' | 'lowest' }) {
+  const f = r.futuresSampled;
+  const v = f?.[kind];
+  if (!f || !v) return <span className="muted" title={futMissing(f)}>—</span>;
+  return (
+    <Two
+      v={`${kind === 'highest' ? '≥ ' : '≤ '}${pctText(v.pct)}`}
+      s={fmtPrice(v.price)}
+      tone={f.provisional ? 'prov' : undefined}
+      title={`${kind === 'highest' ? 'Highest' : 'Lowest'} sampled Futures trade ${v.price}, between ${utc(v.after)} and ${utc(v.before)}.\nA bound: the true Futures ${kind} is at least this extreme (snapshots miss trades between them). Relative to the Futures reference, never Spot.`}
+    />
+  );
+}
+
+function FuturesStatusCell({ r }: { r: ObservationRow }) {
+  const f = r.futuresSampled;
+  if (!f) return <span className="muted">not created yet</span>;
+  return (
+    <div className="obs-status">
+      <Lab map={FUT_STATUS} k={f.status} />
+      <span className="muted small">
+        {f.reasons.length ? f.reasons.map(obsReasonText).join(' · ') : (FUT_STATUS_TEXT[f.status] ?? '')}
+      </span>
+    </div>
+  );
+}
+
+function Flags({ r }: { r: ObservationRow }) {
+  const flags = [...r.flags, ...(r.futuresSampled?.flags ?? [])];
+  if (!flags.length && !r.overlapping) return null;
+  return (
+    <span className="chips">
+      {flags.map((f) => (
+        <span key={f} className="chip warn small" title={FLAG[f]?.[1] ?? humanize(f)}>
+          {FLAG[f]?.[0] ?? humanize(f)}
+        </span>
+      ))}
+      {r.overlapping ? (
+        <button
+          type="button"
+          className="chip link-chip small"
+          title={`${r.symbol} has ${r.coinEvents} observations; ${r.overlapping} of them have 168-hour windows that overlap this one. Not a flag: each stays its own observation. Click for the list.`}
+          onClick={() => openObservationOverlaps(r)}
+        >
+          {`${r.overlapping} overlapping`}
+        </button>
+      ) : null}
     </span>
+  );
+}
+
+// ── Page ───────────────────────────────────────────────────────────────────────────────────
+
+function FreshnessBar({
+  sum,
+  loadedAt,
+  now,
+}: {
+  sum: ObservationSummary;
+  loadedAt: number | null;
+  now: number;
+}) {
+  const run = sum.lastRun;
+  const poll = sum.futures.lastPoll;
+  return (
+    <div className="obs-bar" role="status">
+      <div>
+        <span className="k">Spot data through</span>
+        <b>{sum.freshness.oldestOpenDataThrough ? fmtTime(sum.freshness.oldestOpenDataThrough) : '—'}</b>
+        <span className="muted small">
+          {sum.freshness.oldestOpenDataThrough
+            ? ` oldest open window, ${fmtAgo(sum.freshness.oldestOpenDataThrough, now)}`
+            : ''}
+        </span>
+      </div>
+      <div title={run ? run.notes.at(-1) : undefined}>
+        <span className="k">Last observation job</span>
+        <b>{run?.finishedAt ? fmtTime(run.finishedAt) : run ? 'running…' : '—'}</b>
+        <span className="muted small">
+          {run
+            ? ` ${triggerText(run.trigger)}, ${run.fetchedNewData ? 'fetched new LBank data' : 'recomputed only'}`
+            : ''}
+        </span>
+      </div>
+      <div>
+        <span className="k">Futures snapshot</span>
+        <b>{poll ? fmtTime(poll.fetchedAt) : '—'}</b>
+        <span className="muted small">{poll && !poll.ok ? ' failed: retried next minute' : ''}</span>
+      </div>
+      <div>
+        <span className="k">This page</span>
+        <b>{loadedAt ? fmtAgo(new Date(loadedAt).toISOString(), now) : '—'}</b>
+        <span className="muted small"> reloads when the job stores new results</span>
+      </div>
+    </div>
+  );
+}
+
+function Legend() {
+  return (
+    <details className="obs-legend">
+      <summary>What the columns, flags and states mean</summary>
+      <dl>
+        <dt>Provisional / Final</dt>
+        <dd>
+          Provisional: the 168-hour window is still running or a needed trade is not verified yet;
+          values can change. Final (Spot only): the window is over and every needed trade was
+          verified. A job that succeeded or 168 hours passing is not enough on its own.
+        </dd>
+        <dt>Data through / last job</dt>
+        <dd>
+          Data through is how far LBank data has been fetched; the last job may only have
+          recomputed stored data.
+        </dd>
+        <dt>Reference delay</dt>
+        <dd>
+          Market time from the window start to the first trade (e.g. +0.660 s). It is not how long
+          the page took to show it; Details shows that separately.
+        </dd>
+        {(['REFERENCE_DELAYED', 'SINGLE_TRADE_HIGH', 'SINGLE_TRADE_LOW'] as const).map((k) => (
+          <div key={k}>
+            <dt>{FLAG[k]![0]}</dt>
+            <dd>{FLAG[k]![1]}</dd>
+          </div>
+        ))}
+        <dt>Flags are not errors</dt>
+        <dd>
+          They help interpretation; flagged observations stay in every count. Overlapping windows
+          (same coin, windows sharing time) are shown separately and are not a flag.
+        </dd>
+        <dt>Spot vs Futures</dt>
+        <dd>
+          Spot: verified LBank Spot trades. Futures: LBank publishes no Futures trade history, so
+          Futures values come from minute snapshots — a sampled trade with a time range, highest and
+          lowest as bounds (≥ / ≤), never Final. Each venue is measured against its own reference.
+        </dd>
+      </dl>
+    </details>
   );
 }
 
 export default function Observation() {
   const { openCoin, dataVersion, setNavCount } = useApp();
+  const now = useNow(15_000);
   const [query, setQuery] = useQueryState({
+    venue: 'spot',
     status: '',
+    fut: '',
     elig: '',
     cov: '',
     flags: '',
@@ -220,7 +456,9 @@ export default function Observation() {
     dir: 'desc',
     page: '1',
   });
+  const venue: Venue = (['spot', 'futures', 'compare'] as const).find((v) => v === query.venue) ?? 'spot';
   const status = isIn(STATUS_FILTERS, query.status) ? query.status : '';
+  const fut = isIn(FUT_FILTERS, query.fut) ? query.fut : '';
   const elig = isIn(ELIG_FILTERS, query.elig) ? query.elig : '';
   const cov = isIn(COVERAGE_FILTERS, query.cov) ? query.cov : '';
   const flags = isIn(FLAG_FILTERS, query.flags) ? query.flags : '';
@@ -232,11 +470,14 @@ export default function Observation() {
   const search = query.q.trim();
   const pageNum = Number(query.page);
   const page = Number.isInteger(pageNum) && pageNum >= 1 ? pageNum - 1 : 0;
+  const moreActive = [elig, cov, flags, from, to].filter(Boolean).length;
 
   const [searchText, setSearchText] = useState(query.q);
   const [data, setData] = useState<{ sum: ObservationSummary; list: ObservationPage } | null>(null);
+  const [loadedAt, setLoadedAt] = useState<number | null>(null);
   const [error, setError] = useState<unknown>(null);
   const debounce = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const token = useRef('');
 
   useEffect(() => {
     setSearchText((t) => (t.trim() === query.q.trim() ? t : query.q));
@@ -245,6 +486,7 @@ export default function Observation() {
   const filters = useMemo(() => {
     const q = new URLSearchParams();
     if (status) q.set('status', status);
+    if (fut) q.set('futures', fut);
     if (elig) q.set('eligibility', elig);
     if (cov) q.set('coverage', cov);
     if (flags) q.set('flags', flags);
@@ -254,7 +496,7 @@ export default function Observation() {
     if (to) q.set('to', new Date(Date.parse(`${to}T00:00:00Z`) + 86_400_000).toISOString());
     if (search) q.set('search', search);
     return q;
-  }, [status, elig, cov, flags, stars, from, to, search]);
+  }, [status, fut, elig, cov, flags, stars, from, to, search]);
 
   const load = useCallback(async () => {
     const q = new URLSearchParams(filters);
@@ -263,13 +505,16 @@ export default function Observation() {
     q.set('limit', String(PAGE));
     q.set('offset', String(page * PAGE));
     try {
-      // The unfiltered summary: the nav count (active events) and whether a cutover is set.
-      const [sum, list] = await Promise.all([
+      // The unfiltered summary: the nav count (active events), freshness and the cutover.
+      const [sum, list, v] = await Promise.all([
         api<ObservationSummary>('observations/summary'),
         api<ObservationPage>(`observations?${q}`),
+        api<ObservationVersion>('observations/version'),
       ]);
+      token.current = `${v.lastRunId}|${v.lastRunFinishedAt}|${v.lastChangeAt}|${v.observations}`;
       setNavCount('observation', sum.summary.byStatus.ACTIVE?.events ?? 0);
       setData({ sum, list });
+      setLoadedAt(Date.now());
       setError(null);
     } catch (e) {
       console.error(e);
@@ -281,6 +526,28 @@ export default function Observation() {
     void load();
   }, [dataVersion, load]);
   useEffect(() => () => clearTimeout(debounce.current), []);
+
+  // Display freshness: reload when the observation job stored something new (not only when the
+  // hourly CMC batch changes), checked every 30 s while the page is visible and on return to it.
+  useEffect(() => {
+    const check = async () => {
+      if (document.hidden) return;
+      try {
+        const v = await api<ObservationVersion>('observations/version');
+        const k = `${v.lastRunId}|${v.lastRunFinishedAt}|${v.lastChangeAt}|${v.observations}`;
+        if (token.current && k !== token.current) await load();
+      } catch {
+        /* the shell's 30 s tick reports API errors */
+      }
+    };
+    const id = setInterval(() => void check(), REFRESH_MS);
+    const onVis = () => void check();
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [load]);
 
   const onSearch = (e: ChangeEvent<HTMLInputElement>) => {
     const v = e.target.value;
@@ -306,256 +573,247 @@ export default function Observation() {
     const head = (k: ObsSort, label: string) => (
       <SortHead k={k} label={label} sort={sort} dir={dir} onSort={onSort} />
     );
-    return [
-      { label: head('symbol', 'Coin'), render: (r) => <CoinCell r={r} /> },
-      { label: head('stars', 'Stars'), render: (r) => <Stars n={r.stars} /> },
-      {
-        label: head('points', 'Points'),
-        num: true,
-        title: 'Weighted points at the signal (weighted_star_v1), never updated',
-        render: (r) =>
-          r.points === null ? '—' : `${r.points}${r.scoreComplete === false ? ' ≥' : ''}`,
-      },
-      {
-        label: head('detected', 'CMC crawl'),
-        title:
-          'The hourly CMC crawl that found the event (its identity and UTC date); the window starts later, when the signal was usable',
-        render: (r) => (
-          <span
-            title={`crawl ${utc(r.crawlAt)} · CMC quote ${utc(r.cmcQuoteAt)} · CMC price ${r.cmcPriceUsd} USD (context only)`}
-          >
-            {fmtTime(r.crawlAt)}
-          </span>
+    const coin: Column<ObservationRow> = {
+      label: (
+        <span className="obs-heads">
+          {head('symbol', 'Coin')}
+          {head('stars', '★')}
+        </span>
+      ),
+      render: (r) => <ObsCoin r={r} />,
+    };
+    const signal: Column<ObservationRow> = {
+      label: head('start', 'Window start'),
+      title:
+        'When the Review Queue holding the signal was published (the window is exactly 168 h from here); underneath, how long after the CMC crawl that was',
+      render: (r) =>
+        r.window ? (
+          <Two
+            v={fmtShort(r.window.start)}
+            s={`${delayText(r.window.afterCrawlMs)} after crawl`}
+            title={`Window ${utc(r.window.start)} – ${utc(r.window.end)}\nCMC crawl ${utc(r.crawlAt)} (names the event)\nproven by: ${TIMING_TEXT[r.window.source] ?? r.window.source}${r.window.uncertain ? ' (later than the earliest usable moment)' : ''}`}
+          />
+        ) : (
+          <Two v="Pending" s={`CMC crawl ${fmtTime(r.crawlAt)}`} tone="muted" />
         ),
-      },
-      {
-        label: head('start', 'Window start'),
-        title:
-          'When the star signal was proven usable (the Review Queue was published); the window is exactly 168 h from here',
-        render: (r) =>
-          r.window ? (
+    };
+    const details: Column<ObservationRow> = {
+      label: '',
+      title: 'Everything behind this observation, both venues',
+      render: (r) => (
+        <button
+          type="button"
+          className="btn small"
+          aria-label={`Details of ${r.symbol} ${r.stars} stars`}
+          onClick={() => openObservationDetail(r)}
+        >
+          Details
+        </button>
+      ),
+    };
+    const spotStatus: Column<ObservationRow> = {
+      label: head('coverage', 'Status · data · flags'),
+      title:
+        'Final or provisional and the status; how far LBank Spot data was fetched (data freshness) and gaps; review flags (not errors) and overlapping windows. Sorted by coverage.',
+      render: (r) => {
+        // "Window running" is what Provisional already says.
+        const reasons = r.reasons.filter((x) => x !== 'WINDOW_OPEN');
+        const gaps = r.coverage.gaps.length;
+        return (
+          <div className="obs-status">
+            <span className="obs-status-line">
+              <Finality final={r.status === 'FINAL'} /> <Lab map={STATUS} k={r.status} />
+            </span>
+            {reasons.length ? (
+              <span className="muted small" title={reasons.map(obsReasonText).join('\n')}>
+                {obsReasonText(reasons[0]!)}
+                {reasons.length > 1 ? ` (+${reasons.length - 1})` : ''}
+              </span>
+            ) : null}
             <span
-              title={`${utc(r.window.start)} – ${utc(r.window.end)}\nproven by: ${TIMING_TEXT[r.window.source] ?? r.window.source}${r.window.uncertain ? ' (later than the earliest usable moment)' : ''}`}
+              className="muted small"
+              title={`Data through ${utc(r.freshness.dataThrough)} (${fmtAgo(r.freshness.dataThrough, now)})\n${fmtInt(r.coverage.minutesPresent)} of ${fmtInt(r.coverage.minutesExpected)} minutes with a candle, ${fmtInt(r.coverage.minutesTraded)} traded\nlast LBank fetch ${utc(r.freshness.lastSourceFetchAt)}\nlast recomputed ${utc(r.freshness.lastRecomputedAt)} (recomputing is not fresh data)${r.freshness.lastFetchError ? `\nlast error: ${r.freshness.lastFetchError}` : ''}`}
             >
-              {fmtTime(r.window.start)}
-              <span className="muted small">{` · ${delayText(r.window.afterCrawlMs)} after crawl`}</span>
+              {r.freshness.dataThrough ? `data through ${fmtShort(r.freshness.dataThrough)}` : 'no data fetched yet'}
+              {gaps ? ` · ${gaps} gap${gaps > 1 ? 's' : ''}` : ''}
             </span>
-          ) : (
-            <span className="muted">pending</span>
-          ),
+            <Flags r={r} />
+          </div>
+        );
       },
-      {
-        label: 'LBank Spot pair',
-        render: (r) =>
-          r.pair.symbol ? (
-            <span
-              title={`LBank pair ${MAPPING_TEXT[r.pair.mapping] ?? humanize(r.pair.mapping).toLowerCase()}; quoted in ${r.pair.quote ?? '—'}`}
-            >
-              {r.pair.symbol.toUpperCase().replace('_', '/')}
-            </span>
-          ) : (
-            <span className="muted">
-              {MAPPING_TEXT[r.pair.mapping] ?? humanize(r.pair.mapping).toLowerCase()}
-            </span>
+    };
+    if (venue === 'futures')
+      return [
+        coin,
+        signal,
+        {
+          label: 'Contract',
+          render: (r) =>
+            r.futuresSampled?.contract ? (
+              <Two v={r.futuresSampled.contract} s="mapped by CMC id" />
+            ) : (
+              <Two
+                v="—"
+                s={r.futuresSampled ? humanize(r.futuresSampled.mapping).toLowerCase() : 'pending'}
+                tone="muted"
+              />
+            ),
+        },
+        {
+          label: 'Reference (sampled)',
+          title: 'A Futures trade proven between two snapshots; its time is a range',
+          render: (r) => <FuturesReference r={r} />,
+        },
+        {
+          label: head('futuresHighest', 'Highest ≥'),
+          num: true,
+          title: 'Lower bound of the Futures maximum rise vs the Futures reference',
+          render: (r) => <FuturesExtreme r={r} kind="highest" />,
+        },
+        {
+          label: head('futuresLowest', 'Lowest ≤'),
+          num: true,
+          title: 'Upper bound of the Futures maximum decline vs the Futures reference',
+          render: (r) => <FuturesExtreme r={r} kind="lowest" />,
+        },
+        { label: 'Futures status', render: (r) => <FuturesStatusCell r={r} /> },
+        {
+          label: 'Sampling',
+          title: 'Snapshots in the window, proven trades among them, the longest gap between snapshots, and how far sampled',
+          render: (r) => {
+            const f = r.futuresSampled;
+            if (!f || f.mapping !== 'OK') return <span className="muted">—</span>;
+            return (
+              <Two
+                v={f.sampledThrough ? `through ${fmtShort(f.sampledThrough)}` : 'not sampled'}
+                s={`${fmtInt(f.samplesInWindow)} snapshots · ${fmtInt(f.bracketedInWindow)} trades · max gap ${spanText(f.maxGapMs)}`}
+              />
+            );
+          },
+        },
+        details,
+      ];
+    if (venue === 'compare')
+      return [
+        coin,
+        signal,
+        {
+          label: 'Reference',
+          render: (r) => (
+            <div className="obs-pair">
+              <span className="venue">Spot</span>
+              <SpotReference r={r} now={now} />
+              <span className="venue">Fut</span>
+              <FuturesReference r={r} />
+            </div>
           ),
-      },
+        },
+        {
+          label: head('highest', 'Highest'),
+          title: 'Spot: verified. Futures: sampled lower bound. Each vs its own reference.',
+          render: (r) => (
+            <div className="obs-pair">
+              <span className="venue">Spot</span>
+              <SpotExtreme r={r} kind="highest" />
+              <span className="venue">Fut</span>
+              <FuturesExtreme r={r} kind="highest" />
+            </div>
+          ),
+        },
+        {
+          label: head('lowest', 'Lowest'),
+          title: 'Spot: verified. Futures: sampled upper bound. Each vs its own reference.',
+          render: (r) => (
+            <div className="obs-pair">
+              <span className="venue">Spot</span>
+              <SpotExtreme r={r} kind="lowest" />
+              <span className="venue">Fut</span>
+              <FuturesExtreme r={r} kind="lowest" />
+            </div>
+          ),
+        },
+        {
+          label: 'Status',
+          render: (r) => (
+            <div className="obs-pair">
+              <span className="venue">Spot</span>
+              <span>
+                <Finality final={r.status === 'FINAL'} /> <Lab map={STATUS} k={r.status} />
+              </span>
+              <span className="venue">Fut</span>
+              {r.futuresSampled ? (
+                <Lab map={FUT_STATUS} k={r.futuresSampled.status} title={futMissing(r.futuresSampled)} />
+              ) : (
+                <span className="muted">—</span>
+              )}
+            </div>
+          ),
+        },
+        details,
+      ];
+    return [
+      coin,
+      signal,
       {
         label: head('referenceDelay', 'Reference'),
         title:
-          'Reference price: the first verified LBank Spot trade at or after the window start, and its delay. An observed trade, not an executed order.',
-        render: (r) =>
-          r.reference.price !== null && r.reference.delayMs !== null ? (
-            <span
-              title={`trade ${r.reference.tradeId} at ${utc(r.reference.at)} · qty ${r.reference.qty}${r.reference.delayed ? '\ndelayed: a whole minute after the start passed without a trade' : ''}`}
-            >
-              {fmtPrice(r.reference.price)}
-              <span className="muted small">{` · ${delayText(r.reference.delayMs)}`}</span>
-              {r.reference.delayed ? <span className="chip warn small">delayed</span> : null}
-            </span>
-          ) : (
-            <span className="muted">
-              {r.status === 'NO_TRADES' ? 'no trade' : humanize(r.reference.status).toLowerCase()}
-            </span>
-          ),
+          'The first verified LBank Spot trade at or after the window start; underneath, its market delay (start → trade). An observed trade, not an executed order.',
+        render: (r) => <SpotReference r={r} now={now} />,
       },
       {
         label: head('highest', 'Highest'),
         num: true,
-        title:
-          'Maximum rise: 100 × (highest verified trade ÷ reference − 1), never below 0. Not profit. * provisional unless Final.',
-        render: (r) => <ExtremeCell r={r} v={r.highest} kind="highest" />,
+        title: 'Maximum rise vs the reference: 100 × (highest verified trade ÷ reference − 1). Not profit.',
+        render: (r) => <SpotExtreme r={r} kind="highest" />,
       },
       {
         label: head('lowest', 'Lowest'),
         num: true,
-        title:
-          'Maximum decline: 100 × (lowest verified trade ÷ reference − 1), never above 0. Independent of the highest; not a stop loss.',
-        render: (r) => <ExtremeCell r={r} v={r.lowest} kind="lowest" />,
+        title: 'Maximum decline vs the reference, independent of the highest. Not a stop loss.',
+        render: (r) => <SpotExtreme r={r} kind="lowest" />,
       },
-      {
-        label: 'Status',
-        render: (r) => (
-          <div className="obs-status">
-            <Lab map={STATUS} k={r.status} />
-            {r.reasons.length ? (
-              <span className="muted small">{r.reasons.map(obsReasonText).join(' · ')}</span>
-            ) : null}
-          </div>
-        ),
-      },
-      {
-        label: head('coverage', 'Coverage'),
-        title:
-          'Minutes of the window with an LBank candle, gaps by kind, and how fresh the data is (not the last recomputation)',
-        render: (r) => (
-          <span
-            title={[
-              `${fmtInt(r.coverage.minutesTraded)} minutes with trades`,
-              ...r.coverage.gaps
-                .slice(0, 4)
-                .map(
-                  (g) => `${utc(g.from)}–${utc(g.to)}: ${GAP_TEXT[g.state] ?? humanize(g.state)}`,
-                ),
-              `data through ${utc(r.freshness.dataThrough)}`,
-              `last LBank fetch ${utc(r.freshness.lastSourceFetchAt)}`,
-              r.freshness.lastFetchError ? `last error: ${r.freshness.lastFetchError}` : '',
-              `recomputed ${utc(r.freshness.lastRecomputedAt)}`,
-            ]
-              .filter(Boolean)
-              .join('\n')}
-          >
-            {`${fmtInt(r.coverage.minutesPresent)} / ${fmtInt(r.coverage.minutesExpected)}`}
-            {r.coverage.gaps.length ? (
-              <span className="muted small">{` · ${r.coverage.gaps.length} gap${r.coverage.gaps.length > 1 ? 's' : ''}`}</span>
-            ) : null}
-            <span className="muted small">{` · data ${fmtAgo(r.freshness.dataThrough)}`}</span>
-          </span>
-        ),
-      },
-      {
-        label: 'Spot / Futures',
-        title:
-          'Spot at the signal from LBank’s candles and pair list; Futures = listing evidence from snapshots before and after the signal (never a Futures price)',
-        render: (r) => (
-          <Lab
-            map={ELIGIBILITY}
-            k={r.eligibility}
-            title={`Spot at the signal: ${LISTING_TEXT[r.spot] ?? humanize(r.spot).toLowerCase()}${r.spotTrading ? ` (${TRADING_TEXT[r.spotTrading] ?? humanize(r.spotTrading).toLowerCase()})` : ''} · Futures: ${FUTURES_TEXT[r.futures] ?? humanize(r.futures).toLowerCase()}`}
-          />
-        ),
-      },
-      {
-        label: 'Flags',
-        title: 'Review flags: kept and shown, never excluded',
-        render: (r) =>
-          r.flags.length ? (
-            <span className="chips">
-              {r.flags.map((f) => (
-                <span key={f} className="chip warn small" title={FLAG[f]?.[1] ?? humanize(f)}>
-                  {FLAG[f]?.[0] ?? humanize(f)}
-                </span>
-              ))}
-            </span>
-          ) : (
-            <span className="muted">—</span>
-          ),
-      },
-      {
-        label: 'Overlaps',
-        title:
-          "The same coin's other observations whose windows overlap this one (correlated: one price path). Click for the list.",
-        render: (r) =>
-          r.overlapping ? (
-            <button
-              type="button"
-              className="chip link-chip"
-              title={`${r.symbol} has ${r.coinEvents} observations; ${r.overlapping} share part of this window. Click for the list.`}
-              onClick={() => openObservationOverlaps(r)}
-            >
-              {`${r.overlapping} overlapping`}
-            </button>
-          ) : (
-            <span className="muted">—</span>
-          ),
-      },
-      {
-        label: '',
-        title: 'Everything behind this observation: evidence, gaps, flags, history',
-        render: (r) => (
-          <button
-            type="button"
-            className="chip link-chip"
-            aria-label={`Details of ${r.symbol} ${r.stars} stars`}
-            onClick={() => openObservationDetail(r)}
-          >
-            Details
-          </button>
-        ),
-      },
+      spotStatus,
+      details,
     ];
-  }, [sort, dir, onSort]);
+  }, [sort, dir, onSort, venue, now]);
 
   const empty = data?.sum.cutover.cutoverAt
     ? 'No observation matches these filters.'
     : 'No observation yet: the cutover is not set, so every star event still goes to the legacy forward test.';
+  const pick = (k: string) => (v: string) => setQuery({ [k]: v, page: null }, { push: true });
   return (
     <>
-      <div className="toolbar">
-        <SearchField
-          label="Filter by coin, CMC id or pair"
-          value={searchText}
-          onChange={onSearch}
-        />
-        <Select
-          label="Status"
-          items={STATUS_FILTERS}
-          value={status}
-          onPick={(v) => setQuery({ status: v, page: null }, { push: true })}
-        />
-        <Select
-          label="Spot / Futures"
-          items={ELIG_FILTERS}
-          value={elig}
-          onPick={(v) => setQuery({ elig: v, page: null }, { push: true })}
-        />
-        <Select
-          label="Coverage"
-          items={COVERAGE_FILTERS}
-          value={cov}
-          onPick={(v) => setQuery({ cov: v, page: null }, { push: true })}
-        />
-        <Select
-          label="Flags"
-          items={FLAG_FILTERS}
-          value={flags}
-          onPick={(v) => setQuery({ flags: v, page: null }, { push: true })}
-          title="Review flags are kept in every count; this only filters the table"
-        />
-        <label className="select-field" title="UTC date of the CMC crawl (the event's date), from">
-          <span>From</span>
-          <input
-            type="date"
-            value={from}
-            onChange={(e) => setQuery({ from: e.target.value, page: null }, { push: true })}
-          />
-        </label>
-        <label className="select-field" title="UTC date of the CMC crawl, to (inclusive)">
-          <span>To</span>
-          <input
-            type="date"
-            value={to}
-            onChange={(e) => setQuery({ to: e.target.value, page: null }, { push: true })}
-          />
-        </label>
-        <Seg
-          label="Stars"
-          items={STAR_FILTERS}
-          value={stars}
-          onPick={(v) => setQuery({ stars: v, page: null }, { push: true })}
-        />
+      {data ? <FreshnessBar sum={data.sum} loadedAt={loadedAt} now={now} /> : null}
+      <div className="toolbar obs-toolbar">
+        <Seg label="Venue" items={VENUES} value={venue} onPick={(v) => setQuery({ venue: v === 'spot' ? null : v }, { push: true })} />
+        <SearchField label="Filter by coin, CMC id or pair" value={searchText} onChange={onSearch} />
+        <Seg label="Stars" items={STAR_FILTERS} value={stars} onPick={pick('stars')} />
+        {venue !== 'futures' ? (
+          <Select label="Spot status" items={STATUS_FILTERS} value={status} onPick={pick('status')} />
+        ) : null}
+        {venue !== 'spot' ? (
+          <Select label="Futures status" items={FUT_FILTERS} value={fut} onPick={pick('fut')} />
+        ) : null}
+        <details className="obs-more" open={moreActive > 0 || undefined}>
+          <summary>{`More filters${moreActive ? ` (${moreActive})` : ''}`}</summary>
+          <div className="obs-more-body">
+            <Select label="Listing evidence" items={ELIG_FILTERS} value={elig} onPick={pick('elig')} title="Spot at the signal and Futures listing snapshots" />
+            <Select label="Coverage" items={COVERAGE_FILTERS} value={cov} onPick={pick('cov')} />
+            <Select label="Flags" items={FLAG_FILTERS} value={flags} onPick={pick('flags')} title="Review flags stay in every count; this only filters the table" />
+            <label className="select-field" title="UTC date of the CMC crawl (the event's date), from">
+              <span>Crawl from</span>
+              <input type="date" value={from} onChange={(e) => pick('from')(e.target.value)} />
+            </label>
+            <label className="select-field" title="UTC date of the CMC crawl, to (inclusive)">
+              <span>to</span>
+              <input type="date" value={to} onChange={(e) => pick('to')(e.target.value)} />
+            </label>
+          </div>
+        </details>
       </div>
+      <Legend />
       {error ? <div className="banner inline">{errorMessage(error)}</div> : null}
-      <div className="panel flush">
+      <div className="panel flush obs-panel">
         <div className="table-wrap">
           {error ? (
             <LoadError error={error} />

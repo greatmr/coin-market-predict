@@ -6,9 +6,11 @@ import {
   type OnApplicationShutdown,
 } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
+import { InjectDataSource } from '@nestjs/typeorm';
 import { CronJob } from 'cron';
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
+import type { DataSource } from 'typeorm';
 
 import { redact } from '../../common/security/redact.js';
 import { type Clock, systemClock } from '../../common/utils/time.js';
@@ -19,10 +21,23 @@ import { LeaseService } from '../pipeline/lease.service.js';
 import { CutoverService } from '../star-events/cutover.service.js';
 
 import { type ObsRunReport, ObservationUpdateService } from './observation-update.service.js';
+import { CLOSED_BAR_MARGIN_MS, MINUTE_MS } from './observation.constants.js';
 
 export const OBSERVATION_LEASE = 'lbank-observation';
 const LEASE_TTL_MS = 15 * 60_000;
 const CRON_NAME = 'lbank-observation';
+/**
+ * Follow-up runs (processing latency, not a rule): a new observation's reference can be verified as
+ * soon as its start minute has closed (candle final + CLOSED_BAR_MARGIN_MS), so the job runs then
+ * instead of at the next cron tick, and again every FOLLOW_UP_MS while a start younger than
+ * FOLLOW_UP_HORIZON_MS still has no reference (no trade yet, an open minute, a failed request).
+ * Measured before (2026-11-25, SOLV): start 16:07:06.894, trade +0.660 s, first check 16:15:00.
+ */
+export const FOLLOW_UP_MS = 60_000;
+export const FOLLOW_UP_HORIZON_MS = 60 * 60_000;
+const FOLLOW_UP_SLACK_MS = 1_000;
+
+export type ObsRunTrigger = 'schedule' | 'manual' | 'cli' | 'follow-up';
 
 /**
  * Entry point of the observation job for the scheduler, the CLI and the dashboard: one run at a
@@ -34,8 +49,11 @@ export class ObservationService implements OnApplicationBootstrap, OnApplication
   private readonly log = new Logger(ObservationService.name);
   clock: Clock = systemClock;
   private running = false;
+  private followTimer: NodeJS.Timeout | null = null;
+  private followAt: number | null = null;
 
   constructor(
+    @InjectDataSource() private readonly db: DataSource,
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
     private readonly registry: SchedulerRegistry,
     private readonly leases: LeaseService,
@@ -63,6 +81,69 @@ export class ObservationService implements OnApplicationBootstrap, OnApplication
 
   onApplicationShutdown() {
     if (this.registry.doesExist('cron', CRON_NAME)) void this.registry.getCronJob(CRON_NAME).stop();
+    if (this.followTimer) clearTimeout(this.followTimer);
+    this.followTimer = null;
+    this.followAt = null;
+  }
+
+  private get followUpsEnabled() {
+    return this.cfg.SCHEDULER_ENABLED && this.cfg.LBANK_OBSERVATION_ENABLED;
+  }
+
+  /**
+   * The earliest moment a follow-up run can verify a pending reference: the close of the earliest
+   * pending start minute (plus the closed-bar margin), or one FOLLOW_UP_MS from now when that
+   * minute has closed already. Null when no young observation awaits its reference.
+   */
+  async nextFollowUpAt(nowMs: number): Promise<number | null> {
+    const rows: Array<{ start: Date | null }> = await this.db.query(
+      `SELECT min(observation_start) AS start FROM lbank_observation
+        WHERE provider_id = $1 AND finalized_at IS NULL AND reference_status = 'PENDING'
+          AND observation_start IS NOT NULL AND observation_start > $2`,
+      [this.providerId, new Date(nowMs - FOLLOW_UP_HORIZON_MS)],
+    );
+    const start = rows[0]?.start ? new Date(rows[0].start).getTime() : null;
+    if (start === null) return null;
+    const closes =
+      Math.floor(start / MINUTE_MS) * MINUTE_MS +
+      MINUTE_MS +
+      CLOSED_BAR_MARGIN_MS +
+      FOLLOW_UP_SLACK_MS;
+    return closes > nowMs ? closes : nowMs + FOLLOW_UP_MS;
+  }
+
+  /** Called after the intake opened observations (pipeline `observe` stage) and after every run. */
+  async nudge(): Promise<void> {
+    if (!this.followUpsEnabled) return;
+    const at = await this.nextFollowUpAt(this.clock.now().getTime());
+    if (at !== null) this.followUpAt(at);
+  }
+
+  private followUpAt(at: number) {
+    // Keep the earliest timer; a later need is re-checked after that run.
+    if (this.followAt !== null && this.followAt <= at) return;
+    if (this.followTimer) clearTimeout(this.followTimer);
+    this.followAt = at;
+    this.followTimer = setTimeout(
+      () => {
+        this.followTimer = null;
+        this.followAt = null;
+        void this.followUp();
+      },
+      Math.max(0, at - Date.now()),
+    );
+    this.followTimer.unref?.();
+  }
+
+  private async followUp() {
+    try {
+      const r = await this.runNow('follow-up');
+      // Skipped (another run holds the lease): look again after it.
+      if ('skipped' in r) this.followUpAt(Date.now() + FOLLOW_UP_MS);
+    } catch (err) {
+      this.log.error(`LBank observation follow-up run failed: ${redact(err)}`);
+      this.followUpAt(Date.now() + FOLLOW_UP_MS);
+    }
   }
 
   private async tick() {
@@ -77,9 +158,7 @@ export class ObservationService implements OnApplicationBootstrap, OnApplication
   }
 
   /** One run now under the observation lease (skipped when another run holds it). */
-  async runNow(
-    trigger: 'schedule' | 'manual' | 'cli',
-  ): Promise<ObsRunReport | { skipped: string }> {
+  async runNow(trigger: ObsRunTrigger): Promise<ObsRunReport | { skipped: string }> {
     if (this.running) return { skipped: 'a run is already in progress in this process' };
     const holder = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
     if (!(await this.leases.acquire(OBSERVATION_LEASE, holder, LEASE_TTL_MS)))
@@ -96,6 +175,7 @@ export class ObservationService implements OnApplicationBootstrap, OnApplication
       clearInterval(beat);
       this.running = false;
       await this.leases.release(OBSERVATION_LEASE, holder).catch(() => undefined);
+      if (trigger !== 'cli') await this.nudge().catch(() => undefined);
     }
   }
 

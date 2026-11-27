@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { FUTURES_STATUSES } from '../../lbank-observation/futures-rules.js';
 import {
   COVERAGE_FILTERS,
   ELIGIBILITY_CLASSES,
@@ -21,6 +22,8 @@ export const ObservationFilterSchema = z.object({
   stars: z.coerce.number().int().min(1).max(3).optional(),
   coverage: z.enum(COVERAGE_FILTERS).optional(),
   flags: z.enum(FLAG_FILTERS).optional(),
+  /** The Futures side's status (rules lbank-futures-sampled-1). */
+  futures: z.enum(FUTURES_STATUSES).optional(),
   from: isoDateTime.optional(),
   to: isoDateTime.optional(),
   search: z.string().trim().max(64).optional(),

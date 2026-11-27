@@ -34,6 +34,12 @@ with Spot / Futures evidence around the signal (Futures as listing evidence only
 forward test finishes its pre-cutover events, records an explicit terminal outcome for each, and
 then retires. Observation only: no trades, stops, targets, fees, funding or profit.
 
+Added 2026-11-27 (`docs/adr/0011-lbank-futures-sampled.md`): a separate **LBank Futures sampled
+observation** next to the Spot one (same event and start, its own contract, reference and status).
+LBank publishes no Futures history, so it samples LBank's official market snapshot every minute: a
+Futures value is a real trade price with a time range, extremes are bounds, and only events detected
+after that deploy can have one. Spot results are unchanged; the two are never mixed.
+
 Changed 2026-11-24 (`docs/adr/0008-storage-scope.md`, D4): the Eligible, Needs review and Excluded
 pages and exports are gone. Every coin is still screened each hour and kept in the coin registry,
 but only what the strategy found (the Review Queue) is stored per coin; everything else is counted

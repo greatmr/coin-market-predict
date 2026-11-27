@@ -30,7 +30,46 @@ export type ObsSort =
   | 'lowest'
   | 'referenceDelay'
   | 'coverage'
-  | 'symbol';
+  | 'symbol'
+  | 'futuresHighest'
+  | 'futuresLowest';
+
+export type FuturesStatus =
+  | 'PENDING'
+  | 'ACTIVE'
+  | 'CLOSED'
+  | 'NO_REFERENCE'
+  | 'HISTORY_UNAVAILABLE'
+  | 'NO_CONTRACT'
+  | 'MAPPING_AMBIGUOUS'
+  | 'MAPPING_UNKNOWN';
+
+/** A Futures trade known only by its price and a time bracket (strictly after / before). */
+export interface Bracketed {
+  price: string;
+  after: string;
+  before: string;
+}
+
+/** The Futures side (rules lbank-futures-sampled-1): sampled, never the Spot method. */
+export interface FuturesSampled {
+  rulesVersion: string;
+  status: FuturesStatus;
+  provisional: boolean;
+  mapping: 'PENDING' | 'OK' | 'AMBIGUOUS' | 'NONE' | 'UNKNOWN' | string;
+  contract: string | null;
+  reasons: string[];
+  flags: string[];
+  reference: Bracketed | null;
+  highest: (Bracketed & { pct: string | null }) | null;
+  lowest: (Bracketed & { pct: string | null }) | null;
+  samplesInWindow: number;
+  bracketedInWindow: number;
+  maxGapMs: number;
+  sampledThrough: string | null;
+  lastUpdateAt: string | null;
+  finalizedAt: string | null;
+}
 
 export interface Gap {
   from: string;
@@ -114,6 +153,36 @@ export interface ObservationRow {
   coinEvents: number;
   overlapping: number;
   isLive: boolean;
+  /** Futures listing evidence is `futures`; the Futures result is this. */
+  futuresSampled: FuturesSampled | null;
+}
+
+export interface Timeline {
+  crawlAt: string;
+  pipelineRunId: string | null;
+  pipelineStages: Array<{
+    stage: string;
+    status: string;
+    startedAt: string;
+    finishedAt: string | null;
+    durationMs: number | null;
+    attempts: number;
+  }>;
+  publishedAt: string | null;
+  eventCommittedAt: string | null;
+  startMinuteReadableAt: string | null;
+  referenceTradeAt: string | null;
+  marketDelayMs: number | null;
+  referenceCheck: {
+    minute: string;
+    status: string;
+    firstCheckedAt: string;
+    checkedAt: string;
+    attempts: number;
+    stampedWithRunStart: boolean;
+    run: { id: string; trigger: string; startedAt: string; finishedAt: string | null } | null;
+  } | null;
+  processingDelayMs: number | null;
 }
 
 /** GET /api/observations/:id */
@@ -129,6 +198,14 @@ export interface ObservationDetail extends ObservationRow {
     rank: number | null;
     rulesetVersion: string;
   };
+  timeline: Timeline;
+  futuresEvidence: {
+    priceSource: string;
+    mappingEvidence: Record<string, unknown>;
+    fold: Record<string, unknown>;
+    createdAt: string;
+    lastSample: Record<string, unknown> | null;
+  } | null;
   actionableEvidence: Record<string, unknown> | null;
   referenceEvidence: Record<string, unknown> | null;
   extremesEvidence: Record<string, ExtremeEvidence | null> | null;
@@ -276,6 +353,21 @@ export interface ObservationSummary {
       overlappingPairs: number;
     };
   };
+  futures: {
+    rulesVersion: string;
+    priceSource: string;
+    byStatus: Partial<Record<FuturesStatus, number>>;
+    lastPoll: { fetchedAt: string; serverAt: string | null; ok: boolean; error: string | null } | null;
+  };
+}
+
+/** GET /api/observations/version */
+export interface ObservationVersion {
+  lastRunId: string | null;
+  lastRunStatus: string | null;
+  lastRunFinishedAt: string | null;
+  lastChangeAt: string | null;
+  observations: number;
 }
 
 export interface LegacyStatus {

@@ -77,17 +77,31 @@ export const GAP_TEXT: Record<string, string> = {
   TRADES_UNVERIFIED: 'trades of a needed minute not verified',
 };
 
+/**
+ * Review flags: [short label, plain explanation]. Interpretation aids, not proof of an error; a
+ * flagged observation stays in every count. Overlapping windows are not a flag (see Overlaps).
+ */
 export const FLAG: Record<string, [string, string]> = {
   REFERENCE_DELAYED: [
     'Delayed',
-    'At least one whole minute after the start passed without a trade',
+    'At least one whole minute after the window start passed without a trade before the reference trade.',
   ],
   REFERENCE_SAME_MS_TIE: [
     'Same-ms tie',
     'Other trades share the reference’s millisecond at another price (LBank’s order used)',
   ],
-  SINGLE_TRADE_HIGH: ['Thin high', 'The highest price was set in a minute with exactly one trade'],
-  SINGLE_TRADE_LOW: ['Thin low', 'The lowest price was set in a minute with exactly one trade'],
+  SINGLE_TRADE_HIGH: [
+    'Thin high',
+    'The highest verified price occurred in a minute with exactly one trade.',
+  ],
+  SINGLE_TRADE_LOW: [
+    'Thin low',
+    'The lowest verified price occurred in a minute with exactly one trade.',
+  ],
+  FUTURES_PRICE_DEVIATION_FROM_CMC: [
+    'Futures vs CMC',
+    'The Futures reference differs more than 25 % from the CMC price: check the contract is this coin.',
+  ],
   PRICE_DEVIATION_FROM_CMC: [
     'CMC deviation',
     'The reference differs more than 25 % from the CMC price: review the pair',
@@ -98,7 +112,47 @@ export const FLAG: Record<string, [string, string]> = {
   ],
 };
 
+/** The Futures side (rules lbank-futures-sampled-1): sampled snapshots, weaker than Spot. */
+export const FUT_STATUS: StatusMap = {
+  PENDING: ['', 'Pending'],
+  ACTIVE: ['accent', 'Sampling'],
+  CLOSED: ['good', 'Closed (sampled)'],
+  NO_REFERENCE: ['warning', 'No sampled trade'],
+  HISTORY_UNAVAILABLE: ['', 'Not sampled at start'],
+  NO_CONTRACT: ['', 'No Futures contract'],
+  MAPPING_AMBIGUOUS: ['serious', 'Contract ambiguous'],
+  MAPPING_UNKNOWN: ['warning', 'Contract unknown'],
+};
+
+/** Why a Futures value is missing, in words (the exact limitation, never a guess). */
+export const FUT_STATUS_TEXT: Record<string, string> = {
+  PENDING: 'waiting for the window start or the contract mapping',
+  ACTIVE: 'window running: sampled values are provisional',
+  CLOSED: 'window over: values as sampled (bounds, never FINAL)',
+  NO_REFERENCE:
+    'window over without a provable Futures trade inside it (no snapshot pair with rising turnover)',
+  HISTORY_UNAVAILABLE:
+    'the contract was not being sampled at the window start, and LBank publishes no Futures trade or candle history to fill it',
+  NO_FUTURES_CONTRACT: 'no LBank Futures contract for this coin',
+  NO_CONTRACT: 'no LBank Futures contract for this coin',
+  MAPPING_AMBIGUOUS: 'the contract cannot be tied to this CMC id',
+  MAPPING_UNKNOWN: 'the listing evidence needed for the mapping was not captured',
+};
+
 const REASON: Record<string, string> = {
+  FUTURES_MAPPING_PENDING: 'Futures contract not mapped yet',
+  FUTURES_EVIDENCE_MISSING: 'Futures listing evidence was not captured near the signal',
+  FUTURES_LIST_UNKNOWN: 'CMC’s LBank Futures list was not verified at the signal',
+  NO_FUTURES_CONTRACT: 'no LBank Futures contract for this coin',
+  FUTURES_TICKER_ONLY:
+    'LBank lists a contract with this ticker, but CMC does not attribute it to this coin',
+  FUTURES_NOT_IN_LBANK_LIST: 'CMC lists a contract that LBank’s own list does not have',
+  MULTIPLE_FUTURES_CONTRACTS: 'several Futures contracts are attributed to this coin',
+  FUTURES_NOT_SAMPLED_AT_START:
+    'the contract was not sampled at the window start (LBank serves no Futures history)',
+  FUTURES_REFERENCE_PENDING: 'no Futures trade proven inside the window yet',
+  NO_BRACKETED_FUTURES_TRADE: 'no Futures trade proven inside the window',
+  CONTRACT_MISSING_FROM_MARKET_DATA: 'the contract disappeared from LBank’s market data',
   MAPPING_PENDING: 'LBank pair not decided yet',
   NO_USDT_PAIR: 'no LBank USDT pair for this coin',
   MULTIPLE_USDT_PAIRS: 'several LBank USDT pairs: not certain which is this coin',
@@ -140,6 +194,9 @@ export function obsReasonText(code: string): string {
   if (!detail) return base;
   return `${base}: ${LISTING_REASON[detail] ?? humanize(detail).toLowerCase()}`;
 }
+
+/** A duration without sign: "0.660 s", "8 min 32 s", "2 h 05 min". */
+export const spanText = (ms: number): string => delayText(Math.max(0, ms)).slice(1);
 
 /** "+7.67 s", "+12 min 04 s", "+45 min 37 s" (exact value in the tooltip). */
 export function delayText(ms: number): string {
