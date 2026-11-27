@@ -157,6 +157,24 @@ CREATE TEMP VIEW survivor_fp AS
     FROM lbank_spot_trade_minute x WHERE x.pair_id NOT IN (SELECT id FROM t_pair);
 CREATE TEMP TABLE fp_before ON COMMIT DROP AS SELECT * FROM survivor_fp;
 
+-- Fingerprint of exactly the rows deleted below (to prove a restore of the export is exact).
+SELECT 'target' AS kind, t, n, fp FROM (
+  SELECT 'lbank_obs_event' AS t, count(*) AS n, md5(coalesce(string_agg(row_to_json(x)::text, '|' ORDER BY x.id), '')) AS fp FROM lbank_obs_event x WHERE x.id IN (SELECT id FROM t_event)
+  UNION ALL SELECT 'lbank_observation', count(*), md5(coalesce(string_agg(row_to_json(x)::text, '|' ORDER BY x.id), '')) FROM lbank_observation x WHERE x.id IN (SELECT id FROM t_obs)
+  UNION ALL SELECT 'lbank_observation_result', count(*), md5(coalesce(string_agg(row_to_json(x)::text, '|' ORDER BY x.id), '')) FROM lbank_observation_result x WHERE x.observation_id IN (SELECT id FROM t_obs)
+  UNION ALL SELECT 'lbank_obs_rules_change', count(*), md5(coalesce(string_agg(row_to_json(x)::text, '|' ORDER BY x.id), '')) FROM lbank_obs_rules_change x WHERE x.observation_id IN (SELECT id FROM t_obs)
+  UNION ALL SELECT 'lbank_futures_observation', count(*), md5(coalesce(string_agg(row_to_json(x)::text, '|' ORDER BY x.id), '')) FROM lbank_futures_observation x WHERE x.id IN (SELECT id FROM t_fut)
+  UNION ALL SELECT 'lbank_futures_reference', count(*), md5(coalesce(string_agg(row_to_json(x)::text, '|' ORDER BY x.id), '')) FROM lbank_futures_reference x WHERE x.futures_observation_id IN (SELECT id FROM t_fut)
+  UNION ALL SELECT 'lbank_futures_book', count(*), md5(coalesce(string_agg(row_to_json(x)::text, '|' ORDER BY x.id), '')) FROM lbank_futures_book x WHERE x.futures_observation_id IN (SELECT id FROM t_fut)
+  UNION ALL SELECT 'lbank_obs_intake_run', count(*), md5(coalesce(string_agg(row_to_json(x)::text, '|' ORDER BY x.id), '')) FROM lbank_obs_intake_run x WHERE x.batch_id IN (SELECT id FROM t_batch)
+  UNION ALL SELECT 'lbank_futures_poll', count(*), md5(coalesce(string_agg(row_to_json(x)::text, '|' ORDER BY x.id), '')) FROM lbank_futures_poll x WHERE x.id IN (SELECT id FROM t_poll)
+  UNION ALL SELECT 'lbank_futures_sample', count(*), md5(coalesce(string_agg(row_to_json(x)::text, '|' ORDER BY x.contract, x.server_at), '')) FROM lbank_futures_sample x WHERE (x.contract, x.server_at) IN (SELECT contract, server_at FROM t_sample)
+  UNION ALL SELECT 'lbank_spot_candle', count(*), md5(coalesce(string_agg(row_to_json(x)::text, '|' ORDER BY x.pair_id, x.open_time), '')) FROM lbank_spot_candle x WHERE x.pair_id IN (SELECT id FROM t_pair)
+  UNION ALL SELECT 'lbank_spot_trade', count(*), md5(coalesce(string_agg(row_to_json(x)::text, '|' ORDER BY x.pair_id, x.trade_id), '')) FROM lbank_spot_trade x WHERE x.pair_id IN (SELECT id FROM t_pair)
+  UNION ALL SELECT 'lbank_spot_trade_minute', count(*), md5(coalesce(string_agg(row_to_json(x)::text, '|' ORDER BY x.pair_id, x.minute_at), '')) FROM lbank_spot_trade_minute x WHERE x.pair_id IN (SELECT id FROM t_pair)
+  UNION ALL SELECT 'lbank_spot_pair', count(*), md5(coalesce(string_agg(row_to_json(x)::text, '|' ORDER BY x.id), '')) FROM lbank_spot_pair x WHERE x.id IN (SELECT id FROM t_pair)
+) z ORDER BY t;
+
 -- ── Targeted recovery export (exactly the rows deleted below, same snapshot) ───────────────
 \copy (SELECT x.* FROM lbank_obs_event x WHERE x.id IN (SELECT id FROM t_event) ORDER BY x.id) TO 'lbank_obs_event.csv' WITH (FORMAT csv, HEADER)
 \copy (SELECT x.* FROM lbank_observation x WHERE x.id IN (SELECT id FROM t_obs) ORDER BY x.id) TO 'lbank_observation.csv' WITH (FORMAT csv, HEADER)
