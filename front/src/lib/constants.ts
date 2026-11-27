@@ -79,11 +79,11 @@ export const STAGES: readonly (readonly [string, string])[] = [
   ['lbank', 'LBank'],
   ['daily', 'Daily rows'],
   ['scan', 'Scan'],
+  ['observe', 'LBank intake'],
   ['venues', 'Venues'],
   ['export', 'Export'],
   ['notify', 'Notify'],
   ['forward', 'Forward test (legacy)'],
-  ['observe', 'LBank intake'],
 ];
 
 const REASON_TEXT: Record<string, string> = {

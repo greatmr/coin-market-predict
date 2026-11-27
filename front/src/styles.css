@@ -4843,58 +4843,78 @@ fieldset.plain {
 .obs-more {
   position: relative;
 }
-.obs-more > summary {
-  list-style: none;
-  cursor: pointer;
+.obs-more-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   padding: 7px 14px;
   border-radius: 999px;
   border: 1px solid var(--edge);
   background: var(--glass);
   color: var(--text-2);
-  font-size: 12.5px;
+  font: 500 12.5px var(--font);
+  cursor: pointer;
+  white-space: nowrap;
 }
-.obs-more > summary::-webkit-details-marker {
-  display: none;
-}
-.obs-more[open] > summary {
+.obs-more-btn:hover,
+.obs-more-btn[aria-expanded='true'] {
   border-color: var(--accent);
   color: var(--text);
 }
-.obs-more-body {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 16px;
-  margin-top: 10px;
-  padding: 10px 12px;
-  border: 1px solid var(--edge);
-  border-radius: 12px;
-  background: var(--glass-solid);
-}
-.obs-legend {
-  font-size: 13px;
-  color: var(--text-2);
-}
-.obs-legend > summary {
-  cursor: pointer;
+.obs-more-btn.on {
+  border-color: var(--accent);
   color: var(--accent);
-  width: fit-content;
 }
-.obs-legend dl {
+.obs-more-btn i {
+  font-style: normal;
+  font-size: 10px;
+  color: var(--muted);
+}
+/* Floats over the page under its button: opening it never shifts the toolbar or the table. */
+.obs-more-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  width: min(460px, calc(100vw - 32px));
+  padding: 14px;
+  border: 1px solid var(--edge-strong);
+  border-radius: 14px;
+  background: var(--glass-solid);
+  box-shadow: var(--shadow-lift, 0 12px 32px rgba(0, 0, 0, 0.18));
+}
+.obs-more-grid {
   display: grid;
-  grid-template-columns: minmax(130px, max-content) minmax(0, 1fr);
-  gap: 6px 16px;
-  margin: 10px 0 0;
-  max-width: 110ch;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 14px;
 }
-.obs-legend dl > div {
-  display: contents;
+.obs-more-grid .select-field {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
 }
-.obs-legend dt {
-  font-weight: 600;
-  color: var(--text);
+.obs-more-grid .select-field select,
+.obs-more-grid .select-field input {
+  width: 100%;
 }
-.obs-legend dd {
-  margin: 0;
+.obs-more-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+@media (max-width: 720px) {
+  .obs-more-pop {
+    position: fixed;
+    top: auto;
+    left: 16px;
+    right: 16px;
+    bottom: calc(84px + env(safe-area-inset-bottom, 0px));
+    width: auto;
+  }
+  .obs-more-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 .obs-panel table {
   font-size: 14px;

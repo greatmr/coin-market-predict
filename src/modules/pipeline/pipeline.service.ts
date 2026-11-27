@@ -719,6 +719,40 @@ export class PipelineService {
       };
       await saveMetrics();
 
+      // LBank Spot Price Observation intake (ADR-0009), right after the scan committed: batches
+      // detected at or after the cutover open their events here, before venues, export, Telegram and
+      // the legacy forward test (which leaves them alone), so the observation exists seconds after
+      // publication (at 00:07 UTC the forward stage alone took 43–131 s). It reads only the committed
+      // Review Queue. Never fails the run; the LBank candles are collected by the observation's job.
+      const observe = await stage(
+        'observe',
+        () =>
+          this.observationIntake.intakeBatch(batchId!, {
+            now: this.clock.now(),
+            pipelineRunId: runId,
+          }),
+        { skipIfDone: false },
+      ).catch((err) => {
+        degraded.push('LBank observation intake failed');
+        this.log.warn(`LBank observation intake failed: ${redact(err)}`);
+        return null;
+      });
+      if (observe)
+        metrics.observe =
+          'skipped' in observe
+            ? { skipped: observe.skipped }
+            : {
+                created: observe.created.length,
+                ignored: observe.ignored.length,
+                rejected: observe.rejected.length,
+              };
+      // New observations: verify their references as soon as the start minute has closed, not at
+      // the observation job's next cron tick (latency only; never changes which trade qualifies).
+      if (observe && !('skipped' in observe) && observe.created.length)
+        await this.observations.nudge().catch((err: unknown) => {
+          this.log.warn(`LBank observation follow-up not scheduled: ${redact(err)}`);
+        });
+
       await stage(
         'venues',
         async () => {
@@ -803,38 +837,6 @@ export class PipelineService {
           update: 'skipped' in forward.update ? forward.update.skipped : forward.update.status,
         };
       }
-
-      // LBank Spot Price Observation intake (ADR-0009): batches detected at or after the cutover
-      // open their events here (the legacy trigger above leaves them alone). Never fails the run;
-      // the LBank candles are collected by the observation's own job.
-      const observe = await stage(
-        'observe',
-        () =>
-          this.observationIntake.intakeBatch(batchId!, {
-            now: this.clock.now(),
-            pipelineRunId: runId,
-          }),
-        { skipIfDone: false },
-      ).catch((err) => {
-        degraded.push('LBank observation intake failed');
-        this.log.warn(`LBank observation intake failed: ${redact(err)}`);
-        return null;
-      });
-      if (observe)
-        metrics.observe =
-          'skipped' in observe
-            ? { skipped: observe.skipped }
-            : {
-                created: observe.created.length,
-                ignored: observe.ignored.length,
-                rejected: observe.rejected.length,
-              };
-      // New observations: verify their references as soon as the start minute has closed, not at
-      // the observation job's next cron tick (latency only; never changes which trade qualifies).
-      if (observe && !('skipped' in observe) && observe.created.length)
-        await this.observations.nudge().catch((err: unknown) => {
-          this.log.warn(`LBank observation follow-up not scheduled: ${redact(err)}`);
-        });
 
       // Storage policy runs after delivery; a retention problem never invalidates the run.
       metrics.retention = await this.retention

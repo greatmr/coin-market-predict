@@ -395,46 +395,62 @@ function FreshnessBar({
   );
 }
 
-function Legend() {
+/**
+ * Secondary filters in a floating panel under its button: opening it never moves the toolbar or
+ * the table. Closes on an outside click, Escape, or "Done"; the button shows how many are set.
+ */
+function MoreFilters({
+  active,
+  onClear,
+  children,
+}: {
+  active: number;
+  onClear: () => void;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDown = (e: PointerEvent) => {
+      if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('pointerdown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
   return (
-    <details className="obs-legend">
-      <summary>What the columns, flags and states mean</summary>
-      <dl>
-        <dt>Provisional / Final</dt>
-        <dd>
-          Provisional: the 168-hour window is still running or a needed trade is not verified yet;
-          values can change. Final (Spot only): the window is over and every needed trade was
-          verified. A job that succeeded or 168 hours passing is not enough on its own.
-        </dd>
-        <dt>Data through / last job</dt>
-        <dd>
-          Data through is how far LBank data has been fetched; the last job may only have
-          recomputed stored data.
-        </dd>
-        <dt>Reference delay</dt>
-        <dd>
-          Market time from the window start to the first trade (e.g. +0.660 s). It is not how long
-          the page took to show it; Details shows that separately.
-        </dd>
-        {(['REFERENCE_DELAYED', 'SINGLE_TRADE_HIGH', 'SINGLE_TRADE_LOW'] as const).map((k) => (
-          <div key={k}>
-            <dt>{FLAG[k]![0]}</dt>
-            <dd>{FLAG[k]![1]}</dd>
+    <div className="obs-more" ref={box}>
+      <button
+        type="button"
+        className={`obs-more-btn${active ? ' on' : ''}`}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        onClick={() => setOpen((o) => !o)}
+      >
+        {`More filters${active ? ` · ${active}` : ''}`}
+        <i aria-hidden="true">{open ? '▴' : '▾'}</i>
+      </button>
+      {open ? (
+        <div className="obs-more-pop" role="dialog" aria-label="More filters">
+          <div className="obs-more-grid">{children}</div>
+          <div className="obs-more-foot">
+            <button type="button" className="btn small" onClick={onClear} disabled={!active}>
+              Clear
+            </button>
+            <button type="button" className="btn small primary" onClick={() => setOpen(false)}>
+              Done
+            </button>
           </div>
-        ))}
-        <dt>Flags are not errors</dt>
-        <dd>
-          They help interpretation; flagged observations stay in every count. Overlapping windows
-          (same coin, windows sharing time) are shown separately and are not a flag.
-        </dd>
-        <dt>Spot vs Futures</dt>
-        <dd>
-          Spot: verified LBank Spot trades. Futures: LBank publishes no Futures trade history, so
-          Futures values come from minute snapshots — a sampled trade with a time range, highest and
-          lowest as bounds (≥ / ≤), never Final. Each venue is measured against its own reference.
-        </dd>
-      </dl>
-    </details>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -794,24 +810,25 @@ export default function Observation() {
         {venue !== 'spot' ? (
           <Select label="Futures status" items={FUT_FILTERS} value={fut} onPick={pick('fut')} />
         ) : null}
-        <details className="obs-more" open={moreActive > 0 || undefined}>
-          <summary>{`More filters${moreActive ? ` (${moreActive})` : ''}`}</summary>
-          <div className="obs-more-body">
-            <Select label="Listing evidence" items={ELIG_FILTERS} value={elig} onPick={pick('elig')} title="Spot at the signal and Futures listing snapshots" />
-            <Select label="Coverage" items={COVERAGE_FILTERS} value={cov} onPick={pick('cov')} />
-            <Select label="Flags" items={FLAG_FILTERS} value={flags} onPick={pick('flags')} title="Review flags stay in every count; this only filters the table" />
-            <label className="select-field" title="UTC date of the CMC crawl (the event's date), from">
-              <span>Crawl from</span>
-              <input type="date" value={from} onChange={(e) => pick('from')(e.target.value)} />
-            </label>
-            <label className="select-field" title="UTC date of the CMC crawl, to (inclusive)">
-              <span>to</span>
-              <input type="date" value={to} onChange={(e) => pick('to')(e.target.value)} />
-            </label>
-          </div>
-        </details>
+        <MoreFilters
+          active={moreActive}
+          onClear={() =>
+            setQuery({ elig: null, cov: null, flags: null, from: null, to: null, page: null }, { push: true })
+          }
+        >
+          <Select label="Listing evidence" items={ELIG_FILTERS} value={elig} onPick={pick('elig')} title="Spot at the signal and Futures listing snapshots" />
+          <Select label="Coverage" items={COVERAGE_FILTERS} value={cov} onPick={pick('cov')} />
+          <Select label="Flags" items={FLAG_FILTERS} value={flags} onPick={pick('flags')} title="Review flags stay in every count; this only filters the table" />
+          <label className="select-field" title="UTC date of the CMC crawl (the event's date), from">
+            <span>Crawl from (UTC)</span>
+            <input type="date" value={from} onChange={(e) => pick('from')(e.target.value)} />
+          </label>
+          <label className="select-field" title="UTC date of the CMC crawl, to (inclusive)">
+            <span>Crawl to (UTC)</span>
+            <input type="date" value={to} onChange={(e) => pick('to')(e.target.value)} />
+          </label>
+        </MoreFilters>
       </div>
-      <Legend />
       {error ? <div className="banner inline">{errorMessage(error)}</div> : null}
       <div className="panel flush obs-panel">
         <div className="table-wrap">

@@ -99,6 +99,21 @@ export const GUIDES: Record<GuideKey, Guide> = {
       'Each 1, 2 or 3-star event found by the hourly screen since the cutover is followed for exactly 168 hours from the moment the signal could be used, on LBank Spot (rules lbank-spot-obs-2, verified trades) and separately on LBank Futures (rules lbank-futures-sampled-1, sampled snapshots). Use Spot / Futures / Compare above the table to switch.',
     sections: [
       {
+        h: 'Reading the table',
+        items: [
+          'Spot / Futures / Compare switches the venue. Compare stacks both venues in the same cells; each is measured only against its own reference.',
+          'Window start: when the Review Queue holding the signal was published; underneath, how long after the CMC crawl that was (about 5 s normally, about 8.5 min at 00:07 UTC when the daily rows are refreshed first).',
+          'Reference: the first verified trade after the start; underneath, its market delay (e.g. +0.660 s). That is market time, not how long the page took to show it: Details → Timing shows those separately.',
+          'Provisional: the 168-hour window is still running or a needed trade is not verified yet, so values can change. Final (Spot only): the window is over and every needed trade was verified. A job that succeeded, or 168 hours passing, is not enough on its own.',
+          'Sampling (Futures): the window is running and LBank Futures snapshots are being collected; it becomes Closed (sampled) at the end and is never Final.',
+          'Status · data · flags: the status, any reason beyond “window running”, data through (how far LBank data has been fetched — the last job may only have recomputed), gaps, review flags and overlapping windows.',
+          'Delayed: at least one whole minute after the window start passed without a trade before the reference trade.',
+          'Thin high: the highest verified price occurred in a minute with exactly one trade. Thin low: the lowest verified price occurred in a minute with exactly one trade.',
+          'Flags are interpretation aids, not proof of an error; flagged observations stay in every count. “N overlapping” is not a flag: it lists the same coin’s other windows that share time with this one.',
+          'More filters (listing evidence, coverage, flags, crawl dates) opens a small panel; the button shows how many are set.',
+        ],
+      },
+      {
         h: 'Events',
         items: [
           'One event per coin, UTC day and star count: a different star count on the same UTC day opens a new event whether the count is higher or lower; the same count again that day adds nothing; a new UTC day starts over.',

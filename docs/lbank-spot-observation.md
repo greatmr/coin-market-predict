@@ -25,12 +25,14 @@ retires (§ 9).
 | Routing                                                                                                                         | —                                                                                | `signal_cutover` (one UTC-midnight `cutover_at` per provider) + `workflowFor(cutover, detected_at)`; database triggers refuse an event in the wrong tracker |
 | Legacy intake (`forward` stage → `ForwardCaptureService.captureBatch`)                                                          | every published batch                                                            | only batches detected **before** the cutover (`forward_event_legacy_intake_guard` refuses the rest)                                                         |
 | Legacy daily High update (`forward` stage, `forward:update`, _Update Highs now_)                                                | every closed UTC day                                                             | unchanged for pre-cutover events; stops when the tracker retires (§ 9)                                                                                      |
-| New intake (`observe` stage, after `forward`)                                                                                   | —                                                                                | batches detected **at or after** the cutover → `lbank_obs_event` + `lbank_observation` in one transaction, with the proven start (§ 2a)                     |
+| New intake (`observe` stage, right after `scan`)                                                                                | —                                                                                | batches detected **at or after** the cutover → `lbank_obs_event` + `lbank_observation` in one transaction, with the proven start (§ 2a)                     |
 | LBank candles, trades, evidence, results                                                                                        | —                                                                                | `lbank-observation` job (own cron `LBANK_OBSERVATION_CRON`, own lease `lbank-observation`), never inside the CMC run                                        |
 | Dashboard                                                                                                                       | `/forward`                                                                       | `/lbank-spot` (_LBank Spot price observation_); `/forward` labelled legacy and hidden from navigation once retired (still reachable, exports kept)          |
 
-Pipeline: discover → collect → lbank → daily → scan → venues → export → notify → **forward**
-(legacy) → **observe** (new intake) → retention. The CMC signal generator, the crawler, daily rows,
+Pipeline: discover → collect → lbank → daily → scan → **observe** (new intake) → venues → export →
+notify → **forward** (legacy) → retention. Since 2026-11-27 the intake runs right after the scan
+commit (before: after `forward`, which at 00:07 UTC took 43–131 s); it reads only the committed
+Review Queue, and the start is still the scan commit. The CMC signal generator, the crawler, daily rows,
 the LBank Spot list, venues, exports and Telegram are untouched; no Tier 1 rule changed
 (`RULESET_VERSION`, `RANKING_RULESET_VERSION` unchanged).
 

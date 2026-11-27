@@ -12,11 +12,11 @@ export const STAGES = [
   'lbank',
   'daily',
   'scan',
+  'observe',
   'venues',
   'export',
   'notify',
   'forward',
-  'observe',
 ] as const;
 export type Stage = (typeof STAGES)[number];
 
