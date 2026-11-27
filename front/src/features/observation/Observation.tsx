@@ -431,46 +431,44 @@ Once-a-minute samples can miss a move between them: observed values, not proof o
   );
 }
 
-/** Each venue's data-through time and how far apart they are (Compare). */
-function CoverageCell({ r }: { r: ObservationRow }) {
+/**
+ * Compare → status and data through, per venue: how far each venue's values reach (each in its own
+ * time base) and, when they are more than a minute apart, by how much (highlighted).
+ */
+function CompareStatus({ r }: { r: ObservationRow }) {
   const c = r.coverageTimes;
   const f = r.futuresSampled;
-  const [label] = f ? (TIME_BASIS[f.throughBasis] ?? [f.throughBasis]) : ['—'];
+  const basis = f ? (TIME_BASIS[f.throughBasis] ?? [f.throughBasis, '']) : null;
+  const futWord = f?.throughBasis === 'LBANK_SNAPSHOT_TIME' ? 'LBank time' : 'observed';
   return (
     <div className="obs-pair">
       <span className="venue">Spot</span>
       <Two
-        v={c.spotDataThrough ? `through ${fmtShort(c.spotDataThrough)}` : 'not fetched'}
-        s="1-min candles"
-        title={`Spot: one-minute candles fetched through ${fmtExact(c.spotDataThrough)} (exclusive); highest and lowest are verified trades before it.${
-          c.spotLastFetchAt
-            ? `
-Last successful LBank fetch ${fmtExact(c.spotLastFetchAt)}.`
-            : ''
-        }`}
-      />
-      <span className="venue">Fut</span>
-      <Two
         v={
-          c.futuresThrough
-            ? `${label === 'observed through' ? 'through' : label} ${fmtShort(c.futuresThrough)}`
-            : '—'
+          <>
+            <Finality final={r.status === 'FINAL'} /> <Lab map={STATUS} k={r.status} />
+          </>
         }
         s={
-          c.differenceMs === null
-            ? 'about once a minute'
-            : c.differs
-              ? `${diffText(c.differenceMs)} vs Spot`
-              : 'within a minute of Spot'
+          c.spotDataThrough ? `data through ${fmtShort(c.spotDataThrough)}` : 'no data fetched yet'
         }
-        tone={c.differs ? 'warn' : undefined}
-        title={`Futures ${label} ${fmtExact(c.futuresThrough)}${f ? ` (${TIME_BASIS[f.throughBasis]?.[1] ?? ''})` : ''}.${
-          c.differenceMs === null
-            ? ''
-            : `
-Futures through − Spot data through = ${diffText(c.differenceMs)}: the two venues' values cover ${c.differs ? 'visibly different spans — compare them with that in mind' : 'spans within one minute of each other (not the same instants)'}.`
-        }`}
+        title={`Spot: one-minute candles fetched through ${fmtExact(c.spotDataThrough)} (exclusive); highest and lowest are verified trades before it.${c.spotLastFetchAt ? `\nLast successful LBank fetch ${fmtExact(c.spotLastFetchAt)}.` : ''}`}
       />
+      <span className="venue">Fut</span>
+      {f ? (
+        <Two
+          v={<Lab map={FUT_STATUS} k={f.status} title={futMissing(f)} />}
+          s={
+            c.futuresThrough
+              ? `${futWord} through ${fmtShort(c.futuresThrough)}${c.differs && c.differenceMs !== null ? ` · ${diffText(c.differenceMs)} vs Spot` : ''}`
+              : '—'
+          }
+          tone={c.differs ? 'warn' : undefined}
+          title={`Futures ${basis?.[0] ?? 'through'} ${fmtExact(c.futuresThrough)} (${basis?.[1] ?? ''}).${c.differenceMs === null ? '' : `\nFutures through − Spot data through = ${diffText(c.differenceMs)}: ${c.differs ? 'the venues’ values cover visibly different spans (more than a minute apart) — not a same-moment comparison' : 'within a minute of each other (still not the same instants)'}.`}`}
+        />
+      ) : (
+        <span className="muted">—</span>
+      )}
     </div>
   );
 }
@@ -946,7 +944,7 @@ export default function Observation() {
             </span>
           ),
           title:
-            'Spot: verified trades. Futures: the highest price our once-a-minute requests observed (a move between samples can be missed). Each vs its own reference, each through its own time (Data through).',
+            'Spot: verified trades. Futures: the highest price our once-a-minute requests observed (a move between samples can be missed). Each vs its own reference, each through its own time (Status · data through).',
           render: (r) => (
             <div className="obs-pair">
               <span className="venue">Spot</span>
@@ -964,7 +962,7 @@ export default function Observation() {
             </span>
           ),
           title:
-            'Spot: verified trades. Futures: the lowest price our once-a-minute requests observed (a move between samples can be missed). Each vs its own reference, each through its own time (Data through).',
+            'Spot: verified trades. Futures: the lowest price our once-a-minute requests observed (a move between samples can be missed). Each vs its own reference, each through its own time (Status · data through).',
           render: (r) => (
             <div className="obs-pair">
               <span className="venue">Spot</span>
@@ -975,31 +973,10 @@ export default function Observation() {
           ),
         },
         {
-          label: 'Data through',
+          label: 'Status · data through',
           title:
-            'How far each venue’s values reach: Spot = one-minute candles fetched (verified trades before it); Futures = our latest observation (old-method rows: LBank’s snapshot time). Highlighted when they differ by more than a minute.',
-          render: (r) => <CoverageCell r={r} />,
-        },
-        {
-          label: 'Status',
-          render: (r) => (
-            <div className="obs-pair">
-              <span className="venue">Spot</span>
-              <span>
-                <Finality final={r.status === 'FINAL'} /> <Lab map={STATUS} k={r.status} />
-              </span>
-              <span className="venue">Fut</span>
-              {r.futuresSampled ? (
-                <Lab
-                  map={FUT_STATUS}
-                  k={r.futuresSampled.status}
-                  title={futMissing(r.futuresSampled)}
-                />
-              ) : (
-                <span className="muted">—</span>
-              )}
-            </div>
-          ),
+            'Each venue’s status and how far its values reach: Spot = one-minute candles fetched (verified trades lie before it); Futures = our latest observation (old-method rows: LBank’s snapshot time). Highlighted, with the difference, when they are more than a minute apart.',
+          render: (r) => <CompareStatus r={r} />,
         },
         details,
       ];
