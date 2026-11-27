@@ -145,4 +145,5 @@ export const PERMISSION_TEXT: Record<Permission, string> = {
   'users:manage': 'Add, change and remove users',
   'pipeline:recover': 'Recover a failed or missed pipeline run',
   'agent:use': 'Ask the Claude agent for its view on a coin (limited runs)',
+  'chat:use': 'Chat with the Claude analyst desk (limited messages per conversation)',
 };

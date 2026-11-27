@@ -41,4 +41,8 @@ describe('dashboard roles', () => {
   it('keeps the Claude coin agent owner-only', () => {
     for (const role of USER_ROLES) expect(can(role, 'agent:use')).toBe(role === 'owner');
   });
+
+  it('keeps the Claude chat owner-only', () => {
+    for (const role of USER_ROLES) expect(can(role, 'chat:use')).toBe(role === 'owner');
+  });
 });

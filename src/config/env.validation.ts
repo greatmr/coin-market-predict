@@ -222,6 +222,8 @@ const schema = z
     AGENT_MAX_BUDGET_USD: z.coerce.number().min(0.1).max(50).default(2),
     /** HOME, configuration and temporary files of the agent's Claude Code process. */
     AGENT_STATE_DIR: z.string().trim().min(1).default('var/agent'),
+    /** Chat (docs/adr/0012-owner-chat.md): user messages allowed in one conversation. */
+    CHAT_MAX_MESSAGES: z.coerce.number().int().min(1).max(200).default(10),
   })
   .superRefine((c, ctx) => {
     if (!c.DATABASE_URL) {

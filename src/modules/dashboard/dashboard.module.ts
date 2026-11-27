@@ -16,6 +16,7 @@ import { VenuesModule } from '../venues/venues.module.js';
 import { AgentController } from './agent.controller.js';
 import { AssetsController } from './assets.controller.js';
 import { AuthController } from './auth.controller.js';
+import { ChatController } from './chat.controller.js';
 import { DashboardController } from './dashboard.controller.js';
 import { ForwardController } from './forward.controller.js';
 import { LbankController } from './lbank.controller.js';
@@ -59,6 +60,7 @@ import { UsersController } from './users.controller.js';
     ForwardController,
     ObservationController,
     AgentController,
+    ChatController,
   ],
 })
 export class DashboardModule {}

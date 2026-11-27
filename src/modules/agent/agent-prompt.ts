@@ -12,19 +12,16 @@ import { AGENT_HORIZON_HOURS } from './agent.constants.js';
 const int = (n: number | string) => new Intl.NumberFormat('en-US').format(Number(n));
 
 /**
- * The agent's instructions. The strategy summary is generated from the strategy module's constants,
- * so it changes with RULESET_VERSION / RANKING_RULESET_VERSION and never restates a threshold by
- * hand. Static text (no dates or ids): identical across runs.
+ * The strategy as the agents must know it, generated from the strategy module's constants so it
+ * follows RULESET_VERSION / RANKING_RULESET_VERSION without hand-edited thresholds. Shared by the
+ * coin agent and the chat.
  */
-export function buildSystemPrompt(): string {
+export function strategyBrief(): string {
   const [w3, w7, w30] = RULES.passWindows;
   const context = RULES.windows.filter(
     (w) => !(RULES.passWindows as readonly number[]).includes(w),
   );
-  const days = AGENT_HORIZON_HOURS / 24;
-  return `You are the coin analyst of Coins Predicts, a personal crypto research tool used by one operator. When the owner asks, you study ONE coin and give your own considered view on whether it is likely to make an outsized upward move (a "pump") within the next ${days} days (${AGENT_HORIZON_HOURS} hours), using only the data your tools return. Your view is research material for the owner's own TradingView chart review: it is not a trading signal or financial advice, and nothing you write places an order.
-
-# The screen behind the data: the Two-Tier VMC strategy (ruleset ${RULESET_VERSION}, ranking ${RANKING_RULESET_VERSION})
+  return `# The screen behind the data: the Two-Tier VMC strategy (ruleset ${RULESET_VERSION}, ranking ${RANKING_RULESET_VERSION})
 - Every hour the crawler stores CoinMarketCap data for every listed coin. VMC = volume ÷ circulating market cap (never fully diluted value).
 - Current VMC = the rolling-24h volume ÷ the circulating market cap of the same observation. Daily VMC = one completed UTC day's volume ÷ that day's market cap. The open UTC day is never used.
 - Tier 1 eligibility: CMC rank ${RULES.rankMin}–${RULES.rankMax}, circulating market cap at least $${int(RULES.minMarketCapUsd)}, listed at least ${RULES.minListingAgeMs / 86_400_000} days, not a stablecoin or tokenized asset, and a tradable LBank Spot pair.
@@ -32,7 +29,19 @@ export function buildSystemPrompt(): string {
 - Stars = the number of YES among the ${RULES.passWindows.join(', ')}-day windows (0–${RULES.passWindows.length}). The Review Queue holds eligible coins with at least one YES, ordered by stars, then weighted points (${w3}d = ${RANKING.points[w3]}, ${w7}d = ${RANKING.points[w7]}, ${w30}d = ${RANKING.points[w30]}), a complete score first, the weighted strength (multiples capped at ${RANKING.strengthCap}, weights ${RANKING.strengthWeights[w3]} / ${RANKING.strengthWeights[w7]} / ${RANKING.strengthWeights[w30]}), then the ${w3}-day multiple.
 - Missing or invalid inputs give N/A or NEEDS_REVIEW with a reason code, never a guess.
 - Tier 2 is the owner's review of the TradingView 1D chart: range low versus top, chart history, prior pump response, the candle state (${CANDLE_STATES.join(' / ')}) and the BTC/ETH market regime (${MARKET_REGIMES.join(' / ')}). A manual trade plan exits after 7 × 24 hours.
-- The Star Event Forward Test records what followed earlier star events: the highest High within ${AGENT_HORIZON_HOURS} hours of detection, as a percentage of the detection price. These are observed maxima, not realized trade returns, and the samples are small.
+- The Star Event Forward Test records what followed earlier star events: the highest High within ${AGENT_HORIZON_HOURS} hours of detection, as a percentage of the detection price. These are observed maxima, not realized trade returns, and the samples are small.`;
+}
+
+/**
+ * The agent's instructions. The strategy summary is generated from the strategy module's constants,
+ * so it changes with RULESET_VERSION / RANKING_RULESET_VERSION and never restates a threshold by
+ * hand. Static text (no dates or ids): identical across runs.
+ */
+export function buildSystemPrompt(): string {
+  const days = AGENT_HORIZON_HOURS / 24;
+  return `You are the coin analyst of Coins Predicts, a personal crypto research tool used by one operator. When the owner asks, you study ONE coin and give your own considered view on whether it is likely to make an outsized upward move (a "pump") within the next ${days} days (${AGENT_HORIZON_HOURS} hours), using only the data your tools return. Your view is research material for the owner's own TradingView chart review: it is not a trading signal or financial advice, and nothing you write places an order.
+
+${strategyBrief()}
 
 # How to work
 1. Call get_coin_trace first, then get_price_history, get_market_regime and get_forward_test_context. Call a tool again only when you need a different time range.

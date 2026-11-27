@@ -22,6 +22,8 @@ import { type ToolDef, invokeTool } from '../mcp/tool-def.js';
 
 import { AGENT_STATE_SUBDIRS, buildAgentEnv } from './agent-env.js';
 import {
+  type AgentChatRequest,
+  type AgentChatResult,
   type AgentRunRequest,
   type AgentRunResult,
   type AgentRunner,
@@ -87,7 +89,7 @@ const short = (v: unknown) => redact(v).slice(0, 500);
 export function consumeMessage<T>(
   acc: RunState<T>,
   msg: SDKMessage,
-  schema: z.ZodType<T>,
+  schema: z.ZodType<T> | null,
 ): RunState<T> {
   if (msg.type === 'system') {
     if (msg.subtype === 'init') {
@@ -141,6 +143,21 @@ export function consumeMessage<T>(
     sawResult: true,
     modelResponded: acc.modelResponded || usage.outputTokens > 0,
   };
+  if (msg.subtype === 'success' && schema === null) {
+    // Chat: the answer is the result text (no structured output).
+    const text = typeof msg.result === 'string' ? msg.result.trim() : '';
+    if (msg.is_error || !text) {
+      const kind = acc.errorKind ?? (msg.is_error ? 'sdk_error' : 'invalid_output');
+      return {
+        ...base,
+        ok: false,
+        errorKind: kind,
+        errorMessage:
+          acc.errorMessage ?? (msg.is_error ? short(msg.result) : describeAgentError(kind)),
+      };
+    }
+    return { ...base, ok: true, output: text as T, errorKind: null, errorMessage: null };
+  }
   if (msg.subtype === 'success') {
     if (msg.structured_output === undefined || msg.structured_output === null) {
       const kind = acc.errorKind ?? (msg.is_error ? 'sdk_error' : 'invalid_output');
@@ -152,7 +169,7 @@ export function consumeMessage<T>(
           acc.errorMessage ?? (msg.is_error ? short(msg.result) : describeAgentError(kind)),
       };
     }
-    const parsed = schema.safeParse(msg.structured_output);
+    const parsed = (schema as z.ZodType<T>).safeParse(msg.structured_output);
     if (!parsed.success)
       return {
         ...base,
@@ -225,7 +242,26 @@ export class ClaudeAgentRunner implements AgentRunner {
     return { available: true, reason: null };
   }
 
-  async run<T>(req: AgentRunRequest<T>): Promise<AgentRunResult<T>> {
+  run<T>(req: AgentRunRequest<T>): Promise<AgentRunResult<T>> {
+    return this.execute({ ...req, schema: req.outputSchema });
+  }
+
+  async chat(req: AgentChatRequest): Promise<AgentChatResult> {
+    const { output, ...rest } = await this.execute<string>({
+      ...req,
+      fallbackModel: null,
+      schema: null,
+    });
+    return { ...rest, text: output };
+  }
+
+  /** Shared run loop: `schema` null = free-text answer (chat), else structured output. */
+  private async execute<T>(
+    req: Omit<AgentRunRequest<T>, 'outputSchema' | 'effort'> & {
+      schema: z.ZodType<T> | null;
+      effort?: AgentRunRequest<T>['effort'];
+    },
+  ): Promise<AgentRunResult<T>> {
     const started = Date.now();
     let state = initialRunState<T>();
     const avail = this.availability();
@@ -273,9 +309,11 @@ export class ClaudeAgentRunner implements AgentRunner {
           settingSources: [],
           strictMcpConfig: true,
           mcpServers: { [AGENT_MCP_SERVER]: agentMcpServer(req.tools) },
-          outputFormat: { type: 'json_schema', schema: toSdkSchema(req.outputSchema) },
+          ...(req.schema
+            ? { outputFormat: { type: 'json_schema' as const, schema: toSdkSchema(req.schema) } }
+            : {}),
           thinking: { type: 'adaptive' },
-          effort: req.effort,
+          ...(req.effort ? { effort: req.effort } : {}),
           maxTurns: req.maxTurns,
           maxBudgetUsd: req.maxBudgetUsd,
           cwd: resolve(this.stateDir, 'workspace'),
@@ -288,7 +326,7 @@ export class ClaudeAgentRunner implements AgentRunner {
         },
       });
       for await (const msg of stream) {
-        state = consumeMessage(state, msg, req.outputSchema);
+        state = consumeMessage(state, msg, req.schema);
         if (state.abort) {
           abort.abort();
           break;

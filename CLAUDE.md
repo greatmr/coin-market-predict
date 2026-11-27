@@ -100,6 +100,10 @@ never real orders. Spec: `docs/strategy-two-tier-vmc.md`. Purpose and open decis
   rolling `AGENT_WINDOW_HOURS` (12), with read-only tools bound to that coin, and stores its view
   in `agent_analysis` (immutable once finished). It never feeds the pipeline, Tier 1 results,
   exports, Telegram or MCP. Auth is the subscription OAuth token only, via `buildAgentEnv()`.
+- **Claude chat** (`src/modules/agent/chat/`, `docs/adr/0012-owner-chat.md`): an owner-only,
+  read-only conversation with the analyst desk (risk manager, pro trader, market data analyst). Its
+  prompt is rebuilt from the strategy constants on every message, so it follows strategy updates;
+  `CHAT_MAX_MESSAGES` (10) owner messages per conversation; model and effort chosen per message.
 - The live chart in the coin details is TradingView widgets in sandboxed cross-origin iframes
   (CSP `frame-src https://www.tradingview-widget.com`); never load third-party scripts into the
   dashboard.

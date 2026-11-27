@@ -30,6 +30,7 @@ export type GuideKey =
   | 'batches'
   | 'access'
   | 'users'
+  | 'chat'
   | 'account';
 
 const NOT_ADVICE =
@@ -377,6 +378,30 @@ export const GUIDES: Record<GuideKey, Guide> = {
           'Pending requests: people who asked the bot for access; approve or decline them.',
           'Members: who receives the report. Missed reports can be sent again.',
           'The summary is review material, never trading advice.',
+        ],
+      },
+    ],
+  },
+  chat: {
+    title: 'Claude chat',
+    intro:
+      "Talk to the analyst desk: a risk manager, a pro trader and a market data analyst in one, working from this panel's stored data and the current strategy.",
+    sections: [
+      {
+        h: 'What it does',
+        items: [
+          'Answers from the stored data (review queue, coin traces, hourly prices, BTC/ETH, forward test, LBank observation) and the strategy as built now.',
+          'When the strategy is updated, the desk uses the new rules with the next message; a banner tells you the conversation began under the old ones.',
+          NOT_ADVICE,
+        ],
+      },
+      {
+        h: 'Limits',
+        items: [
+          'Read-only: it cannot change, add, delete or re-run anything, and refuses when asked to.',
+          'A conversation holds a fixed number of your messages (shown on the page). Start a new conversation to continue.',
+          'Model sets the Claude model; Effort sets how hard it thinks (higher is slower). Haiku has no effort setting.',
+          'One reply is written at a time.',
         ],
       },
     ],

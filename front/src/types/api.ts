@@ -15,7 +15,8 @@ export type Permission =
   | 'telegram:manage'
   | 'users:manage'
   | 'pipeline:recover'
-  | 'agent:use';
+  | 'agent:use'
+  | 'chat:use';
 
 export interface User {
   id: string;

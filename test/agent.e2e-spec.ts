@@ -74,6 +74,9 @@ class FakeRunner implements AgentRunner {
     this.requests.push(req as AgentRunRequest<unknown>);
     return this.behaviour(req as AgentRunRequest<unknown>) as Promise<AgentRunResult<T>>;
   }
+  chat(): Promise<never> {
+    throw new Error('the coin-agent tests never chat');
+  }
 }
 
 let app: TestingModule;

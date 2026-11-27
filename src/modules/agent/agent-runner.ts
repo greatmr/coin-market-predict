@@ -55,10 +55,27 @@ export interface AgentRunResult<T> {
   deniedTools: string[];
 }
 
+/** One chat turn: free-text answer, read-only tools across the whole panel (docs/adr/0012). */
+export interface AgentChatRequest {
+  model: string;
+  /** Omitted for models without an effort setting. */
+  effort?: AgentEffort;
+  maxTurns: number;
+  maxBudgetUsd: number;
+  timeoutMs: number;
+  systemPrompt: string;
+  prompt: string;
+  tools: readonly ToolDef[];
+  signal?: AbortSignal;
+}
+
+export type AgentChatResult = Omit<AgentRunResult<string>, 'output'> & { text: string | null };
+
 export interface AgentRunner {
   /** Whether a run can start at all (credentials present), with the reason when not. */
   availability(): { available: boolean; reason: string | null };
   run<T>(req: AgentRunRequest<T>): Promise<AgentRunResult<T>>;
+  chat(req: AgentChatRequest): Promise<AgentChatResult>;
 }
 
 export function emptyUsage(): AgentUsage {

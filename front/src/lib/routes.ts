@@ -16,6 +16,7 @@ export type SectionKey =
   | 'batches'
   | 'access'
   | 'users'
+  | 'chat'
   | 'account';
 
 export interface Section {
@@ -79,6 +80,15 @@ export const SECTIONS: readonly Section[] = [
     title: 'LBank price observation',
     sub: 'Each star event since the cutover, followed for exactly 168 hours from its publication: LBank Spot from verified trades, LBank Futures from sampled snapshots, each against its own reference.',
     counted: true,
+  },
+  {
+    key: 'chat',
+    group: 'screen',
+    path: '/chat',
+    label: 'Claude chat',
+    title: 'Claude chat',
+    sub: 'Ask the analyst desk (risk manager, pro trader, market data analyst) about the stored data and the current strategy. Read-only.',
+    permission: 'chat:use',
   },
   {
     key: 'data',

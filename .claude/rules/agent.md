@@ -2,6 +2,7 @@
 paths:
   - "src/modules/agent/**"
   - "src/modules/dashboard/agent.controller.ts"
+  - "src/modules/dashboard/chat.controller.ts"
   - "src/modules/read-model/tradingview.ts"
   - "front/src/features/coin/**"
 ---
@@ -28,3 +29,11 @@ Live chart
   lists only the widget origin.
 - Symbols are proxies (TradingView has no LBank Spot): CMC venue markets for the CMC id first,
   labelled fallbacks after. Never match an asset by ticker alone without saying so.
+
+Chat (docs/adr/0012-owner-chat.md)
+- Owner only (`chat:use`), strictly read-only: every tool in `agent/chat/chat-tools.ts` is
+  `scope: 'read'` and the prompt refuses writes; never add a tool that changes data.
+- The prompt is built from `modules/strategy` constants on every message; a new rule version is
+  added to `strategyVersions()` so the desk follows it. A prompt or tool change bumps
+  `CHAT_PROMPT_VERSION`.
+- Limit `CHAT_MAX_MESSAGES` user messages per conversation, one reply at a time.

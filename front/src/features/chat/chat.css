@@ -1,0 +1,119 @@
+.chat {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.chat-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.chat-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.chat-item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  font: 500 13px var(--font);
+  cursor: pointer;
+}
+.chat-item:hover,
+.chat-item.on {
+  background: var(--glass-strong);
+  border-color: var(--edge);
+}
+.chat-item-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-main {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.chat-notice {
+  padding: 8px 12px;
+  border-radius: var(--r-sm);
+  background: var(--unsure-soft);
+  font-size: 13px;
+}
+.chat-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 240px;
+  max-height: 56vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.chat-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 85%;
+}
+.chat-msg.user {
+  align-self: flex-end;
+}
+.chat-body {
+  padding: 10px 14px;
+  border-radius: var(--r-md);
+  background: var(--glass);
+  border: 1px solid var(--edge);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.chat-msg.user .chat-body {
+  background: var(--accent-soft);
+}
+.chat-compose {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.chat-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.chat-options .select-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.chat-compose textarea {
+  width: 100%;
+  resize: vertical;
+  padding: 10px 12px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--edge);
+  background: var(--glass);
+}
+.chat-compose .btn {
+  align-self: flex-end;
+}
+@media (max-width: 800px) {
+  .chat {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .chat-msg {
+    max-width: 100%;
+  }
+}

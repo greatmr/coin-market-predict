@@ -36,6 +36,12 @@ export const ErrorCodes = {
   AGENT_UNAVAILABLE: 'AGENT_UNAVAILABLE',
   AGENT_BUSY: 'AGENT_BUSY',
   AGENT_LIMIT_REACHED: 'AGENT_LIMIT_REACHED',
+
+  // ─── Claude chat ─────────────────────────────────────────────────────────
+  CHAT_UNAVAILABLE: 'CHAT_UNAVAILABLE',
+  CHAT_BUSY: 'CHAT_BUSY',
+  CHAT_LIMIT_REACHED: 'CHAT_LIMIT_REACHED',
+  CHAT_NOT_FOUND: 'CHAT_NOT_FOUND',
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
