@@ -43,6 +43,7 @@ import {
   LBANK_MARKET_SOURCE,
   type LbankMarketSource,
   type ListFetch,
+  type SpotPriceFetch,
   type TradesFetch,
 } from '../src/modules/lbank-observation/lbank-market.source.js';
 import { ObservationIntakeService } from '../src/modules/lbank-observation/observation-intake.service.js';
@@ -54,6 +55,7 @@ import {
   OBSERVATION_RULES_VERSION,
 } from '../src/modules/lbank-observation/observation.constants.js';
 import { ObservationService } from '../src/modules/lbank-observation/observation.service.js';
+import { SpotQuoteService } from '../src/modules/lbank-observation/spot-quote.service.js';
 import { TradeStoreService } from '../src/modules/lbank-observation/trade-store.service.js';
 import { PipelineRun } from '../src/modules/pipeline/entities/pipeline-run.entity.js';
 import { PipelineStage } from '../src/modules/pipeline/entities/pipeline-stage.entity.js';
@@ -313,6 +315,49 @@ class FakeLbank implements LbankMarketSource {
       sha256: 'book',
     };
   }
+
+  /** Spot pair → latest price served by the all-pairs price request (default '1' for listed pairs). */
+  spotPrice = new Map<string, string>();
+  spotPriceDown = false;
+  /** Pacing behind the Futures request, and network latency, of the Spot price request (ms). */
+  spotPriceSendDelayMs = 0;
+  spotPriceLatencyMs = 0;
+  spotPriceRequests = 0;
+
+  async spotPrices(): Promise<SpotPriceFetch> {
+    this.spotPriceRequests++;
+    const url = 'fake://spot/ticker/price';
+    const requestStartedAt = new Date(this.nowMs + this.spotPriceSendDelayMs);
+    const fetchedAt = new Date(requestStartedAt.getTime() + this.spotPriceLatencyMs);
+    if (this.spotPriceDown)
+      return {
+        url,
+        requestStartedAt,
+        fetchedAt,
+        failedAttempts: [{ sentAt: requestStartedAt, failedAt: fetchedAt, message: 'HTTP 503' }],
+        ok: false,
+        error: 'HTTP 503 after 3 attempts',
+      };
+    const prices = new Map([...this.spot.map((s) => [s, '1'] as const), ...this.spotPrice]);
+    const rows = [...prices].map(([symbol, price]) => ({ symbol, price }));
+    return {
+      url,
+      requestStartedAt,
+      fetchedAt,
+      failedAttempts: [],
+      ok: true,
+      rows,
+      invalid: 0,
+      serverAt: requestStartedAt,
+      sha256: `sp${requestStartedAt.getTime()}`,
+      body: JSON.stringify({
+        result: true,
+        data: rows,
+        error_code: 0,
+        ts: requestStartedAt.getTime(),
+      }),
+    };
+  }
 }
 
 let app: Awaited<ReturnType<ReturnType<typeof Test.createTestingModule>['compile']>>;
@@ -358,6 +403,11 @@ beforeEach(async () => {
     futuresOmit: new Set(),
     bookDown: false,
     bookRequests: [],
+    spotPrice: new Map(),
+    spotPriceDown: false,
+    spotPriceSendDelayMs: 0,
+    spotPriceLatencyMs: 0,
+    spotPriceRequests: 0,
   });
 });
 
@@ -1693,6 +1743,10 @@ describe('LBank Futures observed quote (lbank-futures-quote-1)', () => {
       .futuresSampled!.quote!;
     expect(q.delayMs).toBe(60_300); // the real delay, not backdated
     expect(q.source).toBe('TICK');
+    // Valid under the rule, but not an immediate entry (the publication request failed).
+    const fv = (await app.get(ObservationReadService).list({ search: 'abc' })).rows[0]!
+      .futuresSampled!;
+    expect([fv.evidenceClass, fv.immediateEntry]).toEqual(['TICK_QUOTE', false]);
   });
 
   it('mapping without a CMC Futures list as of the crawl: unknown, never guessed', async () => {
@@ -1862,7 +1916,291 @@ describe('LBank Futures observed quote (lbank-futures-quote-1)', () => {
     expect(v.method).toBe('LEGACY_TURNOVER_BRACKET');
     expect(v.postFixQuote?.delayMs).toBe(3 * H);
   });
+
+  // ── Publication requests, freshness and evidence (M020) ──────────────────────────────────
+
+  it('publication: both venues are queued together, never simultaneous; the indicative Spot quote stays apart from every Spot value', async () => {
+    await setup();
+    const sm = Math.floor(S / MIN) * MIN;
+    lbank.futuresPath.set('ABCUSDT', [{ atMs: S - 30_000, price: '1.000', turnover: '100' }]);
+    lbank.spotPrice.set('abc_usdt', '1.004'); // the pair's latest price at publication
+    minute('abc_usdt', sm, [[40_123, '1.01', '3']]); // the first trade after the start
+    // The pipeline publishes before the intake: both requests are queued at S + 10.
+    const b = await batch('2030-01-02T00:07:00.078Z');
+    at(S + 10);
+    lbank.futuresSendDelayMs = 6;
+    lbank.futuresLatencyMs = 404;
+    lbank.spotPriceSendDelayMs = 1_006; // paced one interval behind the Futures request
+    lbank.spotPriceLatencyMs = 1_400;
+    await quotes().publish(b.id);
+    expect(lbank.spotPriceRequests).toBe(1);
+    const [sreq] = await db.query(
+      `SELECT request_queued_at, request_started_at, response_received_at, ok FROM lbank_spot_price_request`,
+    );
+    expect(sreq).toMatchObject({ ok: true });
+    expect(sreq.request_queued_at.getTime()).toBe(S + 10);
+    // The intake commits the observation; then each venue settles on its own.
+    await intakeAbc();
+    await app.get(SpotQuoteService).assignBatch(b.id);
+    await quotes().settleBatch(b.id);
+    await app.get(SpotQuoteService).assignBatch(b.id); // idempotent
+    const [q] = await db.query(
+      `SELECT price::text, request_queued_at, request_started_at, response_received_at FROM lbank_spot_indicative_quote`,
+    );
+    expect(q.price).toBe('1.004');
+    expect(q.request_started_at.getTime()).toBe(S + 1_016);
+    expect(q.response_received_at.getTime()).toBe(S + 2_416);
+    const r = (await refOf(1))!;
+    expect(r.request_started_at.getTime()).toBe(S + 16);
+    expect(r.response_received_at.getTime()).toBe(S + 420);
+    await expect(db.query(`UPDATE lbank_spot_indicative_quote SET price = 2`)).rejects.toThrow(
+      /immutable/,
+    );
+
+    // The Spot reference is the first verified trade: its id, time and price, not the quote.
+    await runJob('2030-01-02T00:16:06Z');
+    const read = app.get(ObservationReadService);
+    const row = (await read.list({ search: 'abc' })).rows[0]!;
+    expect(row.reference).toMatchObject({
+      status: 'VERIFIED',
+      tradeId: `abc_usdt-${sm}-0`,
+      at: new Date(sm + 40_123).toISOString(),
+      price: '1.01',
+    });
+    expect(row.highest?.price).toBe('1.01');
+    expect(row.lowest?.price).toBe('1.01');
+    expect(row.spotIndicative).toMatchObject({ price: '1.004', pair: 'abc_usdt', delayMs: 2_416 });
+    // Initiated together, answered 2 s apart: reported as such, never as simultaneous.
+    expect(row.publicationQuotes).toEqual({
+      futuresSource: 'PUBLICATION',
+      futuresRequestStartedAt: new Date(S + 16).toISOString(),
+      spotRequestStartedAt: new Date(S + 1_016).toISOString(),
+      sentDifferenceMs: 1_000,
+      futuresObservedAt: new Date(S + 420).toISOString(),
+      spotObservedAt: new Date(S + 2_416).toISOString(),
+      receivedDifferenceMs: 1_996,
+      queuedTogether: true,
+    });
+    const d = (await read.detail(row.id)) as unknown as {
+      publicationRequests: {
+        futures: Array<{ trigger: string; queuedAt: string; startedAt: string }>;
+        spot: Array<{ queuedAt: string; startedAt: string; receivedAt: string; ok: boolean }>;
+      };
+    };
+    expect(d.publicationRequests.futures[0]).toMatchObject({
+      trigger: 'PUBLICATION',
+      queuedAt: new Date(S + 10).toISOString(),
+    });
+    expect(d.publicationRequests.spot[0]).toMatchObject({
+      queuedAt: new Date(S + 10).toISOString(),
+      startedAt: new Date(S + 1_016).toISOString(),
+      ok: true,
+    });
+    const csv = (await read.csv({ search: 'abc' })).trim().split('\n');
+    const head = csvCells(csv[0]!);
+    const cells = csvCells(csv[1]!);
+    expect(cells).toHaveLength(head.length);
+    const c = (k: string) => cells[head.indexOf(k)];
+    expect(c('reference_price')).toBe('1.01');
+    expect(c('spot_indicative_price_at_publication')).toBe('1.004');
+    expect(c('publication_spot_minus_futures_sent_ms')).toBe('1000');
+    expect(c('publication_spot_minus_futures_response_ms')).toBe('1996');
+    expect(c('publication_requests_queued_together')).toBe('true');
+  });
+
+  it('a failed Spot price request at publication is recorded with its times and leaves no quote', async () => {
+    await setup();
+    lbank.futuresPath.set('ABCUSDT', [{ atMs: S - 1, price: '1', turnover: '5' }]);
+    await intakeAbc();
+    const e = await db.getRepository(ObsEvent).findOneByOrFail({ cmcId: 1 });
+    lbank.spotPriceDown = true;
+    at(S + 10);
+    await quotes().publish(e.sourceBatchId);
+    const [req] = await db.query(
+      `SELECT ok, error, failed_attempts, request_started_at FROM lbank_spot_price_request`,
+    );
+    expect(req).toMatchObject({ ok: false, error: 'HTTP 503 after 3 attempts' });
+    expect(req.failed_attempts).toHaveLength(1);
+    expect(await db.query(`SELECT 1 FROM lbank_spot_indicative_quote`)).toHaveLength(0);
+    // The Futures quote does not wait for (or depend on) the Spot request.
+    expect((await refOf(1))!.source).toBe('PUBLICATION');
+    const row = (await app.get(ObservationReadService).list({ search: 'abc' })).rows[0]!;
+    expect(row.spotIndicative).toBeNull();
+    expect(row.publicationQuotes).toBeNull();
+  });
+
+  it('change token: a Futures-only value change moves it, a minute re-evaluation that changes nothing does not', async () => {
+    await setup();
+    lbank.futuresPath.set('ABCUSDT', [{ atMs: S - 1, price: '1', turnover: '5' }]);
+    await intakeAbc();
+    const read = app.get(ObservationReadService);
+    const v0 = await read.version();
+    await publishAt(S + 10);
+    const v1 = await read.version();
+    expect(v1.futuresToken).not.toBe(v0.futuresToken); // quote stored, reference set
+    expect(v1.spotToken).toBe(v0.spotToken); // nothing Spot changed
+    // Re-evaluating with nothing new (as each minute does when no sample arrived) changes nothing.
+    await quotes().evaluate(await quotes().quoteRows());
+    const v2 = await read.version();
+    expect(v2.futuresToken).toBe(v1.futuresToken);
+    // A new sample advances data-through and coverage: the token moves, the row shows it.
+    await tick(S + 60_000);
+    const v3 = await read.version();
+    expect(v3.futuresToken).not.toBe(v2.futuresToken);
+    expect(v3.spotToken).toBe(v0.spotToken);
+    let f = (await read.list({ search: 'abc' })).rows[0]!.futuresSampled!;
+    expect(f.observedThrough).toBe(new Date(S + 60_000).toISOString());
+    expect(f.valuesChangedAt).not.toBeNull();
+    // A new observed high: the token moves again and the row carries the new extreme.
+    lbank.futuresPath.set('ABCUSDT', [{ atMs: S - 1, price: '1.25', turnover: '5' }]);
+    await tick(S + 120_000);
+    const v4 = await read.version();
+    expect(v4.futuresToken).not.toBe(v3.futuresToken);
+    f = (await read.list({ search: 'abc' })).rows[0]!.futuresSampled!;
+    expect(f.highest?.price).toBe('1.25');
+    expect(v4.futures.oldestOpenObservedThrough).toBe(new Date(S + 120_000).toISOString());
+  });
+
+  it('each method keeps its own "through" time base; the coverage difference between venues is shown, never hidden', async () => {
+    await setup();
+    const sm = Math.floor(S / MIN) * MIN;
+    minute('abc_usdt', sm, [[40_123, '1.01', '3']]);
+    lbank.futuresPath.set('ABCUSDT', [{ atMs: S - 1, price: '1', turnover: '5' }]);
+    await intakeAbc();
+    await publishAt(S + 10);
+    await runJob('2030-01-02T00:16:06Z'); // Spot candles through the start minute only
+    for (let m = 1; m <= 5; m++) await tick(sm + m * MIN + 450);
+    const read = app.get(ObservationReadService);
+    const row = (await read.list({ search: 'abc' })).rows[0]!;
+    const f = row.futuresSampled!;
+    expect(f.throughBasis).toBe('OUR_RESPONSE_RECEIVED');
+    expect(f.observedThrough).toBe(new Date(sm + 5 * MIN + 450).toISOString());
+    expect(f.lbankSnapshotThrough).toBeNull();
+    expect(row.coverageTimes.spotDataThrough).toBe(row.freshness.dataThrough);
+    expect(row.coverageTimes.futuresBasis).toBe('OUR_RESPONSE_RECEIVED');
+    expect(row.coverageTimes.differenceMs).toBe(
+      Date.parse(f.observedThrough!) - Date.parse(row.freshness.dataThrough!),
+    );
+    expect(row.coverageTimes.differs).toBe(true); // Futures reaches minutes further than Spot
+    // Order-book context (read in the background after the quote): its own capture time and how
+    // long after the quote it was answered — a later book, never the book at the quote's moment.
+    await quotes().books([(await futOf(1)).id]);
+    const b = (await read.list({ search: 'abc' })).rows[0]!.futuresSampled!.book!;
+    expect(b.afterQuoteMs).toBe(Date.parse(b.responseReceivedAt) - Date.parse(f.quote!.observedAt));
+    expect(b.afterQuoteMs).toBeGreaterThanOrEqual(0);
+
+    // An older-method row: its stored through time is LBank's snapshot time, shown as such.
+    await intake(row2('2030-01-02T01:07:00.000Z'), { scanCommitAt: '2030-01-02T01:07:05.000Z' });
+    const o2 = await obsOf(2);
+    await db.query(
+      `INSERT INTO lbank_futures_observation (observation_id, provider_id, rules_version, mapping_status, contract, status, reasons, sampled_through, max_gap_ms)
+       VALUES ($1, $2, 'lbank-futures-sampled-1', 'OK', 'DEFUSDT', 'ACTIVE', ARRAY['WINDOW_OPEN'], $3, 61000)
+       ON CONFLICT (observation_id) DO UPDATE SET rules_version = EXCLUDED.rules_version, contract = 'DEFUSDT',
+         mapping_status = 'OK', status = 'ACTIVE', sampled_through = EXCLUDED.sampled_through`,
+      [o2.id, P, t('2030-01-02T01:20:57.000Z')],
+    );
+    const legacy = (await read.list({ search: 'def' })).rows[0]!.futuresSampled!;
+    expect(legacy).toMatchObject({
+      method: 'LEGACY_TURNOVER_BRACKET',
+      throughBasis: 'LBANK_SNAPSHOT_TIME',
+      observedThrough: null,
+      lbankSnapshotThrough: '2030-01-02T01:20:57.000Z',
+    });
+    const csv = (await read.csv({})).trim().split('\n');
+    const head = csvCells(csv[0]!);
+    const byId = new Map(csv.slice(1).map((l) => [csvCells(l)[0], csvCells(l)]));
+    const cell = (id: string, k: string) => byId.get(id)![head.indexOf(k)];
+    expect(head).not.toContain('futures_sampled_through_utc'); // one meaning per column
+    expect(cell(row.id, 'futures_time_basis')).toBe('OUR_RESPONSE_RECEIVED');
+    expect(cell(row.id, 'futures_observed_through_utc_our_response_received')).toBe(
+      f.observedThrough,
+    );
+    expect(cell(row.id, 'futures_old_method_through_utc_lbank_snapshot_time')).toBe('');
+    expect(cell(o2.id, 'futures_time_basis')).toBe('LBANK_SNAPSHOT_TIME');
+    expect(cell(o2.id, 'futures_observed_through_utc_our_response_received')).toBe('');
+    expect(cell(o2.id, 'futures_old_method_through_utc_lbank_snapshot_time')).toBe(
+      '2030-01-02T01:20:57.000Z',
+    );
+    expect(cell(row.id, 'coverage_differs_over_1_min')).toBe('true');
+  });
+
+  it('evidence classes keep old and new Futures results apart; only quotes fired at publication count as immediate entries', async () => {
+    await setup();
+    // Collection begins at 00:30 (the first stored request).
+    const first = t('2030-01-02T00:30:00.400Z');
+    const poll = async (fetched: Date, started: Date | null) =>
+      (
+        await db.query(
+          `INSERT INTO lbank_futures_poll (fetched_at, server_at, ok, contracts, request_started_at, trigger)
+           VALUES ($1, $1, true, 2, $2, 'TICK') RETURNING id::text`,
+          [fetched, started],
+        )
+      )[0].id as string;
+    await poll(first, null);
+    const legacyRow = async (cmcId: number, sym: string, crawl: string, scan: string) => {
+      await intake(row(cmcId, sym, 1, crawl), { scanCommitAt: scan });
+      const o = await obsOf(cmcId);
+      await db.query(
+        `INSERT INTO lbank_futures_observation (observation_id, provider_id, rules_version, mapping_status, contract, status, reasons)
+         VALUES ($1, $2, 'lbank-futures-sampled-1', 'OK', $3, 'ACTIVE', ARRAY['WINDOW_OPEN'])`,
+        [o.id, P, `${sym.toUpperCase()}USDT`],
+      );
+      return o;
+    };
+    // Started before collection existed.
+    const before = await legacyRow(
+      2,
+      'def',
+      '2030-01-02T00:07:00.000Z',
+      '2030-01-02T00:07:05.000Z',
+    );
+    // Started after it: the first response after the start was kept for its contract …
+    const kept = await legacyRow(3, 'mno', '2030-01-02T01:07:00.000Z', '2030-01-02T01:07:05.000Z');
+    const p1 = await poll(t('2030-01-02T01:08:00.400Z'), null);
+    await db.query(
+      `INSERT INTO lbank_futures_sample (contract, server_at, fetched_at, last_price, turnover_24h, volume_24h, response_sha256, poll_id)
+       VALUES ('MNOUSDT', '2030-01-02T01:07:59Z', '2030-01-02T01:08:00.400Z', 2.5, 1, 1, 'x', $1)`,
+      [p1],
+    );
+    // … or was not (the snapshot storage defect fixed 2026-11-27).
+    const lost = await legacyRow(4, 'thin', '2030-01-02T02:07:00.000Z', '2030-01-02T02:07:05.000Z');
+    await poll(t('2030-01-02T02:08:00.400Z'), null);
+    // New method: first quote from the publication request.
+    lbank.futuresPath.set('ABCUSDT', [{ atMs: S - 1, price: '1', turnover: '5' }]);
+    await intakeAbc();
+    await publishAt(S + 10);
+    const read = app.get(ObservationReadService);
+    const cls = async (o: { id: string }) => {
+      const d = (await read.detail(o.id))!;
+      return [d.futuresSampled!.evidenceClass, d.futuresSampled!.immediateEntry];
+    };
+    expect(await cls(await obsOf(1))).toEqual(['IMMEDIATE_QUOTE', true]);
+    expect(await cls(before)).toEqual(['LEGACY_BEFORE_COLLECTION', false]);
+    expect(await cls(kept)).toEqual(['LEGACY_FIRST_RESPONSE_RETAINED', false]);
+    expect(await cls(lost)).toEqual(['LEGACY_FIRST_RESPONSE_LOST', false]);
+    const s = await read.summary();
+    expect(s.futures.immediateEntries).toBe(1);
+    expect(s.futures.byEvidence).toMatchObject({
+      IMMEDIATE_QUOTE: 1,
+      LEGACY_BEFORE_COLLECTION: 1,
+      LEGACY_FIRST_RESPONSE_RETAINED: 1,
+      LEGACY_FIRST_RESPONSE_LOST: 1,
+    });
+    // Nothing was rewritten: the old rows keep their rules version and (empty) reference.
+    const olds = await db.query(
+      `SELECT rules_version, reference_price FROM lbank_futures_observation WHERE rules_version = 'lbank-futures-sampled-1'`,
+    );
+    expect(olds).toHaveLength(3);
+    expect(olds.every((x: { reference_price: string | null }) => x.reference_price === null)).toBe(
+      true,
+    );
+  });
 });
+
+/** A second coin's queue row (def_usdt) for the time-base test. */
+function row2(crawl: string): TriggerRow {
+  return row(2, 'def', 1, crawl);
+}
 
 describe('reference latency (follow-up runs, timeline, change token)', () => {
   it('a follow-up is due when the start minute closes, and stops once the reference is verified', async () => {

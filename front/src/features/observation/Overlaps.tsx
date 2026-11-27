@@ -7,8 +7,9 @@ import { useEffect, useState } from 'react';
 import { Lab, Stars } from '../../components/ui';
 import { api, errorMessage } from '../../lib/api';
 import { infoDialog } from '../../lib/feedback';
-import { fmtPct, fmtPrice, fmtTime, fmtExact } from '../../lib/format';
+import { fmtExact, fmtPct, fmtPrice, fmtTime } from '../../lib/format';
 
+import { onObservationChange } from './changes';
 import { FUT_STATUS, STATUS, spanText } from './labels';
 import type { ObservationOverlaps, ObservationRow } from './types';
 
@@ -33,19 +34,28 @@ function why(me: Win, x: Win, relation: string): string {
 
 function OverlapList({ id }: { id: string }) {
   const [data, setData] = useState<ObservationOverlaps | null>(null);
+  const [reloads, setReloads] = useState(0);
   const [error, setError] = useState('');
   useEffect(() => {
-    api<ObservationOverlaps>(`observations/${id}/overlaps`).then(setData, (e: unknown) =>
-      setError(errorMessage(e)),
+    let live = true;
+    api<ObservationOverlaps>(`observations/${id}/overlaps`).then(
+      (x) => live && setData(x),
+      (e: unknown) => live && setError(errorMessage(e)),
     );
-  }, [id]);
+    return () => {
+      live = false;
+    };
+  }, [id, reloads]);
+  // Reloads with the page behind it when Spot or Futures values change.
+  useEffect(() => onObservationChange(() => setReloads((n) => n + 1)), []);
   if (error) return <p className="form-error">{error}</p>;
   if (!data) return <p className="muted small">Loading…</p>;
   const o = data.observation;
   const me = winOf(o);
-  const all = [{ r: o, w: me, self: true }, ...data.overlaps.map((x) => ({ r: x, w: winOf(x), self: false }))].sort(
-    (a, b) => a.w.start - b.w.start,
-  );
+  const all = [
+    { r: o, w: me, self: true },
+    ...data.overlaps.map((x) => ({ r: x, w: winOf(x), self: false })),
+  ].sort((a, b) => a.w.start - b.w.start);
   const lo = Math.min(...all.map((a) => a.w.start));
   const hi = Math.max(...all.map((a) => a.w.end));
   const span = Math.max(1, hi - lo);
@@ -54,7 +64,11 @@ function OverlapList({ id }: { id: string }) {
       <p>
         {`${o.symbol} has ${data.coin.events} observations. ${data.overlaps.length} of them have windows that share time with this ${o.stars}★ window (${o.window ? `${fmtTime(o.window.start)} – ${fmtTime(o.window.end)}` : 'start pending'}). They follow the same LBank price, so their results are correlated, not independent; each keeps its own start, reference and status.`}
       </p>
-      <div className="obs-gantt" role="img" aria-label="Timeline of the overlapping 168-hour windows">
+      <div
+        className="obs-gantt"
+        role="img"
+        aria-label="Timeline of the overlapping 168-hour windows"
+      >
         {all.map(({ r, w, self }) => (
           <div key={r.id} className={`row${self ? ' self' : ''}`}>
             <span className="lab">
@@ -88,8 +102,12 @@ function OverlapList({ id }: { id: string }) {
                 <th scope="col">Event</th>
                 <th scope="col">Window</th>
                 <th scope="col">Why it overlaps</th>
-                <th scope="col" className="num">Spot ref.</th>
-                <th scope="col" className="num">Spot high / low</th>
+                <th scope="col" className="num">
+                  Spot ref.
+                </th>
+                <th scope="col" className="num">
+                  Spot high / low
+                </th>
                 <th scope="col">Status (Spot · Futures)</th>
               </tr>
             </thead>
@@ -123,7 +141,9 @@ function OverlapList({ id }: { id: string }) {
       ) : (
         <p className="muted">No overlapping observation.</p>
       )}
-      <p className="muted small">* provisional (window running or data still being verified). Overlap is not a review flag.</p>
+      <p className="muted small">
+        * provisional (window running or data still being verified). Overlap is not a review flag.
+      </p>
     </div>
   );
 }

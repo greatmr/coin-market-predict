@@ -10,7 +10,7 @@ import { api, apiPost, errorMessage } from '../../lib/api';
 import { apiUrl } from '../../lib/config';
 import { type StatusMap, humanize, triggerText } from '../../lib/constants';
 import { toast } from '../../lib/feedback';
-import { fmtAgo, fmtInt, fmtPct, fmtSpan, fmtTime, fmtExact } from '../../lib/format';
+import { fmtAgo, fmtExact, fmtInt, fmtPct, fmtSpan, fmtTime } from '../../lib/format';
 import { useApp } from '../../state/app';
 
 import type { LegacyStatus, ObservationSummary, StatsJson } from './types';
@@ -138,12 +138,12 @@ function Tiles({ s }: { s: ObservationSummary }) {
       </div>
       <div
         className="tile"
-        title={`Futures side (${s.futures.rulesVersion}): sampled snapshots, never in the Spot statistics. ${s.futures.priceSource}`}
+        title={`Futures side (${s.futures.rulesVersion}): observed quotes, never in the Spot statistics. ${s.futures.priceSource}\nImmediate entries: first price from the request fired at publication (or its prompt retry). Minute-sample quotes and every old-method row are counted apart, never pooled with them.`}
       >
-        <span className="tile-label">Futures (first observed price)</span>
-        <b>{`${fmtInt(s.futures.byMethod.OBSERVED_QUOTE.ACTIVE ?? 0)} active · ${fmtInt(s.futures.byMethod.OBSERVED_QUOTE.CLOSED ?? 0)} closed`}</b>
+        <span className="tile-label">Futures: immediate entries</span>
+        <b>{`${fmtInt(s.futures.immediateEntries)} · ${fmtInt(s.futures.byMethod.OBSERVED_QUOTE.ACTIVE ?? 0)} active · ${fmtInt(s.futures.byMethod.OBSERVED_QUOTE.CLOSED ?? 0)} closed`}</b>
         <span className="muted small">
-          {`observed-quote method only; older method apart: ${fmtInt(Object.values(s.futures.byMethod.LEGACY_TURNOVER_BRACKET).reduce((a, n) => a + (n ?? 0), 0))} rows (${fmtInt(s.futures.byMethod.LEGACY_TURNOVER_BRACKET.HISTORY_UNAVAILABLE ?? 0)} not sampled at start) · last snapshot ${s.futures.lastPoll ? `${fmtAgo(s.futures.lastPoll.fetchedAt)}${s.futures.lastPoll.ok ? '' : ' (failed)'}` : 'none'}`}
+          {`${fmtInt(s.futures.byEvidence.TICK_QUOTE)} minute-sample quotes apart · old method apart: ${fmtInt(s.futures.byEvidence.LEGACY_BEFORE_COLLECTION)} before collection, ${fmtInt(s.futures.byEvidence.LEGACY_FIRST_RESPONSE_RETAINED)} first response kept, ${fmtInt(s.futures.byEvidence.LEGACY_FIRST_RESPONSE_LOST)} lost · last request ${s.futures.lastPoll ? `${fmtAgo(s.futures.lastPoll.fetchedAt)}${s.futures.lastPoll.ok ? '' : ' (failed)'}` : 'none'}`}
         </span>
       </div>
       <div className="tile">

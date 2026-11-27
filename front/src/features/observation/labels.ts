@@ -122,6 +122,61 @@ export const QUOTE_SOURCE_TEXT: Record<string, string> = {
   TICK: 'the minute sampler (no earlier request returned a valid price)',
 };
 
+/**
+ * What the stored records establish about a Futures entry (old and new methods kept apart). Only
+ * “Immediate quote” counts as an immediate Futures entry.
+ */
+export const FUT_EVIDENCE: Record<string, [string, string]> = {
+  IMMEDIATE_QUOTE: [
+    'Immediate quote',
+    'First observed price from the request fired when the Review Queue was published (or its prompt retry). Counted as an immediate Futures entry.',
+  ],
+  TICK_QUOTE: [
+    'Minute-sample quote',
+    'The publication request failed or lacked the contract, so the first observed price came from the minute sampler: valid, but not an immediate entry.',
+  ],
+  QUOTE_PENDING: ['No price yet', 'Observed-quote method: no valid Futures price observed yet.'],
+  NO_QUOTE: [
+    'No price',
+    'Observed-quote method: no valid Futures price inside the window, or the contract stayed unknown.',
+  ],
+  NO_CONTRACT: ['No contract', 'No single LBank Futures contract for this coin.'],
+  LEGACY_BEFORE_COLLECTION: [
+    'Old method · before collection',
+    'Old method: the window started before Futures collection began (no Futures request was stored at or before the start), so no Futures price at the signal exists.',
+  ],
+  LEGACY_FIRST_RESPONSE_RETAINED: [
+    'Old method · first response kept',
+    'Old method: the first response our sampler received after the signal was kept, so the first observed price is establishable — from a minute sample, not an immediate request (Details → Futures).',
+  ],
+  LEGACY_FIRST_RESPONSE_LOST: [
+    'Old method · first response lost',
+    'Old method: the first response after the signal was not kept for this contract (storage defect fixed 2026-11-27), so the first observed price cannot be reconstructed.',
+  ],
+  LEGACY_UNRESOLVED: [
+    'Old method · unresolved',
+    'Old method: no successful Futures response after the start was found.',
+  ],
+};
+
+/** What a Futures "through" time (and its longest gap) is measured in; never converted. */
+export const TIME_BASIS: Record<string, [string, string]> = {
+  OUR_RESPONSE_RECEIVED: [
+    'observed through',
+    'when our latest eligible response was received (our clock)',
+  ],
+  LBANK_SNAPSHOT_TIME: [
+    'LBank snapshot time through',
+    'old method: LBank’s snapshot refresh time (lastTime) of the latest snapshot — LBank’s clock, not our receipt and not a trade time',
+  ],
+};
+
+/** A signed difference: "+9 min 02 s", "−1.000 s", "±0 s". */
+export function diffText(ms: number): string {
+  if (ms === 0) return '±0 s';
+  return ms > 0 ? delayText(ms) : `−${spanText(-ms)}`;
+}
+
 export const FUT_STATUS: StatusMap = {
   PENDING: ['', 'Pending'],
   ACTIVE: ['accent', 'Sampling'],
@@ -154,7 +209,8 @@ const REASON: Record<string, string> = {
   NO_FUTURES_CONTRACT: 'no LBank Futures contract for this coin',
   FUTURES_TICKER_ONLY:
     'LBank lists a contract with this ticker, but CMC does not attribute it to this coin',
-  FUTURES_NOT_IN_LBANK_LIST: 'the contract CMC attributes to this coin is not in LBank’s latest market data (checked again with each response)',
+  FUTURES_NOT_IN_LBANK_LIST:
+    'the contract CMC attributes to this coin is not in LBank’s latest market data (checked again with each response)',
   MULTIPLE_FUTURES_CONTRACTS: 'several Futures contracts are attributed to this coin',
   FUTURES_NOT_SAMPLED_AT_START:
     'the contract was not sampled at the window start (LBank serves no Futures history)',

@@ -31,6 +31,7 @@ import {
   type LbankMarketSource,
 } from './lbank-market.source.js';
 import { ListingEvidenceService } from './listing-evidence.service.js';
+import { SpotQuoteService } from './spot-quote.service.js';
 
 /** A stored, successful `marketData` response held in memory by its caller. */
 export interface PolledResponse {
@@ -96,6 +97,7 @@ export class FuturesQuoteService implements OnApplicationShutdown {
     @Inject(LBANK_MARKET_SOURCE) private readonly source: LbankMarketSource,
     private readonly evidence: ListingEvidenceService,
     private readonly cutover: CutoverService,
+    private readonly spotQuotes: SpotQuoteService,
   ) {}
 
   get providerId() {
@@ -236,17 +238,45 @@ export class FuturesQuoteService implements OnApplicationShutdown {
   // ── Immediate request at publication ──────────────────────────────────────────────────────
 
   /**
-   * Called right after the Review Queue is published (the scan committed). Fires the request at
+   * Called right after the Review Queue is published (the scan committed). Fires the requests at
    * once and returns: publication never waits for LBank.
    */
   onPublished(batchId: string): void {
     if (!this.immediateEnabled) return;
-    void this.capture(batchId, 'PUBLICATION', 0);
+    void this.publish(batchId);
+  }
+
+  /**
+   * Both venues' publication requests are queued at the same moment in the client's `immediate` lane:
+   * the Futures quote first (it is the Futures reference), the indicative Spot price right behind it.
+   * The client paces request starts (≥ 60 000 / LBANK_REQUESTS_PER_MINUTE ms apart), so the two are
+   * initiated together but never sent or answered at the same instant; each response is then processed
+   * on its own and neither waits for the other's processing.
+   */
+  async publish(batchId: string): Promise<void> {
+    try {
+      if (!(await this.cutover.get(this.providerId))) return;
+    } catch (err) {
+      this.log.warn(`Publication quotes not requested: ${redact(err)}`);
+      return;
+    }
+    const queuedAt = this.clock.now();
+    const futures = this.source.futuresMarketData({ lane: 'immediate' });
+    const spot = this.source.spotPrices({ lane: 'immediate' });
+    await Promise.all([
+      this.capture(batchId, 'PUBLICATION', 0, { fetch: futures, queuedAt }),
+      this.spotQuotes.capture(batchId, spot, queuedAt),
+    ]);
   }
 
   /** Called right after the intake committed the batch's observations. */
   afterIntake(batchId: string): void {
     if (!this.immediateEnabled) return;
+    void this.spotQuotes
+      .assignBatch(batchId)
+      .catch((err: unknown) =>
+        this.log.warn(`Spot price at publication not assigned after intake: ${redact(err)}`),
+      );
     void this.settleBatch(batchId)
       .then((ids) => this.books(ids))
       .catch((err: unknown) =>
@@ -254,12 +284,27 @@ export class FuturesQuoteService implements OnApplicationShutdown {
       );
   }
 
-  /** One immediate (or retry) request for a published batch; retries promptly when needed. */
-  async capture(batchId: string, trigger: QuoteSource, retryIndex: number): Promise<void> {
+  /**
+   * One immediate (or retry) request for a published batch; retries promptly when needed. `issued`:
+   * the publication's request, already queued by `publish`.
+   */
+  async capture(
+    batchId: string,
+    trigger: QuoteSource,
+    retryIndex: number,
+    issued?: { fetch: Promise<FuturesMarketFetch>; queuedAt: Date },
+  ): Promise<void> {
     try {
-      if (!(await this.cutover.get(this.providerId))) return;
-      const queuedAt = this.clock.now();
-      const f = await this.source.futuresMarketData();
+      let queuedAt: Date;
+      let f: FuturesMarketFetch;
+      if (issued) {
+        queuedAt = issued.queuedAt;
+        f = await issued.fetch;
+      } else {
+        if (!(await this.cutover.get(this.providerId))) return;
+        queuedAt = this.clock.now();
+        f = await this.source.futuresMarketData({ lane: 'immediate' });
+      }
       const resp = await this.recordRequest(f, { trigger, queuedAt, batchId, keepBody: true });
       const ids = await this.settleBatch(batchId, resp ?? undefined);
       const missing = await this.batchMissingEntry(batchId);
@@ -761,7 +806,7 @@ export class FuturesQuoteService implements OnApplicationShutdown {
       if (this.booking.has(t.id)) continue;
       this.booking.add(t.id);
       try {
-        const b = await this.source.futuresOrderBook(t.contract, BOOK_DEPTH);
+        const b = await this.source.futuresOrderBook(t.contract, BOOK_DEPTH, { lane: 'prompt' });
         await this.db.query(
           `INSERT INTO lbank_futures_book (futures_observation_id, contract, endpoint, request_started_at,
                   response_received_at, ok, error, best_bid, best_ask, bids, asks, response_sha256)

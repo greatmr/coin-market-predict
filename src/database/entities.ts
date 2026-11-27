@@ -38,7 +38,9 @@ import { ObservationResult } from '../modules/lbank-observation/entities/observa
 import { Observation } from '../modules/lbank-observation/entities/observation.entity.js';
 import { ObsRulesChange } from '../modules/lbank-observation/entities/rules-change.entity.js';
 import { SpotCandle } from '../modules/lbank-observation/entities/spot-candle.entity.js';
+import { SpotIndicativeQuote } from '../modules/lbank-observation/entities/spot-indicative-quote.entity.js';
 import { SpotPair } from '../modules/lbank-observation/entities/spot-pair.entity.js';
+import { SpotPriceRequest } from '../modules/lbank-observation/entities/spot-price-request.entity.js';
 import { SpotTrade } from '../modules/lbank-observation/entities/spot-trade.entity.js';
 import { TradeMinute } from '../modules/lbank-observation/entities/trade-minute.entity.js';
 import { JobLease } from '../modules/pipeline/entities/job-lease.entity.js';
@@ -114,6 +116,8 @@ export const ENTITIES = [
   FuturesSample,
   FuturesReference,
   FuturesBook,
+  SpotPriceRequest,
+  SpotIndicativeQuote,
   SpotCandle,
   MarketListFetch,
   Observation,

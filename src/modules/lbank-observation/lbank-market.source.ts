@@ -4,7 +4,7 @@ import { D } from '../../common/utils/decimal.js';
 import { type Clock, systemClock } from '../../common/utils/time.js';
 
 import type { FixtureCmcMarket } from '../sources/fixture/fixture-cmc.js';
-import type { PoliteHttpClient } from '../sources/http/polite-client.js';
+import type { PoliteHttpClient, RequestOptions } from '../sources/http/polite-client.js';
 import type { ProviderInfo } from '../sources/source.types.js';
 import { LBANK } from '../strategy/index.js';
 
@@ -13,12 +13,14 @@ import {
   type FuturesContract,
   type FuturesMarketRow,
   type KlineResponse,
+  type SpotPriceRow,
   type TradesResponse,
   parseFuturesMarketData,
   parseFuturesOrderBook,
   parseFuturesResponses,
   parseKlineResponse,
   parsePairsResponse,
+  parseSpotPrices,
   parseTradesResponse,
 } from './kline.js';
 import { lbankContractFromUrl, lbankSpotSymbolFromUrl } from './observation-rules.js';
@@ -51,11 +53,17 @@ export interface LbankMarketSource {
   futuresContracts(): Promise<ListFetch<FuturesContract>>;
   /**
    * `GET /cfd/openApi/v1/pub/marketData?productGroup=SwapU`: one snapshot of every contract (the only
-   * official Futures price source; no history). Used by the Futures sampled observation.
+   * official Futures price source; no history). Used by the Futures sampled observation. `opts.lane`
+   * is the request queue (publication requests are `immediate`, minute samples `prompt`).
    */
-  futuresMarketData(): Promise<FuturesMarketFetch>;
+  futuresMarketData(opts?: RequestOptions): Promise<FuturesMarketFetch>;
   /** `GET /cfd/openApi/v1/pub/marketOrder?symbol&depth`: one contract's current book (context only). */
-  futuresOrderBook(symbol: string, depth: number): Promise<FuturesBookFetch>;
+  futuresOrderBook(symbol: string, depth: number, opts?: RequestOptions): Promise<FuturesBookFetch>;
+  /**
+   * `GET /v2/supplement/ticker/price.do`: every Spot pair's latest price in one request (no trade
+   * time). Indicative context at publication only: never the Spot reference or a Spot return input.
+   */
+  spotPrices(opts?: RequestOptions): Promise<SpotPriceFetch>;
 }
 
 /** A failed attempt inside one request (it may have been retried by the HTTP client). */
@@ -93,6 +101,20 @@ export type FuturesMarketFetch = RequestTiming &
 export type FuturesBookFetch = RequestTiming &
   (
     | { ok: true; bids: BookLevel[]; asks: BookLevel[]; sha256: string }
+    | { ok: false; error: string }
+  );
+
+export type SpotPriceFetch = RequestTiming &
+  (
+    | {
+        ok: true;
+        rows: SpotPriceRow[];
+        invalid: number;
+        /** LBank's response time (`ts`): not a trade time. */
+        serverAt: Date | null;
+        sha256: string;
+        body: string;
+      }
     | { ok: false; error: string }
   );
 
@@ -206,8 +228,11 @@ export class LbankApiSource implements LbankMarketSource {
     }
   }
 
-  /** A GET with real send / receive times and every failed attempt (for the Futures quotes). */
-  private async timedGet(url: string): Promise<{
+  /** A GET with real send / receive times and every failed attempt (for the observed quotes). */
+  private async timedGet(
+    url: string,
+    opts: RequestOptions = {},
+  ): Promise<{
     body: string | null;
     error: string | null;
     requestStartedAt: Date | null;
@@ -217,14 +242,19 @@ export class LbankApiSource implements LbankMarketSource {
     let requestStartedAt: Date | null = null;
     const failedAttempts: FailedAttempt[] = [];
     try {
-      const body = await this.http.getText(url, undefined, {
-        onSend: (_attempt, at) => {
-          requestStartedAt = at;
+      const body = await this.http.getText(
+        url,
+        undefined,
+        {
+          onSend: (_attempt, at) => {
+            requestStartedAt = at;
+          },
+          onAttemptError: (_attempt, sentAt, at, message) => {
+            failedAttempts.push({ sentAt, failedAt: at, message });
+          },
         },
-        onAttemptError: (_attempt, sentAt, at, message) => {
-          failedAttempts.push({ sentAt, failedAt: at, message });
-        },
-      });
+        opts,
+      );
       return { body, error: null, requestStartedAt, fetchedAt: this.clock.now(), failedAttempts };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
@@ -232,9 +262,32 @@ export class LbankApiSource implements LbankMarketSource {
     }
   }
 
-  async futuresMarketData(): Promise<FuturesMarketFetch> {
+  async spotPrices(opts: RequestOptions = {}): Promise<SpotPriceFetch> {
+    const url = `${this.spotBase}/v2/supplement/ticker/price.do`;
+    const r = await this.timedGet(url, opts);
+    const timing = {
+      url,
+      requestStartedAt: r.requestStartedAt,
+      fetchedAt: r.fetchedAt,
+      failedAttempts: r.failedAttempts,
+    };
+    if (r.body === null) return { ...timing, ok: false, error: r.error ?? 'request failed' };
+    const p = parseSpotPrices(r.body);
+    if (p.kind === 'error') return { ...timing, ok: false, error: p.message };
+    return {
+      ...timing,
+      ok: true,
+      rows: p.rows,
+      invalid: p.invalid,
+      serverAt: p.serverMs === null ? null : new Date(p.serverMs),
+      sha256: p.responseSha256,
+      body: r.body,
+    };
+  }
+
+  async futuresMarketData(opts: RequestOptions = {}): Promise<FuturesMarketFetch> {
     const url = `${this.futuresBase}/cfd/openApi/v1/pub/marketData?productGroup=SwapU`;
-    const r = await this.timedGet(url);
+    const r = await this.timedGet(url, opts);
     const timing = {
       url,
       requestStartedAt: r.requestStartedAt,
@@ -255,10 +308,14 @@ export class LbankApiSource implements LbankMarketSource {
     };
   }
 
-  async futuresOrderBook(symbol: string, depth: number): Promise<FuturesBookFetch> {
+  async futuresOrderBook(
+    symbol: string,
+    depth: number,
+    opts: RequestOptions = {},
+  ): Promise<FuturesBookFetch> {
     const q = new URLSearchParams({ symbol, depth: String(depth) });
     const url = `${this.futuresBase}/cfd/openApi/v1/pub/marketOrder?${q.toString()}`;
-    const r = await this.timedGet(url);
+    const r = await this.timedGet(url, opts);
     const timing = {
       url,
       requestStartedAt: r.requestStartedAt,
@@ -526,6 +583,30 @@ export class FixtureLbankSource implements LbankMarketSource {
       invalid: 0,
       sha256: digest(rows),
       body: JSON.stringify({ data: rows, error_code: 0, msg: 'Success (fixture)' }),
+    };
+  }
+
+  /** Synthetic latest prices (labelled fixture): each listed pair's last synthetic trade price. */
+  async spotPrices(): Promise<SpotPriceFetch> {
+    await this.loadRefs();
+    const fetchedAt = this.clock.now();
+    const pairs = await this.spotPairs();
+    const minute = Math.floor(fetchedAt.getTime() / MINUTE_MS);
+    const rows: SpotPriceRow[] = (pairs.ok ? pairs.items : []).map((symbol) => ({
+      symbol,
+      price: new D(this.lastTradePrice(symbol, minute).toPrecision(8)).toFixed(),
+    }));
+    return {
+      url: 'fixture://lbank/v2/supplement/ticker/price.do',
+      requestStartedAt: fetchedAt,
+      fetchedAt,
+      failedAttempts: [],
+      ok: true,
+      rows,
+      invalid: 0,
+      serverAt: fetchedAt,
+      sha256: digest(rows),
+      body: JSON.stringify({ result: true, data: rows, error_code: 0, ts: fetchedAt.getTime() }),
     };
   }
 

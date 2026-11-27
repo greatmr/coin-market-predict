@@ -97,16 +97,18 @@ export const GUIDES: Record<GuideKey, Guide> = {
   observation: {
     title: 'How the LBank price observation works',
     intro:
-      'Each 1, 2 or 3-star event found by the hourly screen since the cutover is followed for exactly 168 hours from the moment the signal could be used, on LBank Spot (rules lbank-spot-obs-2, verified trades) and separately on LBank Futures (rules lbank-futures-sampled-1, sampled snapshots). Use Spot / Futures / Compare above the table to switch.',
+      'Each 1, 2 or 3-star event found by the hourly screen since the cutover is followed for exactly 168 hours from the moment the signal could be used, on LBank Spot (rules lbank-spot-obs-2, verified trades) and separately on LBank Futures (rules lbank-futures-quote-1: the first price observed after the signal, then about once a minute; older events keep their original method). Use Spot / Futures / Compare above the table to switch.',
     sections: [
       {
         h: 'Reading the table',
         items: [
-          'Spot / Futures / Compare switches the venue. Compare stacks both venues in the same cells; each is measured only against its own reference.',
+          'Spot / Futures / Compare switches the venue. Compare stacks both venues in the same cells; each is measured only against its own reference and through its own time. “Spot · verified” values are verified trades; “Fut · sampled” values are prices our once-a-minute requests observed (a move between two requests can be missed).',
+          'Data through (Compare): how far each venue’s values reach — Spot: the one-minute candles fetched so far (its verified trades lie before that); Futures: our latest observation. Highlighted with the difference when they are more than a minute apart: the two venues’ numbers then cover different spans and are not a same-moment comparison.',
+          'Observed through (Futures): when our latest response for that row arrived. Old-method rows show “LBank snapshot time through” instead: LBank’s own refresh time of its snapshot, a different clock (a few seconds earlier than our receipt), never converted, and not the time of a trade. The longest gap uses the same time base.',
           'Window start: when the Review Queue holding the signal was published; underneath, how long after the CMC crawl that was (about 5 s normally, about 8.5 min at 00:07 UTC when the daily rows are refreshed first).',
           'Reference: the first verified trade after the start; underneath, its market delay (e.g. +0.660 s). That is market time, not how long the page took to show it: Details → Timing shows those separately.',
           'Provisional: the 168-hour window is still running or a needed trade is not verified yet, so values can change. Final (Spot only): the window is over and every needed trade was verified. A job that succeeded, or 168 hours passing, is not enough on its own.',
-          'Sampling (Futures): the window is running and LBank Futures snapshots are being collected; it becomes Closed (sampled) at the end and is never Final.',
+          'Sampling (Futures): the window is running and LBank Futures prices are observed about once a minute; it becomes Closed (sampled) at the end and is never Final.',
           'Status · data · flags: the status, any reason beyond “window running”, data through (how far LBank data has been fetched — the last job may only have recomputed), gaps, review flags and overlapping windows.',
           'Delayed: at least one whole minute after the window start passed without a trade before the reference trade.',
           'Thin high: the highest verified price occurred in a minute with exactly one trade. Thin low: the lowest verified price occurred in a minute with exactly one trade.',
@@ -147,7 +149,9 @@ export const GUIDES: Record<GuideKey, Guide> = {
           'This is the price LBank reported when we asked, not a trade we can time: LBank’s response has no trade time, so the price may come from a trade before the signal. It is not the first Futures trade after the signal and not the price an order of ours would have filled at (no order is placed).',
           'Nothing waits for a minute tick or a change in 24 h turnover; if the first request fails, it is retried within seconds and the real delay of the first valid price is shown, with what sent it (publication, retry or minute tick).',
           'Highest and lowest: the extreme prices our requests observed during the window (about once a minute), vs the first observed price. Observed quotes, not verified trades; LBank’s 24 h high/low is never used.',
-          'Order book (Details): best bid and ask read right after the first price, as context only — never the reference, never an entry or fill price.',
+          'Spot quote at publication (Compare, Details): when the Review Queue is published, LBank Spot is asked for every pair’s latest price right behind the Futures request. It is indicative context for a same-moment comparison only — never the Spot reference (the first verified trade), never in a Spot return, highest, lowest, status or coverage. The two requests are queued together but LBank requests are spaced at least a second apart, so the two prices are never from the same instant: Details shows both requests’ sent and received times and the difference.',
+          'Order book (Details): best bid and ask read once, after the first price, as context only — its own capture time is shown with how long after the quote it arrived (typically 1–6 s): a later book, not the book at the quote’s moment, and never the reference, an entry or a fill price.',
+          'Entry evidence (Futures status, Details): “Immediate quote” = the first price came from the request fired at publication (or its prompt retry) — the only kind counted as an immediate Futures entry. “Minute-sample quote” = that request failed, so the first price came from the minute sampler. Old-method rows say what their records can establish: “before collection” (the window began before Futures collection existed), “first response kept” (the first price observed after the signal is known, from a minute sample) or “first response lost” (it cannot be reconstructed). Old and new results are never pooled.',
           'Contract: the one LBank Futures contract CMC attributes to this coin’s CMC id (by its market link) that LBank lists; a ticker match alone never counts (Contract ambiguous).',
           'Older events (before 2026-11-27) keep their original Futures method, labelled “old method”: a turnover-rise snapshot pair, or “Not sampled at start”. Their first price observed after the fix is shown apart and is never treated as their entry. Futures values are never taken from Spot or a listing. Never Final: an ended Futures window is “Closed (sampled)”.',
         ],
@@ -174,7 +178,9 @@ export const GUIDES: Record<GuideKey, Guide> = {
         h: 'Updates',
         items: [
           'A background job runs every 15 minutes, and also about a minute after each new event’s start minute closes (and every minute while a new reference is still pending), so a reference shows within a minute or two. “Update now” on the Data page starts it at once and says whether it fetched new data or only recomputed.',
-          'Reference delay (+0.660 s) is market time from the start to the trade. Details → Timing shows separately when the job verified it and when this page showed it. The page reloads within 30 s of a job storing new results.',
+          'Reference delay (+0.660 s) is market time from the start to the trade. Details → Timing shows separately when the job verified it and when this page showed it.',
+          'This page checks every 30 s while it is open (one small request): a Spot change (a job run or stored Spot values) reloads the rows and the summary; a Futures change (a new observation, price, extreme, status or data-through — about once a minute while a window runs) reloads only the rows. An open Details or overlap list reloads with it.',
+          'LBank requests wait in three queues: publication requests first, then minute samples and order books, then the Spot verification job. Requests are still started at most once per second, so a publication request waits at most for that spacing (it may run alongside one request already in flight), never behind the job’s backlog; the job is never stopped by it.',
           'Data through = how far LBank data was fetched; last recomputed is not new data. Each row shows its data through; “Details” lists every gap and the evidence behind each number.',
         ],
       },
@@ -185,7 +191,7 @@ export const GUIDES: Record<GuideKey, Guide> = {
         ],
       },
     ],
-    doc: 'docs/lbank-spot-observation.md (rules lbank-spot-obs-2; Futures § 13, lbank-futures-sampled-1)',
+    doc: 'docs/lbank-spot-observation.md (rules lbank-spot-obs-2; Futures § 13–13b, lbank-futures-quote-1)',
   },
   observationResults: {
     title: 'Reading the observation results',

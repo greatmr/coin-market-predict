@@ -48,12 +48,6 @@ interface CacheEntry {
   body: string;
 }
 
-/**
- * HTTP client for permitted, documented endpoints only. It enforces a request budget,
- * sequential requests with a per-minute rate limit, exponential backoff with jitter,
- * Retry-After handling, conditional requests (ETag), and a persisted circuit breaker that
- * suspends collection on persistent access denial. It never rotates identities or proxies.
- */
 /** Per-request timing callbacks (times from the client's clock). */
 export interface RequestHooks {
   /** An attempt is about to be sent (after queueing and rate limiting). */
@@ -62,6 +56,42 @@ export interface RequestHooks {
   onAttemptError?: (attempt: number, sentAt: Date | null, at: Date, message: string) => void;
 }
 
+/**
+ * Which queue a request waits in. `immediate`: a request fired the moment a signal is published
+ * (its timing is part of what is measured); `prompt`: short scheduled work that should not sit behind
+ * a batch (a minute sample, an order-book read); `routine`: everything else (verification batches,
+ * listings). Lanes change only the order in which waiting requests are sent, never the pacing.
+ */
+export type RequestLane = 'immediate' | 'prompt' | 'routine';
+export interface RequestOptions {
+  lane?: RequestLane;
+}
+const LANE_RANK: Record<RequestLane, number> = { immediate: 0, prompt: 1, routine: 2 };
+/**
+ * After this many requests of a higher lane were sent in a row while a routine request waited, the
+ * oldest routine request goes next: a flood of urgent requests can delay routine work, never stop it.
+ */
+export const MAX_PRIORITY_STREAK = 8;
+
+interface Waiter {
+  lane: RequestLane;
+  seq: number;
+  grant: () => void;
+}
+
+/**
+ * HTTP client for permitted, documented endpoints only. It enforces a request budget, a per-minute
+ * rate limit (request starts at least 60 000 / requestsPerMinute ms apart, whatever the lane),
+ * exponential backoff with jitter, Retry-After handling (no request of any lane is sent before it
+ * passes), conditional requests (ETag), and a persisted circuit breaker that suspends collection on
+ * persistent access denial. It never rotates identities or proxies.
+ *
+ * Requests wait in lanes (`RequestLane`): when the next send is allowed, the most urgent waiting
+ * request goes first (FIFO within a lane), so a publication request never queues behind a batch of
+ * routine requests. One request is in flight at a time, except that an `immediate` request may start
+ * while one other request is still awaiting its response (at most two, still paced); a retry waits
+ * out its backoff outside the queue. Before 2026-11-27 the client was one FIFO queue.
+ */
 export class PoliteHttpClient {
   private readonly o: Required<
     Omit<PoliteClientOptions, 'headers' | 'fetchImpl' | 'clock' | 'sleep' | 'responseStatus'>
@@ -74,7 +104,17 @@ export class PoliteHttpClient {
   private readonly fetchImpl: typeof fetch;
   private readonly etagCache = new Map<string, CacheEntry>();
   private lastRequestAt = 0;
-  private queue: Promise<unknown> = Promise.resolve();
+  /** No request is sent before this time (a Retry-After the source asked for). */
+  private blockedUntil = 0;
+  private readonly waiting: Waiter[] = [];
+  private seq = 0;
+  /** A granted attempt has not been sent yet (sends are strictly one after another). */
+  private pending = false;
+  /** Attempts sent and still awaiting their response. */
+  private inFlight = 0;
+  private pumping = false;
+  private priorityStreak = 0;
+  private healthChain: Promise<unknown> = Promise.resolve();
   public requestsMade = 0;
 
   constructor(opts: PoliteClientOptions) {
@@ -96,7 +136,7 @@ export class PoliteHttpClient {
     this.fetchImpl = opts.fetchImpl ?? fetch;
   }
 
-  /** Serialized GET returning parsed JSON. Concurrency is always 1 per client. */
+  /** GET returning parsed JSON (routine lane). */
   async getJson<T>(url: string): Promise<T> {
     return JSON.parse(await this.getText(url)) as T;
   }
@@ -104,36 +144,121 @@ export class PoliteHttpClient {
   /**
    * Keep the original digits for Decimal parsing and raw-response auditing. `hooks` report when each
    * attempt is actually sent (after the queue and the rate-limit wait) and when an attempt fails,
-   * for callers that must record real request timing.
+   * for callers that must record real request timing. `opts.lane` decides the queue (default
+   * `routine`).
    */
   getText(
     url: string,
     onResponse?: (res: Response, body: string) => Promise<void>,
     hooks?: RequestHooks,
+    opts: RequestOptions = {},
   ): Promise<string> {
-    const run = this.queue.then(() => this.doGet(url, onResponse, hooks));
-    this.queue = run.catch(() => undefined);
-    return run;
+    return this.doGet(url, onResponse, hooks, opts.lane ?? 'routine');
+  }
+
+  // ── Queue ───────────────────────────────────────────────────────────────────────────────
+
+  /** Resolves when this request may be sent (it then holds the next send until it is sent). */
+  private acquire(lane: RequestLane, seq: number): Promise<void> {
+    return new Promise<void>((grant) => {
+      this.waiting.push({ lane, seq, grant });
+      void this.pump();
+    });
+  }
+
+  /** The most urgent waiting request (FIFO within a lane), unless routine work is overdue. */
+  private pick(): Waiter | undefined {
+    let best: Waiter | undefined;
+    let routine: Waiter | undefined;
+    for (const w of this.waiting) {
+      if (
+        !best ||
+        LANE_RANK[w.lane] < LANE_RANK[best.lane] ||
+        (LANE_RANK[w.lane] === LANE_RANK[best.lane] && w.seq < best.seq)
+      )
+        best = w;
+      if (w.lane === 'routine' && (!routine || w.seq < routine.seq)) routine = w;
+    }
+    return routine && best !== routine && this.priorityStreak >= MAX_PRIORITY_STREAK
+      ? routine
+      : best;
+  }
+
+  /**
+   * Grant the next send once it is allowed: nothing pending, a free slot (an `immediate` request may
+   * join one request in flight), and the pacing and any Retry-After have passed. The choice is made
+   * only when the send is allowed, so a request that arrives during the wait can still go first.
+   */
+  private async pump(): Promise<void> {
+    if (this.pumping) return;
+    this.pumping = true;
+    try {
+      for (;;) {
+        if (this.pending || !this.waiting.length) return;
+        const next = this.pick()!;
+        if (this.inFlight > 0 && !(next.lane === 'immediate' && this.inFlight < 2)) return;
+        const notBefore = Math.max(
+          this.lastRequestAt + 60_000 / this.o.requestsPerMinute,
+          this.blockedUntil,
+        );
+        const wait = notBefore - this.clock.now().getTime();
+        if (wait > 0) {
+          await this.sleep(wait);
+          continue;
+        }
+        this.waiting.splice(this.waiting.indexOf(next), 1);
+        const routineWaits = this.waiting.some((w) => w.lane === 'routine');
+        this.priorityStreak = next.lane !== 'routine' && routineWaits ? this.priorityStreak + 1 : 0;
+        this.pending = true;
+        next.grant();
+        return;
+      }
+    } finally {
+      this.pumping = false;
+    }
+  }
+
+  /** The granted attempt will not be sent after all (unavailable source, budget). */
+  private releaseUnsent() {
+    this.pending = false;
+    void this.pump();
+  }
+
+  /** The granted attempt is being sent now: the next one may be chosen. */
+  private markSent() {
+    this.pending = false;
+    this.inFlight++;
+    void this.pump();
+  }
+
+  /** A sent attempt finished (response read, or failed): its slot is free. */
+  private markDone() {
+    this.inFlight--;
+    void this.pump();
   }
 
   private async doGet(
     url: string,
-    onResponse?: (res: Response, body: string) => Promise<void>,
-    hooks?: RequestHooks,
+    onResponse: ((res: Response, body: string) => Promise<void>) | undefined,
+    hooks: RequestHooks | undefined,
+    lane: RequestLane,
   ): Promise<string> {
+    const seq = this.seq++;
     let attempt = 0;
     for (;;) {
       attempt++;
-      const health = await this.o.store.load(this.o.providerId);
-      this.assertAvailable(health);
-      this.consumeBudget(health);
-      await this.o.store.save(this.o.providerId, health);
-      await this.rateLimit();
-
+      // A retry keeps its place in the lane (its original sequence number).
+      await this.acquire(lane, seq);
+      let sent = false;
       let res: Response;
       let body: string;
       let sentAt: Date | null = null;
       try {
+        await this.withHealth((h) => {
+          this.assertAvailable(h);
+          this.consumeBudget(h);
+        });
+        await this.rateLimit();
         const headers: Record<string, string> = {
           accept: 'application/json',
           'user-agent': this.o.userAgent,
@@ -142,11 +267,18 @@ export class PoliteHttpClient {
         const cached = this.etagCache.get(url);
         if (cached) headers['if-none-match'] = cached.etag;
         sentAt = this.clock.now();
+        sent = true;
+        this.markSent();
         hooks?.onSend?.(attempt, sentAt);
         res = await this.fetchImpl(url, { headers, signal: AbortSignal.timeout(this.o.timeoutMs) });
         this.requestsMade++;
         body = await res.text();
       } catch (err) {
+        if (!sent) {
+          this.releaseUnsent();
+          throw err;
+        }
+        this.markDone();
         hooks?.onAttemptError?.(attempt, sentAt, this.clock.now(), redact(err).slice(0, 300));
         await this.recordFailure(null);
         if (attempt >= this.o.maxAttempts) {
@@ -155,9 +287,11 @@ export class PoliteHttpClient {
             'failed',
           );
         }
+        // The backoff is waited outside the queue: other requests go meanwhile.
         await this.sleep(this.backoff(attempt));
         continue;
       }
+      this.markDone();
 
       await onResponse?.(res, res.status === 304 ? (this.etagCache.get(url)?.body ?? body) : body);
       const status = this.o.responseStatus?.(res, body) ?? res.status;
@@ -198,15 +332,14 @@ export class PoliteHttpClient {
         );
       }
       const retryAfterMs = parseRetryAfter(res.headers.get('retry-after'), this.clock.now());
-      if (status === 429) {
-        const h = await this.o.store.load(this.o.providerId);
-        h.retryAfterUntil = new Date(this.clock.now().getTime() + (retryAfterMs ?? 60_000));
-        await this.o.store.save(this.o.providerId, h);
-      }
+      if (status === 429)
+        await this.withHealth((h) => {
+          h.retryAfterUntil = new Date(this.clock.now().getTime() + (retryAfterMs ?? 60_000));
+        });
       if (retryAfterMs !== null && retryAfterMs > this.o.maxInlineRetryAfterMs) {
-        const h = await this.o.store.load(this.o.providerId);
-        h.retryAfterUntil = new Date(this.clock.now().getTime() + retryAfterMs);
-        await this.o.store.save(this.o.providerId, h);
+        await this.withHealth((h) => {
+          h.retryAfterUntil = new Date(this.clock.now().getTime() + retryAfterMs);
+        });
         throw new SourceUnavailableError(
           `Source asked us to wait ${Math.round(retryAfterMs / 1000)}s`,
           'retry_after',
@@ -220,9 +353,14 @@ export class PoliteHttpClient {
           status,
         );
       }
-      await this.sleep(
-        Math.max(retryAfterMs ?? (status === 429 ? 60_000 : 0), this.backoff(attempt)),
-      );
+      if (status === 429 || retryAfterMs !== null) {
+        // The source asked us to slow down: no request of any lane is sent before then.
+        const wait = Math.max(retryAfterMs ?? (status === 429 ? 60_000 : 0), this.backoff(attempt));
+        this.blockedUntil = Math.max(this.blockedUntil, this.clock.now().getTime() + wait);
+        continue;
+      }
+      // Plain server error: this request backs off outside the queue; others go meanwhile.
+      await this.sleep(this.backoff(attempt));
     }
   }
 
@@ -288,40 +426,57 @@ export class PoliteHttpClient {
     return Math.round(exp / 2 + Math.random() * (exp / 2));
   }
 
+  /**
+   * One read-modify-write of the persisted health record (budget, failures, circuit, Retry-After),
+   * one at a time in this client: requests overlap now (a response is processed while the next one
+   * is sent), and two interleaved updates would lose a budget or failure count. A throwing `fn`
+   * (source unavailable, budget exhausted) saves nothing, as before.
+   */
+  private withHealth<T>(fn: (h: SourceHealthState) => T): Promise<T> {
+    const run = this.healthChain.then(async () => {
+      const h = await this.o.store.load(this.o.providerId);
+      const out = fn(h);
+      await this.o.store.save(this.o.providerId, h);
+      return out;
+    });
+    this.healthChain = run.catch(() => undefined);
+    return run;
+  }
+
   private async recordSuccess(status: number) {
-    const h = await this.o.store.load(this.o.providerId);
-    h.state = 'closed';
-    h.consecutiveFailures = 0;
-    h.consecutiveDenials = 0;
-    h.openedAt = null;
-    h.lastSuccessAt = this.clock.now();
-    h.lastStatusCode = status;
-    await this.o.store.save(this.o.providerId, h);
+    await this.withHealth((h) => {
+      h.state = 'closed';
+      h.consecutiveFailures = 0;
+      h.consecutiveDenials = 0;
+      h.openedAt = null;
+      h.lastSuccessAt = this.clock.now();
+      h.lastStatusCode = status;
+    });
   }
 
   private async recordFailure(status: number | null) {
-    const h = await this.o.store.load(this.o.providerId);
-    h.consecutiveFailures++;
-    h.lastFailureAt = this.clock.now();
-    h.lastStatusCode = status;
-    if (h.state === 'half_open' || h.consecutiveFailures >= this.o.failureThreshold) {
-      h.state = 'open';
-      h.openedAt = this.clock.now();
-    }
-    await this.o.store.save(this.o.providerId, h);
+    await this.withHealth((h) => {
+      h.consecutiveFailures++;
+      h.lastFailureAt = this.clock.now();
+      h.lastStatusCode = status;
+      if (h.state === 'half_open' || h.consecutiveFailures >= this.o.failureThreshold) {
+        h.state = 'open';
+        h.openedAt = this.clock.now();
+      }
+    });
   }
 
   private async recordDenial(status: number) {
-    const h = await this.o.store.load(this.o.providerId);
-    h.consecutiveDenials++;
-    h.lastFailureAt = this.clock.now();
-    h.lastStatusCode = status;
-    if (h.consecutiveDenials >= this.o.denialThreshold) {
-      h.state = 'suspended';
-      h.suspendedReason = `HTTP ${status} returned ${h.consecutiveDenials} times in a row`;
-    }
-    await this.o.store.save(this.o.providerId, h);
-    return h;
+    return this.withHealth((h) => {
+      h.consecutiveDenials++;
+      h.lastFailureAt = this.clock.now();
+      h.lastStatusCode = status;
+      if (h.consecutiveDenials >= this.o.denialThreshold) {
+        h.state = 'suspended';
+        h.suspendedReason = `HTTP ${status} returned ${h.consecutiveDenials} times in a row`;
+      }
+      return h;
+    });
   }
 }
 

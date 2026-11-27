@@ -1,19 +1,28 @@
 // LBank price observation (docs/lbank-spot-observation.md): each CMC 1/2/3-star event since the
 // cutover, observed from the moment the signal was proven usable for exactly 168 h, on two venues
 // kept apart: LBank Spot (rules lbank-spot-obs-2, verified trades) and LBank Futures (rules
-// lbank-futures-sampled-1, sampled snapshots, weaker evidence). A venue switch shows one venue at a
-// time or both side by side; every detail is behind a row's "Details". The page reloads itself when
-// the observation job stores new results (change token, every 30 s while visible). List state lives
-// in the URL:
+// lbank-futures-quote-1, observed quotes about once a minute; older rows their original method). A
+// venue switch shows one venue at a time or both side by side; every detail is behind a row's
+// "Details". The page refreshes itself when stored values change (two change tokens, checked every
+// 30 s while visible: Spot reloads rows and summary, Futures only the rows). List state lives in the
+// URL:
 //   /lbank-spot?venue=compare&status=FINAL&fut=CLOSED&stars=3&cov=complete&flags=spike&from=2026-11-26&q=btc&sort=highest&dir=desc&page=2
-import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type ChangeEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 
 import { SearchField } from '../../components/icons';
 import {
   type Column,
-  Logo,
   Lab,
   LoadError,
+  Logo,
   Pager,
   SkeletonTable,
   Stars,
@@ -21,34 +30,50 @@ import {
 } from '../../components/ui';
 import { api, errorMessage } from '../../lib/api';
 import { humanize, triggerText } from '../../lib/constants';
-import { fmtAgo, fmtClock, fmtInt, fmtPct, fmtPrice, fmtTime, tz, fmtExact } from '../../lib/format';
+import {
+  fmtAgo,
+  fmtClock,
+  fmtExact,
+  fmtInt,
+  fmtPct,
+  fmtPrice,
+  fmtTime,
+  tz,
+} from '../../lib/format';
 import { useQueryState } from '../../lib/routes';
 import { useApp, useNow } from '../../state/app';
 
 import { openObservationDetail } from './ObservationDetail';
 import { openObservationOverlaps } from './Overlaps';
+import { notifyObservationChange } from './changes';
 import {
   ELIGIBILITY,
   FLAG,
+  FUTURES_QUOTE_LABEL,
+  FUT_EVIDENCE,
   FUT_STATUS,
   FUT_STATUS_TEXT,
-  FUTURES_QUOTE_LABEL,
   QUOTE_SOURCE_TEXT,
   STATUS,
+  TIME_BASIS,
   TIMING_TEXT,
   delayText,
+  diffText,
   obsReasonText,
   spanText,
 } from './labels';
 import type {
   FuturesSampled,
-  ObservedQuote,
   ObsSort,
   ObservationPage,
   ObservationRow,
   ObservationSummary,
   ObservationVersion,
+  ObservedQuote,
 } from './types';
+
+/** A Futures row's through time in its own basis (never converted between methods). */
+const futThrough = (f: FuturesSampled) => f.observedThrough ?? f.lbankSnapshotThrough;
 
 const PAGE = 100;
 const REFRESH_MS = 30_000;
@@ -214,7 +239,9 @@ const ObsCoin = ({ r }: { r: ObservationRow }) => (
       <b>
         {r.symbol} <Stars n={r.stars} />
       </b>
-      <span title={`${r.name} · CMC id ${r.cmcId}${r.points === null ? '' : ` · ${r.points}${r.scoreComplete === false ? ' ≥' : ''} weighted points`}`}>
+      <span
+        title={`${r.name} · CMC id ${r.cmcId}${r.points === null ? '' : ` · ${r.points}${r.scoreComplete === false ? ' ≥' : ''} weighted points`}`}
+      >
         {r.name}
       </span>
     </div>
@@ -222,7 +249,17 @@ const ObsCoin = ({ r }: { r: ObservationRow }) => (
 );
 
 /** A value on top, its context underneath (two lines instead of one crowded line). */
-const Two = ({ v, s, title, tone }: { v: ReactNode; s?: ReactNode; title?: string; tone?: string }) => (
+const Two = ({
+  v,
+  s,
+  title,
+  tone,
+}: {
+  v: ReactNode;
+  s?: ReactNode;
+  title?: string;
+  tone?: string;
+}) => (
   <div className={`obs-two${tone ? ` ${tone}` : ''}`} title={title}>
     <span className="v">{v}</span>
     {s ? <span className="s">{s}</span> : null}
@@ -241,7 +278,9 @@ function pendingText(r: ObservationRow, now: number): string {
   if (!r.window) return 'waiting for the window start';
   const readable = Math.floor(Date.parse(r.window.start) / 60_000) * 60_000 + 65_000;
   if (now < readable) return 'start minute still open';
-  return r.freshness.lastFetchError ? 'last LBank request failed: retried' : 'awaiting the next check';
+  return r.freshness.lastFetchError
+    ? 'last LBank request failed: retried'
+    : 'awaiting the next check';
 }
 
 function SpotReference({ r, now }: { r: ObservationRow; now: number }) {
@@ -333,7 +372,12 @@ function FuturesReference({ r }: { r: ObservationRow }) {
 function FuturesExtreme({ r, kind }: { r: ObservationRow; kind: 'highest' | 'lowest' }) {
   const f = r.futuresSampled;
   const v = f?.[kind];
-  if (!f || !v) return <span className="muted" title={futMissing(f)}>—</span>;
+  if (!f || !v)
+    return (
+      <span className="muted" title={futMissing(f)}>
+        —
+      </span>
+    );
   const observed = f.method === 'OBSERVED_QUOTE';
   return (
     <Two
@@ -352,13 +396,103 @@ function FuturesExtreme({ r, kind }: { r: ObservationRow; kind: 'highest' | 'low
 function FuturesStatusCell({ r }: { r: ObservationRow }) {
   const f = r.futuresSampled;
   if (!f) return <span className="muted">not created yet</span>;
+  const ev = FUT_EVIDENCE[f.evidenceClass];
   return (
     <div className="obs-status">
       <Lab map={FUT_STATUS} k={f.status} />
       <span className="muted small">
-        {f.reasons.length ? f.reasons.map(obsReasonText).join(' · ') : (FUT_STATUS_TEXT[f.status] ?? '')}
+        {f.reasons.length
+          ? f.reasons.map(obsReasonText).join(' · ')
+          : (FUT_STATUS_TEXT[f.status] ?? '')}
       </span>
+      {ev ? (
+        <span className={`small${f.immediateEntry ? '' : ' muted'}`} title={ev[1]}>
+          {ev[0]}
+        </span>
+      ) : null}
     </div>
+  );
+}
+
+/** How far a Futures row was observed, in its own time base, with samples and the longest gap. */
+function FuturesThroughCell({ r }: { r: ObservationRow }) {
+  const f = r.futuresSampled;
+  if (!f || f.mapping !== 'OK') return <span className="muted">—</span>;
+  const at = futThrough(f);
+  const [label, meaning] = TIME_BASIS[f.throughBasis] ?? [f.throughBasis, ''];
+  return (
+    <Two
+      v={at ? `${label} ${fmtShort(at)}` : 'not sampled'}
+      s={`${fmtInt(f.samplesInWindow)} observation${f.samplesInWindow === 1 ? '' : 's'} · max gap ${spanText(f.maxGapMs)}${f.method === 'OBSERVED_QUOTE' ? '' : ' · old method'}`}
+      title={`${label} ${fmtExact(at)}: ${meaning}.
+Longest interval without an observation: ${spanText(f.maxGapMs)} (same time base).
+Once-a-minute samples can miss a move between them: observed values, not proof of the exact high or low.`}
+    />
+  );
+}
+
+/** Each venue's data-through time and how far apart they are (Compare). */
+function CoverageCell({ r }: { r: ObservationRow }) {
+  const c = r.coverageTimes;
+  const f = r.futuresSampled;
+  const [label] = f ? (TIME_BASIS[f.throughBasis] ?? [f.throughBasis]) : ['—'];
+  return (
+    <div className="obs-pair">
+      <span className="venue">Spot</span>
+      <Two
+        v={c.spotDataThrough ? `through ${fmtShort(c.spotDataThrough)}` : 'not fetched'}
+        s="1-min candles"
+        title={`Spot: one-minute candles fetched through ${fmtExact(c.spotDataThrough)} (exclusive); highest and lowest are verified trades before it.${
+          c.spotLastFetchAt
+            ? `
+Last successful LBank fetch ${fmtExact(c.spotLastFetchAt)}.`
+            : ''
+        }`}
+      />
+      <span className="venue">Fut</span>
+      <Two
+        v={
+          c.futuresThrough
+            ? `${label === 'observed through' ? 'through' : label} ${fmtShort(c.futuresThrough)}`
+            : '—'
+        }
+        s={
+          c.differenceMs === null
+            ? 'about once a minute'
+            : c.differs
+              ? `${diffText(c.differenceMs)} vs Spot`
+              : 'within a minute of Spot'
+        }
+        tone={c.differs ? 'warn' : undefined}
+        title={`Futures ${label} ${fmtExact(c.futuresThrough)}${f ? ` (${TIME_BASIS[f.throughBasis]?.[1] ?? ''})` : ''}.${
+          c.differenceMs === null
+            ? ''
+            : `
+Futures through − Spot data through = ${diffText(c.differenceMs)}: the two venues' values cover ${c.differs ? 'visibly different spans — compare them with that in mind' : 'spans within one minute of each other (not the same instants)'}.`
+        }`}
+      />
+    </div>
+  );
+}
+
+/** The two publication requests side by side: initiated together, never simultaneous. */
+function PublicationLine({ r }: { r: ObservationRow }) {
+  const s = r.spotIndicative;
+  const p = r.publicationQuotes;
+  if (!s) return null;
+  return (
+    <span
+      className="muted small obs-pub"
+      title={`Spot price at publication (indicative): ${s.price} for ${s.pair}, from LBank’s all-pairs price request — not the Spot reference (a verified trade), never in a Spot return.
+Request queued ${fmtExact(s.requestQueuedAt)}, sent ${fmtExact(s.requestStartedAt)}, answered ${fmtExact(s.observedAt)} (${delayText(s.delayMs)} after publication); LBank response time ${fmtExact(s.lbankResponseAt)} (not a trade time).${
+        p
+          ? `
+Vs the Futures quote: sent ${diffText(p.sentDifferenceMs)}, answered ${diffText(p.receivedDifferenceMs)} later${p.queuedTogether ? ' (both queued at the publication; requests are paced, so never at the same instant)' : ''}.`
+          : ''
+      }`}
+    >
+      {`Spot quote at publication ${fmtPrice(s.price)}${p ? ` · ${diffText(p.receivedDifferenceMs)} vs Futures` : ''}`}
+    </span>
   );
 }
 
@@ -390,24 +524,33 @@ function Flags({ r }: { r: ObservationRow }) {
 
 function FreshnessBar({
   sum,
+  version,
   loadedAt,
   now,
 }: {
   sum: ObservationSummary;
+  version: { v: ObservationVersion; at: number } | null;
   loadedAt: number | null;
   now: number;
 }) {
   const run = sum.lastRun;
-  const poll = sum.futures.lastPoll;
+  const fut = version?.v.futures ?? null;
+  const poll = fut?.lastPoll ?? (sum.futures.lastPoll ? { ...sum.futures.lastPoll } : null);
+  const spotThrough = sum.freshness.oldestOpenDataThrough;
+  const futThroughAt = fut?.oldestOpenObservedThrough ?? null;
   return (
     <div className="obs-bar" role="status">
-      <div>
+      <div
+        title={
+          spotThrough
+            ? `Oldest open Spot window: one-minute candles fetched through ${fmtExact(spotThrough)} (exclusive); its verified trades lie before that. Fetched by the observation job (every 15 min and after each new event).`
+            : undefined
+        }
+      >
         <span className="k">Spot data through</span>
-        <b>{sum.freshness.oldestOpenDataThrough ? fmtTime(sum.freshness.oldestOpenDataThrough) : '—'}</b>
+        <b>{spotThrough ? fmtTime(spotThrough) : '—'}</b>
         <span className="muted small">
-          {sum.freshness.oldestOpenDataThrough
-            ? ` oldest open window, ${fmtAgo(sum.freshness.oldestOpenDataThrough, now)}`
-            : ''}
+          {spotThrough ? ` oldest open window, ${fmtAgo(spotThrough, now)}` : ''}
         </span>
       </div>
       <div title={run ? run.notes.at(-1) : undefined}>
@@ -419,15 +562,26 @@ function FreshnessBar({
             : ''}
         </span>
       </div>
-      <div>
-        <span className="k">Futures snapshot</span>
-        <b>{poll ? fmtTime(poll.fetchedAt) : '—'}</b>
-        <span className="muted small">{poll && !poll.ok ? ' failed: retried next minute' : ''}</span>
+      <div
+        title={`Futures (observed-quote rows still open): the oldest “observed through” time = when our latest response for that row was received; prices are sampled about once a minute.${poll ? `\nLast Futures request answered ${fmtExact(poll.fetchedAt)}${poll.ok ? '' : ' (failed: retried next minute)'}.` : ''}`}
+      >
+        <span className="k">Futures observed through</span>
+        <b>{futThroughAt ? fmtTime(futThroughAt) : '—'}</b>
+        <span className="muted small">
+          {futThroughAt
+            ? ` oldest open window, ${fmtAgo(futThroughAt, now)}`
+            : poll
+              ? ` last request ${fmtAgo(poll.fetchedAt, now)}`
+              : ''}
+          {poll && !poll.ok ? ' · last request failed' : ''}
+        </span>
       </div>
-      <div>
+      <div
+        title={`Checks for new values every 30 s while visible (one small request). A Spot change reloads rows and summary; a Futures-only change reloads the rows. Last check ${version ? fmtExact(new Date(version.at).toISOString()) : '—'}; data loaded ${loadedAt ? fmtExact(new Date(loadedAt).toISOString()) : '—'}.`}
+      >
         <span className="k">This page</span>
         <b>{loadedAt ? fmtAgo(new Date(loadedAt).toISOString(), now) : '—'}</b>
-        <span className="muted small"> reloads when the job stores new results</span>
+        <span className="muted small"> reloads when Spot or Futures values change</span>
       </div>
     </div>
   );
@@ -510,7 +664,8 @@ export default function Observation() {
     dir: 'desc',
     page: '1',
   });
-  const venue: Venue = (['spot', 'futures', 'compare'] as const).find((v) => v === query.venue) ?? 'spot';
+  const venue: Venue =
+    (['spot', 'futures', 'compare'] as const).find((v) => v === query.venue) ?? 'spot';
   const status = isIn(STATUS_FILTERS, query.status) ? query.status : '';
   const fut = isIn(FUT_FILTERS, query.fut) ? query.fut : '';
   const elig = isIn(ELIG_FILTERS, query.elig) ? query.elig : '';
@@ -529,9 +684,10 @@ export default function Observation() {
   const [searchText, setSearchText] = useState(query.q);
   const [data, setData] = useState<{ sum: ObservationSummary; list: ObservationPage } | null>(null);
   const [loadedAt, setLoadedAt] = useState<number | null>(null);
+  const [version, setVersion] = useState<{ v: ObservationVersion; at: number } | null>(null);
   const [error, setError] = useState<unknown>(null);
   const debounce = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const token = useRef('');
+  const tokens = useRef({ spot: '', futures: '' });
 
   useEffect(() => {
     setSearchText((t) => (t.trim() === query.q.trim() ? t : query.q));
@@ -552,44 +708,59 @@ export default function Observation() {
     return q;
   }, [status, fut, elig, cov, flags, stars, from, to, search]);
 
-  const load = useCallback(async () => {
-    const q = new URLSearchParams(filters);
-    q.set('sort', sort);
-    q.set('dir', dir);
-    q.set('limit', String(PAGE));
-    q.set('offset', String(page * PAGE));
-    try {
-      // The unfiltered summary: the nav count (active events), freshness and the cutover.
-      const [sum, list, v] = await Promise.all([
-        api<ObservationSummary>('observations/summary'),
-        api<ObservationPage>(`observations?${q}`),
-        api<ObservationVersion>('observations/version'),
-      ]);
-      token.current = `${v.lastRunId}|${v.lastRunFinishedAt}|${v.lastChangeAt}|${v.observations}`;
-      setNavCount('observation', sum.summary.byStatus.ACTIVE?.events ?? 0);
-      setData({ sum, list });
-      setLoadedAt(Date.now());
-      setError(null);
-    } catch (e) {
-      console.error(e);
-      setError(e);
-    }
-  }, [filters, sort, dir, page, setNavCount]);
+  /**
+   * `rows`: only the visible rows (a Futures-only change); `all`: rows and the summary. The change
+   * tokens are read BEFORE the data, so the token kept is never newer than the values shown: a
+   * change committed in between moves the token again and is fetched at the next check.
+   */
+  const load = useCallback(
+    async (scope: 'all' | 'rows' = 'all') => {
+      const q = new URLSearchParams(filters);
+      q.set('sort', sort);
+      q.set('dir', dir);
+      q.set('limit', String(PAGE));
+      q.set('offset', String(page * PAGE));
+      try {
+        const v = await api<ObservationVersion>('observations/version');
+        // The unfiltered summary: the nav count (active events), freshness and the cutover.
+        const [sum, list] = await Promise.all([
+          scope === 'all' ? api<ObservationSummary>('observations/summary') : null,
+          api<ObservationPage>(`observations?${q}`),
+        ]);
+        tokens.current = { spot: v.spotToken, futures: v.futuresToken };
+        setVersion({ v, at: Date.now() });
+        if (sum) setNavCount('observation', sum.summary.byStatus.ACTIVE?.events ?? 0);
+        setData((d) => (sum ? { sum, list } : d ? { ...d, list } : d));
+        setLoadedAt(Date.now());
+        setError(null);
+      } catch (e) {
+        console.error(e);
+        setError(e);
+      }
+    },
+    [filters, sort, dir, page, setNavCount],
+  );
 
   useEffect(() => {
     void load();
   }, [dataVersion, load]);
   useEffect(() => () => clearTimeout(debounce.current), []);
 
-  // Display freshness: reload when the observation job stored something new (not only when the
-  // hourly CMC batch changes), checked every 30 s while the page is visible and on return to it.
+  // Display freshness: every 30 s while the page is visible (and on return to it) one cheap version
+  // read; a Spot change (job run, stored Spot values) reloads rows and summary, a Futures-only change
+  // (a displayed Futures value, a publication quote, an order book) reloads the rows. Open dialogs
+  // are told to reload as well.
   useEffect(() => {
     const check = async () => {
       if (document.hidden) return;
       try {
         const v = await api<ObservationVersion>('observations/version');
-        const k = `${v.lastRunId}|${v.lastRunFinishedAt}|${v.lastChangeAt}|${v.observations}`;
-        if (token.current && k !== token.current) await load();
+        setVersion({ v, at: Date.now() });
+        const spot = !!tokens.current.spot && v.spotToken !== tokens.current.spot;
+        const futures = !!tokens.current.futures && v.futuresToken !== tokens.current.futures;
+        if (!spot && !futures) return;
+        await load(spot ? 'all' : 'rows');
+        notifyObservationChange({ spot, futures });
       } catch {
         /* the shell's 30 s tick reports API errors */
       }
@@ -688,7 +859,9 @@ export default function Observation() {
               className="muted small"
               title={`Data through ${fmtExact(r.freshness.dataThrough)} (${fmtAgo(r.freshness.dataThrough, now)})\n${fmtInt(r.coverage.minutesPresent)} of ${fmtInt(r.coverage.minutesExpected)} minutes with a candle, ${fmtInt(r.coverage.minutesTraded)} traded\nlast LBank fetch ${fmtExact(r.freshness.lastSourceFetchAt)}\nlast recomputed ${fmtExact(r.freshness.lastRecomputedAt)} (recomputing is not fresh data)${r.freshness.lastFetchError ? `\nlast error: ${r.freshness.lastFetchError}` : ''}`}
             >
-              {r.freshness.dataThrough ? `data through ${fmtShort(r.freshness.dataThrough)}` : 'no data fetched yet'}
+              {r.freshness.dataThrough
+                ? `data through ${fmtShort(r.freshness.dataThrough)}`
+                : 'no data fetched yet'}
               {gaps ? ` · ${gaps} gap${gaps > 1 ? 's' : ''}` : ''}
             </span>
             <Flags r={r} />
@@ -715,35 +888,35 @@ export default function Observation() {
         },
         {
           label: 'First price observed',
-          title: 'The first Futures price our requests observed after the signal (response receipt), and its real delay. Old-method rows are labelled “old method”.',
+          title:
+            'The first Futures price our requests observed after the signal (response receipt), and its real delay. Old-method rows are labelled “old method”.',
           render: (r) => <FuturesReference r={r} />,
         },
         {
           label: head('futuresHighest', 'Highest'),
           num: true,
-          title: 'Highest Futures price our requests observed in the window, vs the first observed price (old method: a bound, marked ≥)',
+          title:
+            'Highest Futures price our requests observed in the window, vs the first observed price (old method: a bound, marked ≥)',
           render: (r) => <FuturesExtreme r={r} kind="highest" />,
         },
         {
           label: head('futuresLowest', 'Lowest'),
           num: true,
-          title: 'Lowest Futures price our requests observed in the window, vs the first observed price (old method: a bound, marked ≤)',
+          title:
+            'Lowest Futures price our requests observed in the window, vs the first observed price (old method: a bound, marked ≤)',
           render: (r) => <FuturesExtreme r={r} kind="lowest" />,
         },
-        { label: 'Futures status', render: (r) => <FuturesStatusCell r={r} /> },
         {
-          label: 'Sampling',
-          title: 'Observations in the window, the longest gap between them, and how far sampled',
-          render: (r) => {
-            const f = r.futuresSampled;
-            if (!f || f.mapping !== 'OK') return <span className="muted">—</span>;
-            return (
-              <Two
-                v={f.sampledThrough ? `through ${fmtShort(f.sampledThrough)}` : 'not sampled'}
-                s={`${fmtInt(f.samplesInWindow)} observations · max gap ${spanText(f.maxGapMs)}${f.method === 'OBSERVED_QUOTE' ? '' : ' · old method'}`}
-              />
-            );
-          },
+          label: 'Futures status',
+          title:
+            'Status, its reason, and what the stored records establish about the entry (only “Immediate quote” is an immediate Futures entry)',
+          render: (r) => <FuturesStatusCell r={r} />,
+        },
+        {
+          label: 'Observed through',
+          title:
+            'How far the window was observed, each method in its own time base: “observed through” = when our latest response arrived; old-method rows show LBank’s snapshot time instead. Underneath: observations in the window and the longest gap between them.',
+          render: (r) => <FuturesThroughCell r={r} />,
         },
         details,
       ];
@@ -753,18 +926,27 @@ export default function Observation() {
         signal,
         {
           label: 'Reference',
+          title:
+            'Spot: the first verified trade after the start (its trade time). Futures: the first price our request observed after the publication (its response time). Different kinds of time; underneath, the indicative Spot quote from the publication request, if any.',
           render: (r) => (
             <div className="obs-pair">
               <span className="venue">Spot</span>
               <SpotReference r={r} now={now} />
               <span className="venue">Fut</span>
               <FuturesReference r={r} />
+              <PublicationLine r={r} />
             </div>
           ),
         },
         {
-          label: head('highest', 'Highest'),
-          title: 'Spot: verified. Futures: sampled lower bound. Each vs its own reference.',
+          label: (
+            <span className="obs-th2">
+              {head('highest', 'Highest')}
+              <small>Spot verified · Fut sampled</small>
+            </span>
+          ),
+          title:
+            'Spot: verified trades. Futures: the highest price our once-a-minute requests observed (a move between samples can be missed). Each vs its own reference, each through its own time (Data through).',
           render: (r) => (
             <div className="obs-pair">
               <span className="venue">Spot</span>
@@ -775,8 +957,14 @@ export default function Observation() {
           ),
         },
         {
-          label: head('lowest', 'Lowest'),
-          title: 'Spot: verified. Futures: sampled upper bound. Each vs its own reference.',
+          label: (
+            <span className="obs-th2">
+              {head('lowest', 'Lowest')}
+              <small>Spot verified · Fut sampled</small>
+            </span>
+          ),
+          title:
+            'Spot: verified trades. Futures: the lowest price our once-a-minute requests observed (a move between samples can be missed). Each vs its own reference, each through its own time (Data through).',
           render: (r) => (
             <div className="obs-pair">
               <span className="venue">Spot</span>
@@ -785,6 +973,12 @@ export default function Observation() {
               <FuturesExtreme r={r} kind="lowest" />
             </div>
           ),
+        },
+        {
+          label: 'Data through',
+          title:
+            'How far each venue’s values reach: Spot = one-minute candles fetched (verified trades before it); Futures = our latest observation (old-method rows: LBank’s snapshot time). Highlighted when they differ by more than a minute.',
+          render: (r) => <CoverageCell r={r} />,
         },
         {
           label: 'Status',
@@ -796,7 +990,11 @@ export default function Observation() {
               </span>
               <span className="venue">Fut</span>
               {r.futuresSampled ? (
-                <Lab map={FUT_STATUS} k={r.futuresSampled.status} title={futMissing(r.futuresSampled)} />
+                <Lab
+                  map={FUT_STATUS}
+                  k={r.futuresSampled.status}
+                  title={futMissing(r.futuresSampled)}
+                />
               ) : (
                 <span className="muted">—</span>
               )}
@@ -817,7 +1015,8 @@ export default function Observation() {
       {
         label: head('highest', 'Highest'),
         num: true,
-        title: 'Maximum rise vs the reference: 100 × (highest verified trade ÷ reference − 1). Not profit.',
+        title:
+          'Maximum rise vs the reference: 100 × (highest verified trade ÷ reference − 1). Not profit.',
         render: (r) => <SpotExtreme r={r} kind="highest" />,
       },
       {
@@ -837,13 +1036,29 @@ export default function Observation() {
   const pick = (k: string) => (v: string) => setQuery({ [k]: v, page: null }, { push: true });
   return (
     <>
-      {data ? <FreshnessBar sum={data.sum} loadedAt={loadedAt} now={now} /> : null}
+      {data ? (
+        <FreshnessBar sum={data.sum} version={version} loadedAt={loadedAt} now={now} />
+      ) : null}
       <div className="toolbar obs-toolbar">
-        <Seg label="Venue" items={VENUES} value={venue} onPick={(v) => setQuery({ venue: v === 'spot' ? null : v }, { push: true })} />
-        <SearchField label="Filter by coin, CMC id or pair" value={searchText} onChange={onSearch} />
+        <Seg
+          label="Venue"
+          items={VENUES}
+          value={venue}
+          onPick={(v) => setQuery({ venue: v === 'spot' ? null : v }, { push: true })}
+        />
+        <SearchField
+          label="Filter by coin, CMC id or pair"
+          value={searchText}
+          onChange={onSearch}
+        />
         <Seg label="Stars" items={STAR_FILTERS} value={stars} onPick={pick('stars')} />
         {venue !== 'futures' ? (
-          <Select label="Spot status" items={STATUS_FILTERS} value={status} onPick={pick('status')} />
+          <Select
+            label="Spot status"
+            items={STATUS_FILTERS}
+            value={status}
+            onPick={pick('status')}
+          />
         ) : null}
         {venue !== 'spot' ? (
           <Select label="Futures status" items={FUT_FILTERS} value={fut} onPick={pick('fut')} />
@@ -851,13 +1066,31 @@ export default function Observation() {
         <MoreFilters
           active={moreActive}
           onClear={() =>
-            setQuery({ elig: null, cov: null, flags: null, from: null, to: null, page: null }, { push: true })
+            setQuery(
+              { elig: null, cov: null, flags: null, from: null, to: null, page: null },
+              { push: true },
+            )
           }
         >
-          <Select label="Listing evidence" items={ELIG_FILTERS} value={elig} onPick={pick('elig')} title="Spot at the signal and Futures listing snapshots" />
+          <Select
+            label="Listing evidence"
+            items={ELIG_FILTERS}
+            value={elig}
+            onPick={pick('elig')}
+            title="Spot at the signal and Futures listing snapshots"
+          />
           <Select label="Coverage" items={COVERAGE_FILTERS} value={cov} onPick={pick('cov')} />
-          <Select label="Flags" items={FLAG_FILTERS} value={flags} onPick={pick('flags')} title="Review flags stay in every count; this only filters the table" />
-          <label className="select-field" title="UTC date of the CMC crawl (the event's date), from">
+          <Select
+            label="Flags"
+            items={FLAG_FILTERS}
+            value={flags}
+            onPick={pick('flags')}
+            title="Review flags stay in every count; this only filters the table"
+          />
+          <label
+            className="select-field"
+            title="UTC date of the CMC crawl (the event's date), from"
+          >
             <span>Crawl from (UTC date)</span>
             <input type="date" value={from} onChange={(e) => pick('from')(e.target.value)} />
           </label>

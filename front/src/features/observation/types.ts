@@ -83,9 +83,22 @@ export interface FuturesSampled {
   quote: ObservedQuote | null;
   /** Legacy method only. */
   reference: Bracketed | null;
-  highest: { price: string; pct: string | null; observedAt?: string; after?: string; before?: string } | null;
-  lowest: { price: string; pct: string | null; observedAt?: string; after?: string; before?: string } | null;
+  highest: {
+    price: string;
+    pct: string | null;
+    observedAt?: string;
+    after?: string;
+    before?: string;
+  } | null;
+  lowest: {
+    price: string;
+    pct: string | null;
+    observedAt?: string;
+    after?: string;
+    before?: string;
+  } | null;
   postFixQuote: ObservedQuote | null;
+  /** Read once after the first quote: a later book, never the book at the quote's moment. */
   book: {
     ok: boolean;
     error: string | null;
@@ -93,13 +106,74 @@ export interface FuturesSampled {
     bestAsk: string | null;
     requestStartedAt: string | null;
     responseReceivedAt: string;
+    /** Book response − first quote response (ms). */
+    afterQuoteMs: number | null;
   } | null;
   samplesInWindow: number;
   bracketedInWindow: number;
+  /** Longest interval without an observation, in `throughBasis` time. */
   maxGapMs: number;
-  sampledThrough: string | null;
+  /** The time base of the through time and the longest gap (each method keeps its own). */
+  throughBasis: TimeBasis;
+  /** Observed-quote method: our latest eligible response's receipt. */
+  observedThrough: string | null;
+  /** Old method: LBank's snapshot refresh time of the latest folded snapshot (not a trade time). */
+  lbankSnapshotThrough: string | null;
+  evidenceClass: FuturesEvidenceClass;
+  immediateEntry: boolean;
   lastUpdateAt: string | null;
+  valuesChangedAt: string | null;
   finalizedAt: string | null;
+}
+
+export type TimeBasis = 'OUR_RESPONSE_RECEIVED' | 'LBANK_SNAPSHOT_TIME';
+
+export type FuturesEvidenceClass =
+  | 'IMMEDIATE_QUOTE'
+  | 'TICK_QUOTE'
+  | 'QUOTE_PENDING'
+  | 'NO_QUOTE'
+  | 'NO_CONTRACT'
+  | 'LEGACY_BEFORE_COLLECTION'
+  | 'LEGACY_FIRST_RESPONSE_RETAINED'
+  | 'LEGACY_FIRST_RESPONSE_LOST'
+  | 'LEGACY_UNRESOLVED';
+
+/** The pair's latest price in the Spot price request fired at publication (indicative only). */
+export interface IndicativeSpotQuote {
+  price: string;
+  pair: string;
+  requestQueuedAt: string;
+  requestStartedAt: string;
+  observedAt: string;
+  storedAt: string;
+  delayMs: number;
+  /** LBank's response time: not a trade time. */
+  lbankResponseAt: string | null;
+  requestId: string;
+  endpoint: string;
+}
+
+/** The two publication requests side by side (initiated together, never simultaneous). */
+export interface PublicationQuotes {
+  futuresSource: string;
+  futuresRequestStartedAt: string;
+  spotRequestStartedAt: string;
+  sentDifferenceMs: number;
+  futuresObservedAt: string;
+  spotObservedAt: string;
+  receivedDifferenceMs: number;
+  queuedTogether: boolean;
+}
+
+/** How far each venue's data reaches, in its own time base, and how far apart. */
+export interface CoverageTimes {
+  spotDataThrough: string | null;
+  spotLastFetchAt: string | null;
+  futuresThrough: string | null;
+  futuresBasis: TimeBasis | null;
+  differenceMs: number | null;
+  differs: boolean;
 }
 
 export interface Gap {
@@ -186,6 +260,10 @@ export interface ObservationRow {
   isLive: boolean;
   /** Futures listing evidence is `futures`; the Futures result is this. */
   futuresSampled: FuturesSampled | null;
+  /** Indicative Spot quote at publication: never the Spot reference, a return or an extreme. */
+  spotIndicative: IndicativeSpotQuote | null;
+  publicationQuotes: PublicationQuotes | null;
+  coverageTimes: CoverageTimes;
 }
 
 export interface Timeline {
@@ -216,9 +294,31 @@ export interface Timeline {
   processingDelayMs: number | null;
 }
 
+export interface PublicationRequest {
+  requestId: string;
+  queuedAt: string | null;
+  startedAt: string | null;
+  receivedAt: string | null;
+  storedAt: string | null;
+  ok: boolean;
+  error: string | null;
+}
+
 /** GET /api/observations/:id */
 export interface ObservationDetail extends ObservationRow {
   displayedRulesVersion: string;
+  /** Every request fired for this event's publication, both venues, with their real times. */
+  publicationRequests: {
+    futures: Array<PublicationRequest & { trigger: string; attempt: number }>;
+    spot: Array<
+      PublicationRequest & {
+        endpoint: string;
+        lbankResponseAt: string | null;
+        pairs: number;
+        failedAttempts: Array<{ sentAt: string | null; failedAt: string; message: string }>;
+      }
+    >;
+  };
   event: {
     detectedUtcDate: string;
     crawlAt: string;
@@ -413,17 +513,44 @@ export interface ObservationSummary {
       OBSERVED_QUOTE: Partial<Record<FuturesStatus, number>>;
       LEGACY_TURNOVER_BRACKET: Partial<Record<FuturesStatus, number>>;
     };
-    lastPoll: { fetchedAt: string; serverAt: string | null; ok: boolean; error: string | null } | null;
+    lastPoll: {
+      fetchedAt: string;
+      serverAt: string | null;
+      ok: boolean;
+      error: string | null;
+    } | null;
+    /** Old and new methods apart: only IMMEDIATE_QUOTE is an immediate Futures entry. */
+    byEvidence: Record<FuturesEvidenceClass, number>;
+    immediateEntries: number;
+    freshness: {
+      openObservedRows: number;
+      oldestOpenObservedThrough: string | null;
+      latestObservedThrough: string | null;
+      lastValuesChangeAt: string | null;
+    };
   };
 }
 
-/** GET /api/observations/version */
+/** GET /api/observations/version: cheap change tokens, polled every 30 s. */
 export interface ObservationVersion {
   lastRunId: string | null;
   lastRunStatus: string | null;
   lastRunFinishedAt: string | null;
   lastChangeAt: string | null;
   observations: number;
+  futures: {
+    lastValuesChangeAt: string | null;
+    rows: number;
+    lastQuoteStoredAt: string | null;
+    lastBookStoredAt: string | null;
+    lastSpotQuoteStoredAt: string | null;
+    oldestOpenObservedThrough: string | null;
+    lastPoll: { fetchedAt: string; ok: boolean } | null;
+  };
+  /** Moves with Spot job runs and stored Spot changes (reload list and summary). */
+  spotToken: string;
+  /** Moves only when a displayed Futures value or a publication quote changes (reload the rows). */
+  futuresToken: string;
 }
 
 export interface LegacyStatus {

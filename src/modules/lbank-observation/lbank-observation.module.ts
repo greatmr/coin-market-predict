@@ -29,7 +29,9 @@ import { ObservationResult } from './entities/observation-result.entity.js';
 import { Observation } from './entities/observation.entity.js';
 import { ObsRulesChange } from './entities/rules-change.entity.js';
 import { SpotCandle } from './entities/spot-candle.entity.js';
+import { SpotIndicativeQuote } from './entities/spot-indicative-quote.entity.js';
 import { SpotPair } from './entities/spot-pair.entity.js';
+import { SpotPriceRequest } from './entities/spot-price-request.entity.js';
 import { SpotTrade } from './entities/spot-trade.entity.js';
 import { TradeMinute } from './entities/trade-minute.entity.js';
 import { FuturesQuoteService } from './futures-quote.service.js';
@@ -47,6 +49,7 @@ import { ObservationIntakeService } from './observation-intake.service.js';
 import { ObservationReadService } from './observation-read.service.js';
 import { ObservationUpdateService } from './observation-update.service.js';
 import { ObservationService } from './observation.service.js';
+import { SpotQuoteService } from './spot-quote.service.js';
 import { TradeStoreService } from './trade-store.service.js';
 
 /**
@@ -118,6 +121,8 @@ export function createLbankSource(
       FuturesSample,
       FuturesReference,
       FuturesBook,
+      SpotPriceRequest,
+      SpotIndicativeQuote,
     ]),
     AppStateModule,
     SourcesModule,
@@ -140,6 +145,7 @@ export function createLbankSource(
     ObservationService,
     FuturesSamplerService,
     FuturesQuoteService,
+    SpotQuoteService,
   ],
   exports: [
     FuturesSamplerService,

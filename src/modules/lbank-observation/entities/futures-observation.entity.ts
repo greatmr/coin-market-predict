@@ -140,7 +140,11 @@ export class FuturesObservation {
   @Column({ name: 'max_gap_ms', type: 'bigint', default: 0 })
   maxGapMs!: string;
 
-  /** Latest folded snapshot of the contract (data freshness). */
+  /**
+   * How far the window was sampled, in each method's own time base (never converted):
+   * `lbank-futures-quote-1` = our latest eligible response's RECEIPT time; `lbank-futures-sampled-1`
+   * = LBank's snapshot refresh time (`lastTime`) of the latest folded snapshot (not a trade time).
+   */
   @Column({ name: 'sampled_through', type: 'timestamptz', nullable: true })
   sampledThrough!: Date | null;
 
@@ -149,6 +153,17 @@ export class FuturesObservation {
 
   @Column({ name: 'finalized_at', type: 'timestamptz', nullable: true })
   finalizedAt!: Date | null;
+
+  /** Set by a trigger when a displayed value changes (M020); never written by the application. */
+  @Index('ix_lbank_futures_observation_changed')
+  @Column({
+    name: 'values_changed_at',
+    type: 'timestamptz',
+    nullable: true,
+    insert: false,
+    update: false,
+  })
+  valuesChangedAt!: Date | null;
 
   @CreatedAtColumn()
   createdAt!: Date;

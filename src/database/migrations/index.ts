@@ -17,6 +17,7 @@ import { M016LbankObservationV21793923200016 } from './1793923200016-M016LbankOb
 import { M017LbankFuturesSampled1793923200017 } from './1793923200017-M017LbankFuturesSampled.js';
 import { M018LbankFuturesObservedQuote1793923200018 } from './1793923200018-M018LbankFuturesObservedQuote.js';
 import { M019Chat1793923200019 } from './1793923200019-M019Chat.js';
+import { M020ObservationFreshness1793923200020 } from './1793923200020-M020ObservationFreshness.js';
 
 /**
  * Every migration, in order, listed explicitly (no glob, so TypeScript tests and compiled ESM load
@@ -43,4 +44,5 @@ export const MIGRATIONS = [
   M017LbankFuturesSampled1793923200017,
   M018LbankFuturesObservedQuote1793923200018,
   M019Chat1793923200019,
+  M020ObservationFreshness1793923200020,
 ];

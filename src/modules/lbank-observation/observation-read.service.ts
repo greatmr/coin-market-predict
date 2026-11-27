@@ -13,6 +13,15 @@ import { ObservationResult } from './entities/observation-result.entity.js';
 import { ObsRulesChange } from './entities/rules-change.entity.js';
 import { FUTURES_QUOTE_PRICE_SOURCE, FUTURES_QUOTE_RULES_VERSION } from './futures-quote-rules.js';
 import { FUTURES_PRICE_SOURCE, type FuturesStatus } from './futures-rules.js';
+import {
+  type CoverageTimes,
+  FUTURES_EVIDENCE_CLASSES,
+  type FuturesEvidenceClass,
+  type FuturesTimeBasis,
+  coverageTimes,
+  futuresEvidence,
+  futuresThrough,
+} from './observation-freshness.js';
 import { type ObservationSummary, type Stats, summarize } from './observation-stats.js';
 import {
   CLOSED_BAR_MARGIN_MS,
@@ -125,11 +134,53 @@ export interface ObservationRow {
   overlapping: number;
   isLive: boolean;
   /**
-   * The LBank Futures side (rules `lbank-futures-sampled-1`): its own contract, sampled reference,
-   * bounds and status, relative to its own reference only. Null until the sampler created the row.
-   * (`futures` above stays the listing evidence.)
+   * The LBank Futures side (rules `lbank-futures-quote-1`, older rows `lbank-futures-sampled-1`): its
+   * own contract, reference, observed values and status, relative to its own reference only. Null
+   * until the row exists. (`futures` above stays the listing evidence.)
    */
   futuresSampled: FuturesView | null;
+  /**
+   * Indicative LBank Spot quote at publication (requested together with the Futures quote): context
+   * for a same-moment comparison only — never the Spot reference, a Spot return or extreme.
+   */
+  spotIndicative: IndicativeSpotQuote | null;
+  /** The two publication requests side by side: initiated together, never simultaneous. */
+  publicationQuotes: PublicationQuotes | null;
+  /** How far each venue's data reaches (each in its own time base) and how far apart that is. */
+  coverageTimes: CoverageTimes;
+}
+
+/** The pair's latest price in the Spot price request fired at publication (no trade time). */
+export interface IndicativeSpotQuote {
+  price: string;
+  pair: string;
+  requestQueuedAt: string;
+  requestStartedAt: string;
+  /** Response received (our clock). */
+  observedAt: string;
+  storedAt: string;
+  /** Response receipt − actionable start. */
+  delayMs: number;
+  /** LBank's response time (`ts`): not the time of a trade. */
+  lbankResponseAt: string | null;
+  requestId: string;
+  endpoint: string;
+}
+
+/** Futures and Spot publication requests compared (times from our clock; LBank gives no trade time). */
+export interface PublicationQuotes {
+  /** What sent the Futures quote's request (PUBLICATION, RETRY or TICK). */
+  futuresSource: string;
+  futuresRequestStartedAt: string;
+  spotRequestStartedAt: string;
+  /** Spot send − Futures send (ms): the client paces request starts, so never 0. */
+  sentDifferenceMs: number;
+  futuresObservedAt: string;
+  spotObservedAt: string;
+  /** Spot response − Futures response (ms). */
+  receivedDifferenceMs: number;
+  /** Both requests were queued at the same moment (the publication). */
+  queuedTogether: boolean;
 }
 
 /** An observed Futures quote: our request's times and the price LBank returned (no trade time). */
@@ -189,7 +240,10 @@ export interface FuturesView {
   } | null;
   /** Legacy rows still running at the fix: the first price observed after it (never their entry). */
   postFixQuote: ObservedQuote | null;
-  /** Order-book context read right after the first quote (indicative, never a price input). */
+  /**
+   * Order-book context read once after the first quote (indicative, never a price input). It is a
+   * later book than the quote's moment: `afterQuoteMs` = its response − the quote's response.
+   */
   book: {
     ok: boolean;
     error: string | null;
@@ -197,12 +251,25 @@ export interface FuturesView {
     bestAsk: string | null;
     requestStartedAt: string | null;
     responseReceivedAt: string;
+    afterQuoteMs: number | null;
   } | null;
   samplesInWindow: number;
   bracketedInWindow: number;
+  /** Longest interval without an observation, in `throughBasis` time. */
   maxGapMs: number;
-  sampledThrough: string | null;
+  /** The time base of `observedThrough` / `lbankSnapshotThrough` and `maxGapMs` (never converted). */
+  throughBasis: FuturesTimeBasis;
+  /** Observed-quote method: our latest eligible response's receipt. Null for old-method rows. */
+  observedThrough: string | null;
+  /** Old method: LBank's snapshot refresh time of the latest folded snapshot (not a trade time). */
+  lbankSnapshotThrough: string | null;
+  /** What the stored records establish about the Futures entry (old and new methods apart). */
+  evidenceClass: FuturesEvidenceClass;
+  /** Counted as an immediate Futures entry (IMMEDIATE_QUOTE only). */
+  immediateEntry: boolean;
   lastUpdateAt: string | null;
+  /** When a displayed value last changed (trigger; null before 2026-11-27's M020 until a change). */
+  valuesChangedAt: string | null;
   finalizedAt: string | null;
 }
 
@@ -295,6 +362,7 @@ interface RawRow {
   f_finalized_at: Date | null;
   f_highest_observed_at: Date | null;
   f_lowest_observed_at: Date | null;
+  f_values_changed_at: Date | null;
   fq_entry: QuoteJson | null;
   fq_post_fix: QuoteJson | null;
   fq_book: {
@@ -304,6 +372,22 @@ interface RawRow {
     best_ask: string | null;
     request_started_at: string | null;
     response_received_at: string;
+  } | null;
+  /** Old method: the first successful response after the start and the contract's retained price. */
+  f_legacy_first: { poll: string; fetched_at: string; price: string | null } | null;
+  /** The first successful Futures request ever stored (when collection began). */
+  f_first_poll_at: Date | null;
+  sq_quote: {
+    price: string;
+    pair_symbol: string;
+    actionable_start: string;
+    request_queued_at: string;
+    request_started_at: string;
+    response_received_at: string;
+    lbank_server_at: string | null;
+    stored_at: string;
+    request_id: string;
+    endpoint: string;
   } | null;
 }
 
@@ -357,6 +441,18 @@ function futuresView(r: RawRow): FuturesView {
   const legacyHi = bracket(r.f_highest_price, r.f_highest_after, r.f_highest_before);
   const legacyLo = bracket(r.f_lowest_price, r.f_lowest_after, r.f_lowest_before);
   const quote = observed ? observedQuote(r.fq_entry) : null;
+  const through = futuresThrough(r.f_rules_version!, isoOf(r.f_sampled_through));
+  const entryReceived = r.fq_entry ? Date.parse(r.fq_entry.response_received_at) : null;
+  const evidence = futuresEvidence({
+    rulesVersion: r.f_rules_version!,
+    mapping: r.f_mapping_status!,
+    contract: r.f_contract,
+    status: r.f_status!,
+    entrySource: observed ? (r.fq_entry?.source ?? null) : null,
+    startMs: r.observation_start?.getTime() ?? null,
+    firstPollMs: r.f_first_poll_at ? new Date(r.f_first_poll_at).getTime() : null,
+    legacyFirst: r.f_legacy_first ? { retained: r.f_legacy_first.price !== null } : null,
+  });
   return {
     rulesVersion: r.f_rules_version!,
     method: observed ? 'OBSERVED_QUOTE' : 'LEGACY_TURNOVER_BRACKET',
@@ -387,14 +483,60 @@ function futuresView(r: RawRow): FuturesView {
             ? new Date(r.fq_book.request_started_at).toISOString()
             : null,
           responseReceivedAt: new Date(r.fq_book.response_received_at).toISOString(),
+          afterQuoteMs:
+            entryReceived === null
+              ? null
+              : Date.parse(r.fq_book.response_received_at) - entryReceived,
         }
       : null,
     samplesInWindow: r.f_samples_in_window ?? 0,
     bracketedInWindow: r.f_bracketed_in_window ?? 0,
     maxGapMs: Number(r.f_max_gap_ms ?? 0),
-    sampledThrough: isoOf(r.f_sampled_through),
+    throughBasis: through.basis,
+    observedThrough: through.observedThrough,
+    lbankSnapshotThrough: through.lbankSnapshotThrough,
+    evidenceClass: evidence.evidenceClass,
+    immediateEntry: evidence.immediateEntry,
     lastUpdateAt: isoOf(r.f_last_update_at),
+    valuesChangedAt: isoOf(r.f_values_changed_at),
     finalizedAt: isoOf(r.f_finalized_at),
+  };
+}
+
+function spotIndicative(r: RawRow): IndicativeSpotQuote | null {
+  const q = r.sq_quote;
+  if (!q) return null;
+  const iso = (v: string) => new Date(v).toISOString();
+  return {
+    price: plainText(q.price)!,
+    pair: q.pair_symbol,
+    requestQueuedAt: iso(q.request_queued_at),
+    requestStartedAt: iso(q.request_started_at),
+    observedAt: iso(q.response_received_at),
+    storedAt: iso(q.stored_at),
+    delayMs: Date.parse(q.response_received_at) - Date.parse(q.actionable_start),
+    lbankResponseAt: q.lbank_server_at ? iso(q.lbank_server_at) : null,
+    requestId: q.request_id,
+    endpoint: q.endpoint,
+  };
+}
+
+function publicationQuotes(
+  f: FuturesView | null,
+  s: IndicativeSpotQuote | null,
+): PublicationQuotes | null {
+  const q = f?.quote;
+  if (!q || !s) return null;
+  return {
+    futuresSource: q.source,
+    futuresRequestStartedAt: q.requestStartedAt,
+    spotRequestStartedAt: s.requestStartedAt,
+    sentDifferenceMs: Date.parse(s.requestStartedAt) - Date.parse(q.requestStartedAt),
+    futuresObservedAt: q.observedAt,
+    spotObservedAt: s.observedAt,
+    receivedDifferenceMs: Date.parse(s.observedAt) - Date.parse(q.observedAt),
+    queuedTogether:
+      !!q.requestQueuedAt && Date.parse(q.requestQueuedAt) === Date.parse(s.requestQueuedAt),
   };
 }
 
@@ -426,11 +568,15 @@ function futuresCells(f: FuturesView | null): unknown[] {
     f.samplesInWindow,
     legacy ? f.bracketedInWindow : null,
     f.maxGapMs,
-    f.sampledThrough,
+    f.throughBasis,
+    f.observedThrough,
+    f.lbankSnapshotThrough,
     f.flags.join(' '),
     f.finalizedAt,
     // Observed-quote method (lbank-futures-quote-1).
     f.method,
+    f.evidenceClass,
+    f.immediateEntry,
     q?.price,
     q?.observedAt,
     q?.requestQueuedAt,
@@ -456,9 +602,55 @@ function futuresCells(f: FuturesView | null): unknown[] {
     f.book?.bestAsk,
     f.book?.requestStartedAt,
     f.book?.responseReceivedAt,
+    f.book?.afterQuoteMs,
     f.book?.error,
   ];
 }
+
+/** Indicative Spot quote at publication, the two publication requests, and coverage times. */
+function contextCells(r: ObservationRow): unknown[] {
+  const s = r.spotIndicative;
+  const p = r.publicationQuotes;
+  const c = r.coverageTimes;
+  return [
+    s?.price,
+    s?.pair,
+    s?.requestQueuedAt,
+    s?.requestStartedAt,
+    s?.observedAt,
+    s?.lbankResponseAt,
+    s?.delayMs,
+    s?.requestId,
+    p?.sentDifferenceMs,
+    p?.receivedDifferenceMs,
+    p?.queuedTogether,
+    c.futuresThrough,
+    c.futuresBasis,
+    c.differenceMs,
+    c.differenceMs === null ? null : c.differs,
+  ];
+}
+
+export const CONTEXT_CSV_HEADER = [
+  // Indicative only: never the Spot reference (a verified trade), a Spot return or an extreme.
+  'spot_indicative_price_at_publication',
+  'spot_indicative_pair',
+  'spot_indicative_request_queued_utc',
+  'spot_indicative_request_started_utc',
+  'spot_indicative_response_utc',
+  'spot_indicative_lbank_response_time_utc_not_trade_time',
+  'spot_indicative_delay_ms',
+  'spot_indicative_request_id',
+  // Spot − Futures publication request (our clock; the client paces starts, never simultaneous).
+  'publication_spot_minus_futures_sent_ms',
+  'publication_spot_minus_futures_response_ms',
+  'publication_requests_queued_together',
+  // How far each venue's data reaches: Spot = data_through_utc (candles), Futures in its own basis.
+  'coverage_futures_through_utc',
+  'coverage_futures_time_basis',
+  'coverage_futures_minus_spot_data_through_ms',
+  'coverage_differs_over_1_min',
+] as const;
 
 export const FUTURES_CSV_HEADER = [
   'futures_rules_version',
@@ -483,11 +675,17 @@ export const FUTURES_CSV_HEADER = [
   'futures_samples_in_window',
   'futures_bracketed_trades_in_window',
   'futures_max_sampling_gap_ms',
-  'futures_sampled_through_utc',
+  // The time base of the gap and of the through time below (never converted between methods).
+  'futures_time_basis',
+  'futures_observed_through_utc_our_response_received',
+  'futures_old_method_through_utc_lbank_snapshot_time',
   'futures_flags',
   'futures_finalized_at_utc',
   // Observed-quote method (lbank-futures-quote-1): our request's times; LBank gives no trade time.
   'futures_method',
+  // What the records establish about the entry; only IMMEDIATE_QUOTE is an immediate Futures entry.
+  'futures_evidence_class',
+  'futures_immediate_entry',
   'futures_first_observed_price',
   'futures_first_observed_response_utc',
   'futures_first_observed_request_queued_utc',
@@ -515,6 +713,8 @@ export const FUTURES_CSV_HEADER = [
   'futures_book_best_ask',
   'futures_book_request_started_utc',
   'futures_book_response_utc',
+  // A later book than the quote: its response − the first quote's response.
+  'futures_book_response_after_quote_ms',
   'futures_book_error',
 ] as const;
 
@@ -616,6 +816,28 @@ export class ObservationReadService {
                    f.max_gap_ms::text AS f_max_gap_ms, f.sampled_through AS f_sampled_through,
                    f.last_update_at AS f_last_update_at, f.finalized_at AS f_finalized_at,
                    f.highest_observed_at AS f_highest_observed_at, f.lowest_observed_at AS f_lowest_observed_at,
+                   f.values_changed_at AS f_values_changed_at,
+                   (SELECT min(fetched_at) FROM lbank_futures_poll WHERE ok) AS f_first_poll_at,
+                   -- Old method: the first successful response provably sent after the start (send time,
+                   -- or for minute ticks before 2026-11-27 the tick's minute) and the contract's kept row.
+                   CASE WHEN f.rules_version <> '${FUTURES_QUOTE_RULES_VERSION}' AND f.contract IS NOT NULL
+                             AND o.observation_start >= (SELECT min(fetched_at) FROM lbank_futures_poll WHERE ok) THEN
+                     (SELECT json_build_object('poll', p.id::text, 'fetched_at', p.fetched_at,
+                             'price', (SELECT s.last_price::text FROM lbank_futures_sample s
+                                        WHERE s.contract = f.contract
+                                          AND (s.poll_id = p.id OR (s.poll_id IS NULL AND s.fetched_at = p.fetched_at))
+                                        LIMIT 1))
+                        FROM lbank_futures_poll p
+                       WHERE p.ok AND p.fetched_at >= o.observation_start
+                         AND (p.request_started_at >= o.observation_start
+                              OR (p.request_started_at IS NULL AND date_trunc('minute', p.fetched_at) >= o.observation_start))
+                       ORDER BY p.fetched_at LIMIT 1)
+                   END AS f_legacy_first,
+                   (SELECT row_to_json(x) FROM (SELECT q.price::text AS price, q.pair_symbol, q.actionable_start,
+                           q.request_queued_at, q.request_started_at, q.response_received_at, q.lbank_server_at,
+                           q.stored_at, q.request_id::text AS request_id, rq.endpoint
+                      FROM lbank_spot_indicative_quote q JOIN lbank_spot_price_request rq ON rq.id = q.request_id
+                     WHERE q.observation_id = o.id) x) AS sq_quote,
                    (SELECT row_to_json(q) FROM (SELECT r.last_price::text AS price, r.actionable_start, r.request_queued_at,
                            r.request_started_at, r.response_received_at, r.stored_at, r.source, r.failed_attempts_before,
                            r.quote_refreshed_at, r.endpoint, r.poll_id::text AS poll_id
@@ -635,6 +857,8 @@ export class ObservationReadService {
   private toRow(r: RawRow): ObservationRow {
     const ev = r.actionable_evidence ?? {};
     const gaps = r.gaps ?? [];
+    const fut = r.f_status ? futuresView(r) : null;
+    const spot = spotIndicative(r);
     return {
       id: r.id,
       eventId: r.event_id,
@@ -727,7 +951,15 @@ export class ObservationReadService {
       coinEvents: Number(r.coin_events),
       overlapping: Number(r.overlapping),
       isLive: r.is_live,
-      futuresSampled: r.f_status ? futuresView(r) : null,
+      futuresSampled: fut,
+      spotIndicative: spot,
+      publicationQuotes: publicationQuotes(fut, spot),
+      coverageTimes: coverageTimes({
+        spotDataThrough: isoOf(r.data_through),
+        spotLastFetchAt: isoOf(r.last_source_fetch_at),
+        futuresThrough: fut ? (fut.observedThrough ?? fut.lbankSnapshotThrough) : null,
+        futuresBasis: fut ? fut.throughBasis : null,
+      }),
     };
   }
 
@@ -794,6 +1026,17 @@ export class ObservationReadService {
         ok: boolean;
         error: string | null;
       } | null;
+      /** What the records establish per row (old and new methods apart; see FuturesEvidenceClass). */
+      byEvidence: Record<FuturesEvidenceClass, number>;
+      /** Rows counted as an immediate Futures entry (IMMEDIATE_QUOTE only). */
+      immediateEntries: number;
+      /** Observed-quote rows still open, and how far they are observed (our response receipt). */
+      freshness: {
+        openObservedRows: number;
+        oldestOpenObservedThrough: string | null;
+        latestObservedThrough: string | null;
+        lastValuesChangeAt: string | null;
+      };
     };
   }> {
     const w = this.where(q);
@@ -807,6 +1050,59 @@ export class ObservationReadService {
     const [poll] = (await this.db.query(
       `SELECT fetched_at, server_at, ok, error FROM lbank_futures_poll ORDER BY fetched_at DESC LIMIT 1`,
     )) as Array<{ fetched_at: Date; server_at: Date | null; ok: boolean; error: string | null }>;
+    const evRows = (await this.db.query(
+      `WITH fp AS (SELECT min(fetched_at) AS at FROM lbank_futures_poll WHERE ok)
+       SELECT f.rules_version, f.mapping_status, f.contract, f.status, o.observation_start, fp.at AS first_poll_at,
+              (SELECT r.source FROM lbank_futures_reference r WHERE r.futures_observation_id = f.id AND r.kind = 'ENTRY') AS entry_source,
+              CASE WHEN f.rules_version <> '${FUTURES_QUOTE_RULES_VERSION}' AND f.contract IS NOT NULL
+                        AND o.observation_start >= fp.at THEN
+                (SELECT json_build_object('price', (SELECT s.last_price::text FROM lbank_futures_sample s
+                          WHERE s.contract = f.contract
+                            AND (s.poll_id = p.id OR (s.poll_id IS NULL AND s.fetched_at = p.fetched_at)) LIMIT 1))
+                   FROM lbank_futures_poll p
+                  WHERE p.ok AND p.fetched_at >= o.observation_start
+                    AND (p.request_started_at >= o.observation_start
+                         OR (p.request_started_at IS NULL AND date_trunc('minute', p.fetched_at) >= o.observation_start))
+                  ORDER BY p.fetched_at LIMIT 1)
+              END AS legacy_first
+         FROM lbank_observation o JOIN lbank_obs_event e ON e.id = o.event_id
+         JOIN lbank_futures_observation f ON f.observation_id = o.id CROSS JOIN fp WHERE ${w.sql}`,
+      w.params,
+    )) as Array<{
+      rules_version: string;
+      mapping_status: string;
+      contract: string | null;
+      status: string;
+      observation_start: Date | null;
+      first_poll_at: Date | null;
+      entry_source: string | null;
+      legacy_first: { price: string | null } | null;
+    }>;
+    const byEvidence = Object.fromEntries(FUTURES_EVIDENCE_CLASSES.map((c) => [c, 0])) as Record<
+      FuturesEvidenceClass,
+      number
+    >;
+    for (const x of evRows)
+      byEvidence[
+        futuresEvidence({
+          rulesVersion: x.rules_version,
+          mapping: x.mapping_status,
+          contract: x.contract,
+          status: x.status,
+          entrySource: x.rules_version === FUTURES_QUOTE_RULES_VERSION ? x.entry_source : null,
+          startMs: x.observation_start?.getTime() ?? null,
+          firstPollMs: x.first_poll_at?.getTime() ?? null,
+          legacyFirst: x.legacy_first ? { retained: x.legacy_first.price !== null } : null,
+        }).evidenceClass
+      ]++;
+    const [ffresh] = (await this.db.query(
+      `SELECT count(*) FILTER (WHERE f.finalized_at IS NULL AND f.mapping_status = 'OK')::int AS open_rows,
+              min(f.sampled_through) FILTER (WHERE f.finalized_at IS NULL AND f.mapping_status = 'OK') AS oldest,
+              max(f.sampled_through) AS latest,
+              (SELECT max(values_changed_at) FROM lbank_futures_observation WHERE provider_id = $1) AS changed
+         FROM lbank_futures_observation f WHERE f.provider_id = $1 AND f.rules_version = $2`,
+      [this.providerId, FUTURES_QUOTE_RULES_VERSION],
+    )) as [{ open_rows: number; oldest: Date | null; latest: Date | null; changed: Date | null }];
     const rows = (await this.db.query(
       `SELECT o.id, e.cmc_id, e.star_count, o.status, o.rules_version, o.eligibility,
               o.observation_start, o.observation_end, o.flags,
@@ -930,6 +1226,14 @@ export class ObservationReadService {
               error: poll.error,
             }
           : null,
+        byEvidence,
+        immediateEntries: byEvidence.IMMEDIATE_QUOTE,
+        freshness: {
+          openObservedRows: ffresh.open_rows,
+          oldestOpenObservedThrough: isoOf(ffresh.oldest),
+          latestObservedThrough: isoOf(ffresh.latest),
+          lastValuesChangeAt: isoOf(ffresh.changed),
+        },
       },
     };
   }
@@ -991,9 +1295,54 @@ export class ObservationReadService {
     }>;
     const hasV1 =
       o.entry_price !== null || changes.some((c) => c.fromRulesVersion === OBSERVATION_RULES_V1);
+    // Every request fired for this event's publication (both venues), with its real times.
+    const batchId = typeof e.source_batch_id === 'string' ? e.source_batch_id : null;
+    const futuresRequests = batchId
+      ? ((await this.db.query(
+          `SELECT id::text, trigger, attempt, request_queued_at, request_started_at, fetched_at, stored_at, ok, error
+             FROM lbank_futures_poll WHERE batch_id = $1
+            ORDER BY coalesce(request_started_at, fetched_at), id LIMIT 20`,
+          [batchId],
+        )) as Array<Record<string, unknown>>)
+      : [];
+    const spotRequests = batchId
+      ? ((await this.db.query(
+          `SELECT id::text, endpoint, request_queued_at, request_started_at, response_received_at, stored_at, ok,
+                  error, failed_attempts, lbank_server_at, pairs
+             FROM lbank_spot_price_request WHERE batch_id = $1 ORDER BY id LIMIT 20`,
+          [batchId],
+        )) as Array<Record<string, unknown>>)
+      : [];
+    const t = (v: unknown) => (v instanceof Date ? v.toISOString() : null);
     return {
       ...row,
       displayedRulesVersion: row.rulesVersion,
+      publicationRequests: {
+        futures: futuresRequests.map((x) => ({
+          requestId: x.id,
+          trigger: x.trigger,
+          attempt: x.attempt,
+          queuedAt: t(x.request_queued_at),
+          startedAt: t(x.request_started_at),
+          receivedAt: t(x.fetched_at),
+          storedAt: t(x.stored_at),
+          ok: x.ok,
+          error: x.error,
+        })),
+        spot: spotRequests.map((x) => ({
+          requestId: x.id,
+          endpoint: x.endpoint,
+          queuedAt: t(x.request_queued_at),
+          startedAt: t(x.request_started_at),
+          receivedAt: t(x.response_received_at),
+          storedAt: t(x.stored_at),
+          ok: x.ok,
+          error: x.error,
+          failedAttempts: x.failed_attempts,
+          lbankResponseAt: t(x.lbank_server_at),
+          pairs: x.pairs,
+        })),
+      },
       event: {
         detectedUtcDate: e.detected_utc_date,
         crawlAt: e.detected_at,
@@ -1269,35 +1618,90 @@ export class ObservationReadService {
     };
   }
 
-  /** A cheap change token for the page's refresh: the latest run and the latest stored change. */
+  /**
+   * Cheap change tokens for the page's refresh (polled every 30 s per open page; a few indexed max /
+   * count reads). `spotToken` moves with every Spot job run and every stored Spot change;
+   * `futuresToken` moves only when a displayed Futures value changes (trigger-maintained
+   * `values_changed_at`: reference, extremes, status, coverage, data-through), when a Futures quote,
+   * order book or indicative Spot quote is stored, or when a Futures row is created — not on the
+   * minute re-evaluations that change nothing.
+   */
   async version(): Promise<{
     lastRunId: string | null;
     lastRunStatus: string | null;
     lastRunFinishedAt: string | null;
     lastChangeAt: string | null;
     observations: number;
+    futures: {
+      lastValuesChangeAt: string | null;
+      rows: number;
+      lastQuoteStoredAt: string | null;
+      lastBookStoredAt: string | null;
+      lastSpotQuoteStoredAt: string | null;
+      oldestOpenObservedThrough: string | null;
+      lastPoll: { fetchedAt: string; ok: boolean } | null;
+    };
+    spotToken: string;
+    futuresToken: string;
   }> {
     const [r] = (await this.db.query(
       `SELECT (SELECT max(updated_at) FROM lbank_observation WHERE provider_id = $1) AS changed,
               (SELECT count(*)::int FROM lbank_observation WHERE provider_id = $1) AS n,
-              x.id, x.status, x.finished_at
+              x.id, x.status, x.finished_at,
+              (SELECT max(values_changed_at) FROM lbank_futures_observation WHERE provider_id = $1) AS f_changed,
+              (SELECT count(*)::int FROM lbank_futures_observation WHERE provider_id = $1) AS f_rows,
+              (SELECT max(stored_at) FROM lbank_futures_reference) AS f_quotes,
+              (SELECT max(stored_at) FROM lbank_futures_book) AS f_books,
+              (SELECT max(stored_at) FROM lbank_spot_indicative_quote) AS s_quotes,
+              (SELECT min(sampled_through) FROM lbank_futures_observation
+                WHERE provider_id = $1 AND finalized_at IS NULL AND rules_version = $2 AND mapping_status = 'OK') AS f_oldest,
+              (SELECT row_to_json(p) FROM (SELECT fetched_at, ok FROM lbank_futures_poll ORDER BY fetched_at DESC LIMIT 1) p) AS last_poll
          FROM (SELECT 1) one
          LEFT JOIN LATERAL (SELECT id, status, finished_at FROM lbank_obs_run WHERE provider_id = $1
                              ORDER BY started_at DESC LIMIT 1) x ON true`,
-      [this.providerId],
+      [this.providerId, FUTURES_QUOTE_RULES_VERSION],
     )) as Array<{
       changed: Date | null;
       n: number;
       id: string | null;
       status: string | null;
       finished_at: Date | null;
+      f_changed: Date | null;
+      f_rows: number;
+      f_quotes: Date | null;
+      f_books: Date | null;
+      s_quotes: Date | null;
+      f_oldest: Date | null;
+      last_poll: { fetched_at: string; ok: boolean } | null;
     }>;
-    return {
+    const v = {
       lastRunId: r?.id ?? null,
       lastRunStatus: r?.status ?? null,
       lastRunFinishedAt: isoOf(r?.finished_at),
       lastChangeAt: isoOf(r?.changed),
       observations: r?.n ?? 0,
+      futures: {
+        lastValuesChangeAt: isoOf(r?.f_changed),
+        rows: r?.f_rows ?? 0,
+        lastQuoteStoredAt: isoOf(r?.f_quotes),
+        lastBookStoredAt: isoOf(r?.f_books),
+        lastSpotQuoteStoredAt: isoOf(r?.s_quotes),
+        oldestOpenObservedThrough: isoOf(r?.f_oldest),
+        lastPoll: r?.last_poll
+          ? { fetchedAt: new Date(r.last_poll.fetched_at).toISOString(), ok: r.last_poll.ok }
+          : null,
+      },
+    };
+    return {
+      ...v,
+      spotToken: [v.lastRunId, v.lastRunFinishedAt, v.lastChangeAt, v.observations].join('|'),
+      futuresToken: [
+        v.futures.lastValuesChangeAt,
+        v.futures.rows,
+        v.futures.lastQuoteStoredAt,
+        v.futures.lastBookStoredAt,
+        v.futures.lastSpotQuoteStoredAt,
+      ].join('|'),
     };
   }
 
@@ -1420,6 +1824,7 @@ export class ObservationReadService {
       'data_label',
       // The Futures side: its own rules, contract and values (never Spot data).
       ...FUTURES_CSV_HEADER,
+      ...CONTEXT_CSV_HEADER,
     ];
     // CSV cell: formula-like text is defused with a leading quote; numbers (also negative) stay as they are.
     const cell = (v: unknown) => {
@@ -1500,6 +1905,7 @@ export class ObservationReadService {
             r.resultVersion,
             r.isLive ? 'LIVE' : 'SYNTHETIC',
             ...futuresCells(r.futuresSampled),
+            ...contextCells(r),
           ]
             .map(cell)
             .join(','),

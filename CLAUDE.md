@@ -64,6 +64,14 @@ never real orders. Spec: `docs/strategy-two-tier-vmc.md`. Purpose and open decis
   Every request attempt is logged with queue / send / receive / storage times. Older rows keep
   `lbank-futures-sampled-1` (turnover-bracket) with its label; never rewrite them. A rule change bumps
   `FUTURES_QUOTE_RULES_VERSION`; it never writes a Spot row.
+- **Observation freshness and request lanes** (docs § 13b, ADR-0013, M020): the shared LBank client
+  sends waiting requests in lanes — `immediate` (publication quotes) → `prompt` (minute samples, order
+  books) → `routine` (Spot job) — with one pacing, budget, circuit and Retry-After for all. Publication
+  also queues an indicative Spot price (`SpotQuoteService`, own immutable tables): never the Spot
+  reference or a Spot value. Each Futures method keeps its own "through" clock (`observedThrough` =
+  our receipt, `lbankSnapshotThrough` = LBank `lastTime`; never converted). The page's change tokens
+  split Spot / Futures; `values_changed_at` (trigger) marks real Futures value changes. Futures
+  evidence classes are read-time only; only `IMMEDIATE_QUOTE` is an immediate entry.
 - **Storage scope** (`docs/adr/0008-storage-scope.md`, D4): every coin is screened hourly and kept
   in the registry, but only ranks 1–1200 are stored as snapshots and only Review Queue rows as
   `scan_result`; other coins are counted on `scan_run.counts` and traced on request

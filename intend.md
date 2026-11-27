@@ -40,6 +40,12 @@ LBank publishes no Futures history, so it samples LBank's official market snapsh
 Futures value is a real trade price with a time range, extremes are bounds, and only events detected
 after that deploy can have one. Spot results are unchanged; the two are never mixed.
 
+Changed 2026-11-27 (`docs/adr/0013-observation-freshness-and-request-lanes.md`): an open page also
+refreshes for Futures-only changes; each Futures method's "through" time keeps its own clock; LBank
+requests wait in lanes so a publication request never queues behind the Spot job; publication also
+records an indicative Spot quote (context only, never the Spot reference); Compare shows each venue's
+coverage time; old-method Futures rows carry an evidence class and are never pooled with new ones.
+
 Changed 2026-11-24 (`docs/adr/0008-storage-scope.md`, D4): the Eligible, Needs review and Excluded
 pages and exports are gone. Every coin is still screened each hour and kept in the coin registry,
 but only what the strategy found (the Review Queue) is stored per coin; everything else is counted

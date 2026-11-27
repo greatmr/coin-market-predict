@@ -230,7 +230,8 @@ observation's start minute has closed (+ the 5 s closed-bar margin + 1 s), trigg
 16:07:07.554 (+0.660 s), observation committed 16:07:15.598, start minute checkable from 16:08:05, but
 the first check only at the 16:15:00 cron tick (run 152.8 s); the page then showed it only after the
 next hourly CMC batch or a manual reload (it reloaded on the CMC batch alone). Now the page polls
-`GET /api/observations/version` every 30 s and reloads when a run stored something new. Trade checks
+`GET /api/observations/version` every 30 s and reloads when a run stored something new (since M020
+with a separate Futures token, § 13b). Trade checks
 record the moment the minute was actually read (`checked_at`; before 2026-11-27 it was the run's
 start). Which trade qualifies as the reference is unchanged.
 
@@ -266,7 +267,7 @@ inside a minute (a future stop / target study needs the trades themselves; not i
 | Surface   | What                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Dashboard | **LBank Spot price observation** (`/lbank-spot`): filters (search, status, Spot / Futures class, coverage, flags, CMC crawl date from / to, stars) and the sortable table (coin, stars, points, CMC crawl, window start and its proof, pair, reference price + delay + _delayed_, highest and lowest (% · price · trade time), status with reasons, coverage with gaps and data freshness, Spot / Futures evidence, flags, _N overlapping_, _Details_: every piece of evidence, gaps, flags with context, results and rules history, rules-v1 audit values). Sorting and filtering use the displayed v2 values. The summary (cutover, Final-only statistics with event and coin denominators, flagged counts, data freshness, the last update and whether it fetched data), CSV export and _Update now_ are on the **Data** page, which also shows the dashboard's and the API's build commit; the rules behind the page's **?** button. |
-| API       | `GET /api/observations` (filters `status`, `futures`, `eligibility`, `stars`, `coverage`, `flags`, `from`, `to`, `search`, `sort` incl. `futuresHighest` / `futuresLowest`, `dir`, `limit`, `offset`; each row carries `futuresSampled`), `GET /api/observations/version` (change token), the detail's `timeline` (crawl → publication → reference trade → verified → stored) and `futuresEvidence`, `GET /api/observations/summary`, `GET /api/observations/:id` (all evidence, result versions, rules changes, v1 audit, the displayed rules version), `GET /api/observations/:id/overlaps`, `GET /api/observations/runs`, `GET /api/observations/routing-check` (`health:read`), `GET /api/observations/export.csv` (`exports:read`; `rules_version` per row), `POST /api/observations/update` (`scan:operate`); legacy: `GET /api/forward/legacy`, `GET /api/forward/legacy/closures.csv`; `/healthz` names the build |
+| API       | `GET /api/observations` (filters `status`, `futures`, `eligibility`, `stars`, `coverage`, `flags`, `from`, `to`, `search`, `sort` incl. `futuresHighest` / `futuresLowest`, `dir`, `limit`, `offset`; each row carries `futuresSampled`), `GET /api/observations/version` (Spot and Futures change tokens, § 13b), the detail's `timeline` (crawl → publication → reference trade → verified → stored) and `futuresEvidence`, `GET /api/observations/summary`, `GET /api/observations/:id` (all evidence, result versions, rules changes, v1 audit, the displayed rules version), `GET /api/observations/:id/overlaps`, `GET /api/observations/runs`, `GET /api/observations/routing-check` (`health:read`), `GET /api/observations/export.csv` (`exports:read`; `rules_version` per row), `POST /api/observations/update` (`scan:operate`); legacy: `GET /api/forward/legacy`, `GET /api/forward/legacy/closures.csv`; `/healthz` names the build |
 | CLI       | `observation:cutover [--at ISO] [--note]`, `observation:status`, `observation:update`, `observation:futures [--tick]`, `observation:probe`, `observation:list`, `observation:check`, `forward:legacy`                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 **Statistics**: FINAL observations of the current rules only; median, mean and 25th–75th percentile
@@ -454,3 +455,70 @@ highest / lowest = the highest / lowest lastPrice our requests observed in [star
   `futures_*_observed_*`, `futures_post_fix_*` and `futures_book_*` columns.
 - **What these numbers measure.** Data collection only: publication → request and request → response.
   They are not order submission, acknowledgement or fill latency.
+
+## 13b. Freshness, time bases, publication requests and evidence classes (M020)
+
+Operator review 2026-11-27 of the deployed observed-quote method (ADR-0013). Display, timing and
+evidence only: no rule, reference, window, return or status changes; nothing stored is rewritten.
+
+- **Page refresh.** `GET /api/observations/version` returns two tokens, polled every 30 s per open
+  page (a few indexed `max` / `count` reads). `spotToken` moves with every observation-job run and
+  stored Spot change and reloads the rows and the summary. `futuresToken` moves only when a displayed
+  Futures value changes — `lbank_futures_observation.values_changed_at`, set by a trigger when status,
+  mapping, contract, reasons, flags, reference, extremes, coverage, data-through or finalization
+  differ, not on the minute re-evaluations that change nothing — or when a Futures quote, an order
+  book or an indicative Spot quote is stored; it reloads only the visible rows. An open Details or
+  overlap list reloads with the page. While a Futures window runs its data-through moves once a
+  minute, so the rows reload about once a minute; the tokens are read before the data, so a change
+  committed during a load is fetched at the next check.
+- **Two time bases for "through".** `sampled_through` keeps each method's own clock and is never
+  converted: `lbank-futures-quote-1` = when our latest eligible response was received (API
+  `observedThrough`, CSV `futures_observed_through_utc_our_response_received`); old rows
+  `lbank-futures-sampled-1` = LBank's snapshot refresh time `lastTime` of the latest folded snapshot
+  (API `lbankSnapshotThrough`, CSV `futures_old_method_through_utc_lbank_snapshot_time`) — LBank's
+  clock, a few seconds before our receipt, and not a trade time. `throughBasis` /
+  `futures_time_basis` names it; the longest gap uses the same base. The former single column
+  `futures_sampled_through_utc` is gone.
+- **Request lanes (shared LBank client).** Spot and Futures requests share one client and its pacing
+  (`LBANK_REQUESTS_PER_MINUTE`, request starts ≥ 60 000 / rpm ms apart), budget, circuit and
+  Retry-After. Waiting requests are sent in lane order: `immediate` (the publication requests and their
+  prompt retries), `prompt` (minute samples, order-book reads), `routine` (Spot verification, listing
+  lists); FIFO within a lane. An `immediate` request may start while one other request awaits its
+  response (at most two in flight), so it waits only for the pacing, never behind a routine backlog or
+  a slow Spot response; a retry backs off outside the queue; a Retry-After stops every lane. After 8
+  urgent grants in a row a waiting routine request goes next (no starvation). Health-record updates
+  are serialized in the client (no lost budget or failure counts). Before this change the client was
+  one FIFO queue (measured 2026-11-27: minute samples waited up to 1.498 s behind the 11:45 Spot job).
+- **Indicative Spot quote at publication.** The publication queues both venues' requests at the same
+  moment: the Futures `marketData` request first (its quote is the Futures reference) and LBank's
+  all-pairs Spot price request (`GET /v2/supplement/ticker/price.do`) right behind it; each response is
+  processed on its own. Every request is logged in `lbank_spot_price_request` (queue, send, receive
+  and storage times, failed attempts, LBank's response time `ts`, raw body); each observation of the
+  batch with a mapped pair gets one immutable `lbank_spot_indicative_quote` (its pair's price, the
+  request's times), only if the request was sent at or after its start. It is context for a
+  same-moment comparison only: never the Spot reference (the first verified trade), never in a Spot
+  return, extreme, status or coverage, never retried later. The pacing makes the Spot request start
+  one interval (1 s at 60 / min) after the Futures one and LBank's Spot endpoint answers in ~1–2.5 s
+  from the server (Futures ~0.4 s): the two prices are initiated together but never simultaneous; the
+  API (`publicationQuotes`), Details and CSV (`publication_spot_minus_futures_sent_ms`,
+  `…_response_ms`) show both requests' times and the difference.
+- **Coverage times (Compare, Details).** Each row carries `coverageTimes`: Spot data through (one-minute
+  candles fetched; verified trades lie before it), Futures through (its own basis), their difference
+  and `differs` = more than one minute apart — a display cue (Spot data is in whole minutes, Futures is
+  sampled once a minute), no value depends on it. Compare labels the values "Spot · verified" and "Fut ·
+  sampled" and never calls them time-aligned.
+- **Order-book context.** Read once per observation after the first quote (`prompt` lane); its own
+  capture time and `afterQuoteMs` (its response − the quote's response) are shown: a later book, not
+  the book at the quote's moment, never a fill.
+- **Evidence classes.** Read-only, per row (`evidenceClass`, `immediateEntry`, CSV
+  `futures_evidence_class`, `futures_immediate_entry`; summary `byEvidence`, `immediateEntries`):
+  `IMMEDIATE_QUOTE` (first quote from the publication request or its retry — the only immediate
+  Futures entry), `TICK_QUOTE` (from a minute sample after the publication request failed),
+  `QUOTE_PENDING`, `NO_QUOTE`, `NO_CONTRACT`, and for old rows `LEGACY_BEFORE_COLLECTION` (the window
+  started before the first stored Futures request), `LEGACY_FIRST_RESPONSE_RETAINED` (the first
+  response after the start was kept for the contract: the first observed price is establishable, from
+  a minute sample whose send time is only bounded by its tick minute), `LEGACY_FIRST_RESPONSE_LOST`
+  (not kept — the snapshot storage defect — so it cannot be reconstructed) and `LEGACY_UNRESOLVED`.
+  Old and new results are never pooled; a POST_FIX quote never makes an old row immediate.
+- **Limits.** One Futures observation a minute can miss a move between samples: observed extremes,
+  not proof of the exact high or low. These are data-collection times, not order latency.

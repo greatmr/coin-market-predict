@@ -408,6 +408,50 @@ export function parseFuturesMarketData(body: string):
   return { kind: 'ok', rows, invalid, symbols, responseSha256 };
 }
 
+export interface SpotPriceRow {
+  /** LBank Spot pair symbol as the API spells it (e.g. `pons_usdt`). */
+  symbol: string;
+  price: string;
+}
+
+/**
+ * `GET api.lbkex.com/v2/supplement/ticker/price.do` (no symbol: every pair): each pair's latest price.
+ * The response has no time per pair (no trade time); `ts` is LBank's response time. Indicative
+ * context only: never the Spot reference (a verified trade) and never a Spot return input.
+ */
+export function parseSpotPrices(body: string):
+  | {
+      kind: 'ok';
+      rows: SpotPriceRow[];
+      invalid: number;
+      serverMs: number | null;
+      responseSha256: string;
+    }
+  | { kind: 'error'; message: string; responseSha256: string } {
+  const responseSha256 = sha256(body);
+  const { env, code, message, serverTsMs } = parseEnvelope(body);
+  if (!env || code !== 0 || !Array.isArray(env.data))
+    return {
+      kind: 'error',
+      message: `ticker/price: ${code ?? 'no code'} ${message}`,
+      responseSha256,
+    };
+  const rows: SpotPriceRow[] = [];
+  let invalid = 0;
+  for (const r of env.data as Array<Record<string, unknown>>) {
+    const symbol = r && typeof r.symbol === 'string' ? r.symbol.toLowerCase() : null;
+    const price = r ? exactNumber(r.price) : null;
+    if (!symbol || !price || !price.gt(0)) {
+      invalid++;
+      continue;
+    }
+    rows.push({ symbol, price: price.toFixed() });
+  }
+  if (!rows.length)
+    return { kind: 'error', message: 'ticker/price: no usable row', responseSha256 };
+  return { kind: 'ok', rows, invalid, serverMs: serverTsMs, responseSha256 };
+}
+
 export interface BookLevel {
   price: string;
   volume: string;

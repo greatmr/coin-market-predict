@@ -161,7 +161,8 @@ export class FuturesSamplerService implements OnApplicationBootstrap, OnApplicat
     report.mapped = await this.mapPending();
 
     const queuedAt = this.clock.now();
-    const fetch = await this.source.futuresMarketData();
+    // The minute sample waits for at most the request in flight, never behind a routine backlog.
+    const fetch = await this.source.futuresMarketData({ lane: 'prompt' });
     let serverMs: number | null = null;
     let inPoll = new Set<string>();
     let current: PolledResponse | null = null;
