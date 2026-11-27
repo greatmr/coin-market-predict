@@ -786,7 +786,11 @@ function renderObservationStatus(
     `not in statistics: ACTIVE ${s.summary.provisional.events}, PARTIAL ${s.summary.partial.events}, NO_TRADES ${s.summary.noTrades.events}, UNVERIFIABLE ${s.summary.unverifiable.events}, no measurement ${s.summary.unmeasured.events}`,
     `freshness: ${s.freshness.activeObservations} active; oldest open data through ${s.freshness.oldestOpenDataThrough ?? '—'}${s.freshness.oldestOpenLagMs !== null ? ` (${Math.round(s.freshness.oldestOpenLagMs / 60_000)} min behind)` : ''}; last LBank fetch ${s.freshness.lastSourceFetchAt ?? 'never'}; ${s.freshness.pairsWithFetchErrors} pairs with fetch errors; ${s.freshness.observationsAwaitingVerification} awaiting trade checks`,
     `last run fetched new data: ${s.lastRun?.fetchedNewData ?? '—'} (candles stored ${s.lastRun?.candlesStored ?? '—'}, trade minutes checked ${s.lastRun?.tradeMinutesChecked ?? '—'})`,
-    `routing check: ${s.routing.ok ? 'ok' : 'PROBLEM'} (${s.routing.batchesAfterCutover} batches after the cutover, ${s.routing.batchesWithoutIntake.length} without intake, ${s.routing.legacyEventsAfterCutover} legacy events after it, ${s.routing.eventsWithoutObservation} events without observation, ${s.routing.duplicateKeysAcrossTrackers} keys in both, ${s.routing.observationsWithoutStart} without a start yet)`,
+    `routing check: ${s.routing.ok ? 'ok' : 'PROBLEM'} (${s.routing.batchesAfterCutover} batches after the cutover, ${s.routing.batchesWithoutIntake.length} without intake, ${s.routing.deletedBatches} deleted, ${s.routing.legacyEventsAfterCutover} legacy events after it, ${s.routing.eventsWithoutObservation} events without observation, ${s.routing.duplicateKeysAcrossTrackers} keys in both, ${s.routing.observationsWithoutStart} without a start yet)`,
+    ...s.deletions.map(
+      (d) =>
+        `deleted cohort ${d.id}: ${d.events} events of ${d.batches} batches through ${d.throughCrawledAt} (batch ${d.throughBatchId}) removed ${d.deletedAt}; kept only in the recovery backup`,
+    ),
   ].join('\n');
 }
 

@@ -529,6 +529,18 @@ export interface ObservationSummary {
       lastValuesChangeAt: string | null;
     };
   };
+  deletions: ObservationDeletion[];
+}
+
+/** Operator-approved deletions of earlier cohorts: removed from every count. */
+export interface ObservationDeletion {
+  id: string;
+  throughBatchId: string;
+  throughCrawledAt: string;
+  deletedAt: string;
+  batches: number;
+  events: number;
+  reason: string;
 }
 
 /** GET /api/observations/version: cheap change tokens, polled every 30 s. */

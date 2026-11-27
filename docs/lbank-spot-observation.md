@@ -505,8 +505,9 @@ evidence only: no rule, reference, window, return or status changes; nothing sto
 - **Coverage times (Compare, Details).** Each row carries `coverageTimes`: Spot data through (one-minute
   candles fetched; verified trades lie before it), Futures through (its own basis), their difference
   and `differs` = more than one minute apart — a display cue (Spot data is in whole minutes, Futures is
-  sampled once a minute), no value depends on it. Compare labels the values "Spot · verified" and "Fut ·
-  sampled" and never calls them time-aligned.
+  sampled once a minute), no value depends on it. Compare shows them under "Status · data through"
+  (highlighted beyond one minute), heads the extremes "Spot verified · Fut sampled" and never calls
+  them time-aligned.
 - **Order-book context.** Read once per observation after the first quote (`prompt` lane); its own
   capture time and `afterQuoteMs` (its response − the quote's response) are shown: a later book, not
   the book at the quote's moment, never a fill.
@@ -522,3 +523,28 @@ evidence only: no rule, reference, window, return or status changes; nothing sto
   Old and new results are never pooled; a POST_FIX quote never makes an old row immediate.
 - **Limits.** One Futures observation a minute can miss a move between samples: observed extremes,
   not proof of the exact high or low. These are data-collection times, not order latency.
+
+## 13c. Deleted cohort (operator request 2026-11-27, M021, ADR-0014)
+
+Every LBank observation, Spot and Futures, of the CMC crawl batches up to and including batch
+`67368359-7bc8-4d20-b75b-6e28948a3bc4` (crawled 2026-11-27 11:07:00.066 UTC = 14:37 Asia/Tehran) was
+deleted from the active dataset; later batches were kept unchanged. Membership is the crawl batch's
+identity and stored crawl time, never a window start, a reference time, a rules version or a label.
+
+- **Deleted (one transaction, `scripts/db/2026-11-27-delete-observation-cohort.sql`).** Events, Spot
+  observations, results, rules-change audit rows, Futures rows, references and order books, the
+  batches' intake runs; Futures samples no surviving observation can read and Futures requests sent
+  before the earliest surviving start; Spot candles, trades and trade-minute checks of the pairs no
+  remaining observation uses, with those pairs' `synced_until` reset to never-synced (a missing
+  candle before `synced_until` reads as "LBank answered without a candle", so the two go together).
+- **Kept.** Every row a surviving observation can read (its pair's series, its contract's samples
+  from its start, every request since the earliest surviving start), the pair registry and list
+  snapshots, the indicative Spot price requests, the job log, and all CMC source and product data.
+- **Recorded, immutable.** `lbank_obs_cohort_deletion` (cutoff, counts, backup), `lbank_obs_deleted_batch`
+  (the intake never reopens these batches) and `lbank_obs_deleted_key`: a deleted event's key stays
+  taken, so a later sighting of the same coin, UTC date and star count is ignored exactly as the
+  original's duplicate would have been (DB trigger; the intake labels it `deletedKey`). New keys and
+  later UTC days are unaffected; the routing check counts the deleted batches as accounted for.
+- **Recovery.** The full dump taken right before, and a CSV export of exactly the deleted rows written
+  inside the deletion transaction; both were restored in an isolated database before the deletion.
+  The deleted rows exist only there, not in the active dataset.

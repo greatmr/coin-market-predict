@@ -72,6 +72,10 @@ never real orders. Spec: `docs/strategy-two-tier-vmc.md`. Purpose and open decis
   our receipt, `lbankSnapshotThrough` = LBank `lastTime`; never converted). The page's change tokens
   split Spot / Futures; `values_changed_at` (trigger) marks real Futures value changes. Futures
   evidence classes are read-time only; only `IMMEDIATE_QUOTE` is an immediate entry.
+- **Deleted observation cohort** (docs § 13c, ADR-0014, M021): batches through the 2026-11-27 11:07 UTC
+  crawl were deleted by an audited one-time script; `lbank_obs_deleted_batch` / `lbank_obs_deleted_key`
+  keep them deleted (intake skips the batches; a deleted key stays taken). Never reinsert those rows
+  or free those keys; recovery only from the backups into an isolated database.
 - **Storage scope** (`docs/adr/0008-storage-scope.md`, D4): every coin is screened hourly and kept
   in the registry, but only ranks 1–1200 are stored as snapshots and only Review Queue rows as
   `scan_result`; other coins are counted on `scan_run.counts` and traced on request

@@ -2249,3 +2249,88 @@ describe('reference latency (follow-up runs, timeline, change token)', () => {
     expect(v2.lastRunId).not.toBe(v1.lastRunId);
   });
 });
+
+describe('deleted observation cohort (M021)', () => {
+  it('a deleted batch is never reopened; its keys stay taken; new keys still open events normally', async () => {
+    await setCutover();
+    // Batch A (01:07): two events; batch B (02:07, same UTC day): a sighting of A's ABC 3★ and a new coin.
+    await intake(row(1, 'abc', 3, '2030-01-02T01:07:00.050Z'), {
+      scanCommitAt: '2030-01-02T01:07:05.000Z',
+    });
+    await intake(row(2, 'def', 2, '2030-01-02T01:07:00.050Z'), {
+      scanCommitAt: '2030-01-02T01:07:05.000Z',
+    });
+    const a = await db.getRepository(ObsEvent).findOneByOrFail({ cmcId: 1 });
+    // The operator's deletion, as the one-time script records and performs it.
+    const [del] = await db.query(
+      `INSERT INTO lbank_obs_cohort_deletion (provider_id, through_batch_id, through_crawled_at, reason, counts, backup)
+       VALUES ($1, $2, $3, 'test', '{"events": 2}', 'test.dump') RETURNING id`,
+      [P, a.sourceBatchId, a.detectedAt],
+    );
+    await db.query(
+      `INSERT INTO lbank_obs_deleted_batch (batch_id, deletion_id, events) VALUES ($1, $2, 2)`,
+      [a.sourceBatchId, del.id],
+    );
+    await db.query(
+      `INSERT INTO lbank_obs_deleted_key (provider_id, cmc_id, detected_utc_date, star_count, event_id, batch_id)
+       SELECT provider_id, cmc_id, detected_utc_date, star_count, id, source_batch_id FROM lbank_obs_event WHERE source_batch_id = $1`,
+      [a.sourceBatchId],
+    );
+    await db.query(
+      `DELETE FROM lbank_futures_observation WHERE observation_id IN (SELECT o.id FROM lbank_observation o JOIN lbank_obs_event e ON e.id = o.event_id WHERE e.source_batch_id = $1)`,
+      [a.sourceBatchId],
+    );
+    await db.query(
+      `DELETE FROM lbank_observation WHERE event_id IN (SELECT id FROM lbank_obs_event WHERE source_batch_id = $1)`,
+      [a.sourceBatchId],
+    );
+    await db.query(`DELETE FROM lbank_obs_event WHERE source_batch_id = $1`, [a.sourceBatchId]);
+    await db.query(`DELETE FROM lbank_obs_intake_run WHERE batch_id = $1`, [a.sourceBatchId]);
+
+    // Re-running the deleted batch (e.g. a forced re-run of its slot) reopens nothing.
+    const again = await app
+      .get(ObservationIntakeService)
+      .intakeBatch(a.sourceBatchId, { now: t('2030-01-02T03:00:00Z') });
+    expect(again).toMatchObject({ skipped: expect.stringMatching(/deleted/) });
+    // A later batch the same UTC day: ABC 3★ is ignored as the original's duplicate would have been
+    // (labelled), a new coin opens its event — Spot observation and, once sampled, its Futures row.
+    const r1 = await intake(row(1, 'abc', 3, '2030-01-02T02:07:00.050Z'), {
+      scanCommitAt: '2030-01-02T02:07:05.000Z',
+    });
+    expect(r1.created).toHaveLength(0);
+    expect(r1.ignored).toEqual([{ cmcId: 1, stars: 3, eventId: null, deletedKey: true }]);
+    const r2 = await intake(row(3, 'mno', 1, '2030-01-02T02:07:00.050Z'), {
+      scanCommitAt: '2030-01-02T02:07:05.000Z',
+    });
+    expect(r2.created).toHaveLength(1);
+    expect((await obsOf(3)).observationStart?.toISOString()).toBe('2030-01-02T02:07:05.000Z');
+    // A different star count of a deleted coin is a new key: it opens normally.
+    const r3 = await intake(row(1, 'abc', 2, '2030-01-02T02:07:00.050Z'), {
+      scanCommitAt: '2030-01-02T02:07:05.000Z',
+    });
+    expect(r3.created).toHaveLength(1);
+    // The database skips the insert of a deleted key whatever the path (no row, no error).
+    const raw = await db.query(
+      `INSERT INTO lbank_obs_event
+       SELECT (jsonb_populate_record(NULL::lbank_obs_event,
+                 to_jsonb(e) || jsonb_build_object('id', gen_random_uuid(), 'cmc_id', 1, 'star_count', 3))).*
+         FROM lbank_obs_event e WHERE e.cmc_id = 3
+       RETURNING id`,
+    );
+    expect(raw).toHaveLength(0);
+    // The routing check accounts for the deleted batch; the summary names the deletion.
+    const read = app.get(ObservationReadService);
+    const rc = await read.routingCheck();
+    expect(rc.deletedBatches).toBe(1);
+    expect(rc.batchesWithoutIntake).toEqual([]);
+    const s = await read.summary();
+    expect(s.deletions).toEqual([
+      expect.objectContaining({ throughBatchId: a.sourceBatchId, batches: 1, events: 2 }),
+    ]);
+    // The deletion record and the keys are immutable.
+    await expect(db.query(`DELETE FROM lbank_obs_deleted_key`)).rejects.toThrow(/immutable/);
+    await expect(db.query(`UPDATE lbank_obs_cohort_deletion SET reason = 'x'`)).rejects.toThrow(
+      /immutable/,
+    );
+  });
+});

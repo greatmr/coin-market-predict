@@ -1038,6 +1038,16 @@ export class ObservationReadService {
         lastValuesChangeAt: string | null;
       };
     };
+    /** Operator-approved deletions of earlier cohorts (M021): removed from every count above. */
+    deletions: Array<{
+      id: string;
+      throughBatchId: string;
+      throughCrawledAt: string;
+      deletedAt: string;
+      batches: number;
+      events: number;
+      reason: string;
+    }>;
   }> {
     const w = this.where(q);
     const futRows = (await this.db.query(
@@ -1095,6 +1105,21 @@ export class ObservationReadService {
           legacyFirst: x.legacy_first ? { retained: x.legacy_first.price !== null } : null,
         }).evidenceClass
       ]++;
+    const deletions = (await this.db.query(
+      `SELECT c.id::text, c.through_batch_id, c.through_crawled_at, c.deleted_at, c.reason,
+              count(d.batch_id)::int AS batches, coalesce(sum(d.events), 0)::int AS events
+         FROM lbank_obs_cohort_deletion c LEFT JOIN lbank_obs_deleted_batch d ON d.deletion_id = c.id
+        WHERE c.provider_id = $1 GROUP BY c.id ORDER BY c.deleted_at`,
+      [this.providerId],
+    )) as Array<{
+      id: string;
+      through_batch_id: string;
+      through_crawled_at: Date;
+      deleted_at: Date;
+      reason: string;
+      batches: number;
+      events: number;
+    }>;
     const [ffresh] = (await this.db.query(
       `SELECT count(*) FILTER (WHERE f.finalized_at IS NULL AND f.mapping_status = 'OK')::int AS open_rows,
               min(f.sampled_through) FILTER (WHERE f.finalized_at IS NULL AND f.mapping_status = 'OK') AS oldest,
@@ -1235,6 +1260,15 @@ export class ObservationReadService {
           lastValuesChangeAt: isoOf(ffresh.changed),
         },
       },
+      deletions: deletions.map((d) => ({
+        id: d.id,
+        throughBatchId: d.through_batch_id,
+        throughCrawledAt: d.through_crawled_at.toISOString(),
+        deletedAt: d.deleted_at.toISOString(),
+        batches: d.batches,
+        events: d.events,
+        reason: d.reason,
+      })),
     };
   }
 
@@ -1957,6 +1991,8 @@ export class ObservationReadService {
     observationEventsBeforeCutover: number;
     duplicateKeysAcrossTrackers: number;
     observationsWithoutStart: number;
+    /** Batches whose observations an operator deleted (M021): accounted for, never reopened. */
+    deletedBatches: number;
     ok: boolean;
   }> {
     const cutover = await this.cutover.status(this.providerId, new Date());
@@ -1974,10 +2010,17 @@ export class ObservationReadService {
     const intakeBatches = new Set(
       (
         (await this.db.query(
-          `SELECT DISTINCT batch_id FROM lbank_obs_intake_run WHERE provider_id = $1`,
+          `SELECT DISTINCT batch_id FROM lbank_obs_intake_run WHERE provider_id = $1
+           UNION SELECT d.batch_id FROM lbank_obs_deleted_batch d
+             JOIN lbank_obs_cohort_deletion c ON c.id = d.deletion_id WHERE c.provider_id = $1`,
           p,
         )) as Array<{ batch_id: string }>
       ).map((r) => r.batch_id),
+    );
+    const deletedBatches = await one(
+      `SELECT count(*) AS n FROM lbank_obs_deleted_batch d JOIN lbank_obs_cohort_deletion c ON c.id = d.deletion_id
+        WHERE c.provider_id = $1`,
+      p,
     );
     // Hourly runs record the intake; reprocessing never does (like the legacy trigger, F3).
     const without = batches
@@ -2027,6 +2070,7 @@ export class ObservationReadService {
       observationEventsBeforeCutover: newBefore,
       duplicateKeysAcrossTrackers: dupKeys,
       observationsWithoutStart: withoutStart,
+      deletedBatches,
       ok: !without.length && !unaccounted && !orphans && !legacyAfter && !newBefore && !dupKeys,
     };
   }

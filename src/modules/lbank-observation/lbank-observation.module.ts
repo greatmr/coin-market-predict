@@ -16,6 +16,11 @@ import { StrategyModule } from '../strategy/index.js';
 
 import { CandleStoreService } from './candle-store.service.js';
 import { CandleArchive } from './entities/candle-archive.entity.js';
+import {
+  ObsCohortDeletion,
+  ObsDeletedBatch,
+  ObsDeletedKey,
+} from './entities/cohort-deletion.entity.js';
 import { FuturesBook } from './entities/futures-book.entity.js';
 import { FuturesObservation } from './entities/futures-observation.entity.js';
 import { FuturesPoll } from './entities/futures-poll.entity.js';
@@ -123,6 +128,9 @@ export function createLbankSource(
       FuturesBook,
       SpotPriceRequest,
       SpotIndicativeQuote,
+      ObsCohortDeletion,
+      ObsDeletedBatch,
+      ObsDeletedKey,
     ]),
     AppStateModule,
     SourcesModule,

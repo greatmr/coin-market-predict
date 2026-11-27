@@ -23,7 +23,8 @@ import {
 /** What one intake did with one published queue row (the no-missed-event check reads these). */
 export interface IntakeDetails {
   created: Array<{ eventId: string; cmcId: number; stars: number }>;
-  ignored: Array<{ cmcId: number; stars: number; eventId: string | null }>;
+  /** `deletedKey`: the key belongs to a deleted cohort (M021): taken, as the original event was. */
+  ignored: Array<{ cmcId: number; stars: number; eventId: string | null; deletedKey?: boolean }>;
   rejected: Array<{
     cmcId: number | null;
     symbol: string;

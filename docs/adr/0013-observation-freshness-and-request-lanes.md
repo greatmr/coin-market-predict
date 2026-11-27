@@ -40,8 +40,9 @@ A review of the deployed Futures observed-quote method (ADR-0011 addendum) found
   extreme, a status or coverage input; never retried later. The pacing puts it ≥ 1 interval after the
   Futures request; both requests' times and the difference are shown, never called simultaneous.
 - **Coverage times** per row (Spot candles through, Futures through in its own basis, difference,
-  `differs` beyond one minute as a display cue only) in Compare and Details; Compare labels values
-  "Spot · verified" / "Fut · sampled". The order book shows its own time and its delay after the quote.
+  `differs` beyond one minute as a display cue only) in Compare ("Status · data through") and Details;
+  Compare heads the extremes "Spot verified · Fut sampled". The order book shows its own time and its
+  delay after the quote.
 - **Evidence classes** computed at read time from existing records (rules version, entry source, first
   stored request, whether the first response after the start was kept): only `IMMEDIATE_QUOTE` is an
   immediate Futures entry; old-method rows are classed `LEGACY_BEFORE_COLLECTION`,

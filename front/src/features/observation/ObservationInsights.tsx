@@ -146,6 +146,28 @@ function Tiles({ s }: { s: ObservationSummary }) {
           {`${fmtInt(s.futures.byEvidence.TICK_QUOTE)} minute-sample quotes apart · old method apart: ${fmtInt(s.futures.byEvidence.LEGACY_BEFORE_COLLECTION)} before collection, ${fmtInt(s.futures.byEvidence.LEGACY_FIRST_RESPONSE_RETAINED)} first response kept, ${fmtInt(s.futures.byEvidence.LEGACY_FIRST_RESPONSE_LOST)} lost · last request ${s.futures.lastPoll ? `${fmtAgo(s.futures.lastPoll.fetchedAt)}${s.futures.lastPoll.ok ? '' : ' (failed)'}` : 'none'}`}
         </span>
       </div>
+      {s.deletions.length ? (
+        <div
+          className="tile"
+          title={s.deletions
+            .map(
+              (d) =>
+                `${d.reason} Removed ${fmtTime(d.deletedAt)}; kept only in the recovery backup.`,
+            )
+            .join('\n')}
+        >
+          <span className="tile-label">Earlier cohort deleted</span>
+          <b>{`${fmtInt(s.deletions.reduce((a, d) => a + d.events, 0))} events`}</b>
+          <span className="muted small">
+            {s.deletions
+              .map(
+                (d) =>
+                  `${fmtInt(d.batches)} batches through the ${fmtTime(d.throughCrawledAt)} crawl, not counted anywhere`,
+              )
+              .join(' · ')}
+          </span>
+        </div>
+      ) : null}
       <div className="tile">
         <span className="tile-label">Last update</span>
         <b>{s.lastRun ? <Lab map={RUN_STATUS} k={s.lastRun.status} /> : 'Not yet'}</b>

@@ -25,6 +25,11 @@ import { CrawlBatch } from '../modules/ingestion/entities/crawl-batch.entity.js'
 import { DiscoveryRun } from '../modules/ingestion/entities/discovery-run.entity.js';
 import { MarketSnapshot } from '../modules/ingestion/entities/market-snapshot.entity.js';
 import { CandleArchive } from '../modules/lbank-observation/entities/candle-archive.entity.js';
+import {
+  ObsCohortDeletion,
+  ObsDeletedBatch,
+  ObsDeletedKey,
+} from '../modules/lbank-observation/entities/cohort-deletion.entity.js';
 import { FuturesBook } from '../modules/lbank-observation/entities/futures-book.entity.js';
 import { FuturesObservation } from '../modules/lbank-observation/entities/futures-observation.entity.js';
 import { FuturesPoll } from '../modules/lbank-observation/entities/futures-poll.entity.js';
@@ -118,6 +123,9 @@ export const ENTITIES = [
   FuturesBook,
   SpotPriceRequest,
   SpotIndicativeQuote,
+  ObsCohortDeletion,
+  ObsDeletedBatch,
+  ObsDeletedKey,
   SpotCandle,
   MarketListFetch,
   Observation,

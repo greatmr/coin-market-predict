@@ -70,6 +70,18 @@ export class ObservationIntakeService {
     batchId: string,
     opts: { now: Date; pipelineRunId?: string | null; clock?: () => Date },
   ): Promise<IntakeReport | IntakeSkipped> {
+    // A batch whose observations were deleted (M021) is never reopened, whatever re-runs it.
+    const [deleted] = (await this.db.query(
+      `SELECT d.deletion_id::text AS deletion_id, c.deleted_at
+         FROM lbank_obs_deleted_batch d JOIN lbank_obs_cohort_deletion c ON c.id = d.deletion_id
+        WHERE d.batch_id = $1`,
+      [batchId],
+    )) as Array<{ deletion_id: string; deleted_at: Date }>;
+    if (deleted)
+      return {
+        batchId,
+        skipped: `its observations were deleted (cohort deletion ${deleted.deletion_id}, ${deleted.deleted_at.toISOString()}): never reopened`,
+      };
     const q = await this.queue.queueRows(batchId);
     const detectedAt = q.batch.crawledAt ?? q.rows.find((r) => r.observedAt)?.observedAt ?? null;
     const cut = await this.cutover.get(q.batch.providerId);
@@ -175,7 +187,22 @@ export class ObservationIntakeService {
           },
           select: { id: true },
         });
-        r.ignored.push({ cmcId: row.cmcId!, stars: row.stars, eventId: existing?.id ?? null });
+        // No event with the key: a deleted cohort's key (M021) keeps it taken, as the original did.
+        const deletedKey = existing
+          ? false
+          : (
+              (await m.query(
+                `SELECT 1 FROM lbank_obs_deleted_key WHERE provider_id = $1 AND cmc_id = $2
+                    AND detected_utc_date = $3 AND star_count = $4`,
+                [batch.providerId, row.cmcId!, detectedUtcDate(row.observedAt!), row.stars],
+              )) as unknown[]
+            ).length > 0;
+        r.ignored.push({
+          cmcId: row.cmcId!,
+          stars: row.stars,
+          eventId: existing?.id ?? null,
+          ...(deletedKey ? { deletedKey: true } : {}),
+        });
       }
       const notes =
         queueStatus === 'PUBLISHED' || !rows.length
