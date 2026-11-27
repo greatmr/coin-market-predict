@@ -11,11 +11,8 @@ import { CutoverService, type CutoverStatus } from '../star-events/cutover.servi
 import { ObsRun } from './entities/obs-run.entity.js';
 import { ObservationResult } from './entities/observation-result.entity.js';
 import { ObsRulesChange } from './entities/rules-change.entity.js';
-import {
-  FUTURES_PRICE_SOURCE,
-  FUTURES_RULES_VERSION,
-  type FuturesStatus,
-} from './futures-rules.js';
+import { FUTURES_QUOTE_PRICE_SOURCE, FUTURES_QUOTE_RULES_VERSION } from './futures-quote-rules.js';
+import { FUTURES_PRICE_SOURCE, type FuturesStatus } from './futures-rules.js';
 import { type ObservationSummary, type Stats, summarize } from './observation-stats.js';
 import {
   CLOSED_BAR_MARGIN_MS,
@@ -135,18 +132,72 @@ export interface ObservationRow {
   futuresSampled: FuturesView | null;
 }
 
+/** An observed Futures quote: our request's times and the price LBank returned (no trade time). */
+export interface ObservedQuote {
+  price: string;
+  /** Response received: the time the quote was observed (the displayed delay ends here). */
+  observedAt: string;
+  requestQueuedAt: string | null;
+  requestStartedAt: string;
+  storedAt: string;
+  /** Response receipt − actionable start (the displayed delay). */
+  delayMs: number;
+  /** Request sent − actionable start. */
+  publicationToRequestMs: number;
+  /** Response received − request sent. */
+  requestToResponseMs: number;
+  /** What sent the request: the publication, a prompt retry, or the minute tick. */
+  source: string;
+  failedAttemptsBefore: number;
+  /** LBank's snapshot refresh time (`lastTime`): NOT the time of the underlying trade. */
+  lbankSnapshotAt: string | null;
+  endpoint: string;
+  pollId: string;
+}
+
 export interface FuturesView {
   rulesVersion: string;
+  /** OBSERVED_QUOTE (lbank-futures-quote-1) or LEGACY_TURNOVER_BRACKET (lbank-futures-sampled-1). */
+  method: 'OBSERVED_QUOTE' | 'LEGACY_TURNOVER_BRACKET';
   status: string;
   provisional: boolean;
   mapping: string;
   contract: string | null;
   reasons: string[];
   flags: string[];
-  /** A bracketed trade: its price, and the trade happened strictly between `after` and `before`. */
+  /** Observed-quote method: the first Futures price observed after the signal. */
+  quote: ObservedQuote | null;
+  /** Legacy method only: the snapshot pair with rising 24 h turnover that set the old reference. */
   reference: { price: string; after: string; before: string } | null;
-  highest: { price: string; after: string; before: string; pct: string | null } | null;
-  lowest: { price: string; after: string; before: string; pct: string | null } | null;
+  /**
+   * Observed method: the highest / lowest observed price (`observedAt` = response receipt).
+   * Legacy method: bounds from turnover-rise snapshot pairs (`after` / `before`).
+   */
+  highest: {
+    price: string;
+    pct: string | null;
+    observedAt?: string;
+    after?: string;
+    before?: string;
+  } | null;
+  lowest: {
+    price: string;
+    pct: string | null;
+    observedAt?: string;
+    after?: string;
+    before?: string;
+  } | null;
+  /** Legacy rows still running at the fix: the first price observed after it (never their entry). */
+  postFixQuote: ObservedQuote | null;
+  /** Order-book context read right after the first quote (indicative, never a price input). */
+  book: {
+    ok: boolean;
+    error: string | null;
+    bestBid: string | null;
+    bestAsk: string | null;
+    requestStartedAt: string | null;
+    responseReceivedAt: string;
+  } | null;
   samplesInWindow: number;
   bracketedInWindow: number;
   maxGapMs: number;
@@ -242,27 +293,102 @@ interface RawRow {
   f_sampled_through: Date | null;
   f_last_update_at: Date | null;
   f_finalized_at: Date | null;
+  f_highest_observed_at: Date | null;
+  f_lowest_observed_at: Date | null;
+  fq_entry: QuoteJson | null;
+  fq_post_fix: QuoteJson | null;
+  fq_book: {
+    ok: boolean;
+    error: string | null;
+    best_bid: string | null;
+    best_ask: string | null;
+    request_started_at: string | null;
+    response_received_at: string;
+  } | null;
+}
+
+interface QuoteJson {
+  price: string;
+  actionable_start: string;
+  request_queued_at: string | null;
+  request_started_at: string;
+  response_received_at: string;
+  stored_at: string;
+  source: string;
+  failed_attempts_before: number;
+  quote_refreshed_at: string | null;
+  endpoint: string;
+  poll_id: string;
+}
+
+function observedQuote(q: QuoteJson | null): ObservedQuote | null {
+  if (!q) return null;
+  const start = Date.parse(q.actionable_start);
+  const sent = Date.parse(q.request_started_at);
+  const recv = Date.parse(q.response_received_at);
+  const iso = (v: string | null) => (v ? new Date(v).toISOString() : null);
+  return {
+    price: plainText(q.price)!,
+    observedAt: new Date(recv).toISOString(),
+    requestQueuedAt: iso(q.request_queued_at),
+    requestStartedAt: new Date(sent).toISOString(),
+    storedAt: new Date(q.stored_at).toISOString(),
+    delayMs: recv - start,
+    publicationToRequestMs: sent - start,
+    requestToResponseMs: recv - sent,
+    source: q.source,
+    failedAttemptsBefore: q.failed_attempts_before,
+    lbankSnapshotAt: iso(q.quote_refreshed_at),
+    endpoint: q.endpoint,
+    pollId: String(q.poll_id),
+  };
 }
 
 function futuresView(r: RawRow): FuturesView {
+  const observed = r.f_rules_version === FUTURES_QUOTE_RULES_VERSION;
   const bracket = (price: string | null, after: Date | null, before: Date | null) =>
     price !== null && after && before
       ? { price: plainText(price)!, after: after.toISOString(), before: before.toISOString() }
       : null;
-  const ref = bracket(r.f_reference_price, r.f_reference_after, r.f_reference_before);
-  const hi = bracket(r.f_highest_price, r.f_highest_after, r.f_highest_before);
-  const lo = bracket(r.f_lowest_price, r.f_lowest_after, r.f_lowest_before);
+  const obsExt = (price: string | null, at: Date | null, pct: string | null) =>
+    price !== null && at
+      ? { price: plainText(price)!, observedAt: at.toISOString(), pct: plainText(pct) }
+      : null;
+  const legacyHi = bracket(r.f_highest_price, r.f_highest_after, r.f_highest_before);
+  const legacyLo = bracket(r.f_lowest_price, r.f_lowest_after, r.f_lowest_before);
+  const quote = observed ? observedQuote(r.fq_entry) : null;
   return {
     rulesVersion: r.f_rules_version!,
+    method: observed ? 'OBSERVED_QUOTE' : 'LEGACY_TURNOVER_BRACKET',
     status: r.f_status!,
     provisional: r.f_status !== 'CLOSED',
     mapping: r.f_mapping_status!,
     contract: r.f_contract,
     reasons: r.f_reasons ?? [],
     flags: r.f_flags ?? [],
-    reference: ref,
-    highest: hi && { ...hi, pct: plainText(r.f_highest_return_pct) },
-    lowest: lo && { ...lo, pct: plainText(r.f_lowest_return_pct) },
+    quote,
+    reference: observed
+      ? null
+      : bracket(r.f_reference_price, r.f_reference_after, r.f_reference_before),
+    highest: observed
+      ? quote && obsExt(r.f_highest_price, r.f_highest_observed_at, r.f_highest_return_pct)
+      : legacyHi && { ...legacyHi, pct: plainText(r.f_highest_return_pct) },
+    lowest: observed
+      ? quote && obsExt(r.f_lowest_price, r.f_lowest_observed_at, r.f_lowest_return_pct)
+      : legacyLo && { ...legacyLo, pct: plainText(r.f_lowest_return_pct) },
+    postFixQuote: observed ? null : observedQuote(r.fq_post_fix),
+    book: r.fq_book
+      ? {
+          ok: r.fq_book.ok,
+          error: r.fq_book.error,
+          bestBid: r.fq_book.best_bid === null ? null : plainText(r.fq_book.best_bid),
+          bestAsk: r.fq_book.best_ask === null ? null : plainText(r.fq_book.best_ask),
+          requestStartedAt: r.fq_book.request_started_at
+            ? new Date(r.fq_book.request_started_at).toISOString()
+            : null,
+          responseReceivedAt: new Date(r.fq_book.response_received_at).toISOString(),
+        }
+      : null,
     samplesInWindow: r.f_samples_in_window ?? 0,
     bracketedInWindow: r.f_bracketed_in_window ?? 0,
     maxGapMs: Number(r.f_max_gap_ms ?? 0),
@@ -272,35 +398,125 @@ function futuresView(r: RawRow): FuturesView {
   };
 }
 
+/** The Futures columns of the CSV (see FUTURES_CSV_HEADER), one method per row. */
 function futuresCells(f: FuturesView | null): unknown[] {
-  if (!f) return Array.from({ length: 24 }, () => null);
+  if (!f) return Array.from({ length: FUTURES_CSV_HEADER.length }, () => null);
+  const legacy = f.method === 'LEGACY_TURNOVER_BRACKET';
+  const q = f.quote;
+  const pf = f.postFixQuote;
   return [
     f.rulesVersion,
-    FUTURES_PRICE_SOURCE,
+    legacy ? FUTURES_PRICE_SOURCE : FUTURES_QUOTE_PRICE_SOURCE,
     f.status,
     f.provisional,
     f.reasons.join(' '),
     f.mapping,
     f.contract,
-    f.reference?.price,
-    f.reference?.after,
-    f.reference?.before,
-    f.highest?.price,
-    f.highest?.after,
-    f.highest?.before,
-    f.highest?.pct,
-    f.lowest?.price,
-    f.lowest?.after,
-    f.lowest?.before,
-    f.lowest?.pct,
+    legacy ? f.reference?.price : q?.price,
+    legacy ? f.reference?.after : null,
+    legacy ? f.reference?.before : null,
+    legacy ? f.highest?.price : null,
+    legacy ? f.highest?.after : null,
+    legacy ? f.highest?.before : null,
+    legacy ? f.highest?.pct : null,
+    legacy ? f.lowest?.price : null,
+    legacy ? f.lowest?.after : null,
+    legacy ? f.lowest?.before : null,
+    legacy ? f.lowest?.pct : null,
     f.samplesInWindow,
-    f.bracketedInWindow,
+    legacy ? f.bracketedInWindow : null,
     f.maxGapMs,
     f.sampledThrough,
     f.flags.join(' '),
     f.finalizedAt,
+    // Observed-quote method (lbank-futures-quote-1).
+    f.method,
+    q?.price,
+    q?.observedAt,
+    q?.requestQueuedAt,
+    q?.requestStartedAt,
+    q?.storedAt,
+    q?.delayMs,
+    q?.publicationToRequestMs,
+    q?.requestToResponseMs,
+    q?.source,
+    q?.failedAttemptsBefore,
+    q?.lbankSnapshotAt,
+    q?.pollId,
+    legacy ? null : f.highest?.price,
+    legacy ? null : f.highest?.observedAt,
+    legacy ? null : f.highest?.pct,
+    legacy ? null : f.lowest?.price,
+    legacy ? null : f.lowest?.observedAt,
+    legacy ? null : f.lowest?.pct,
+    pf?.price,
+    pf?.observedAt,
+    pf?.delayMs,
+    f.book?.bestBid,
+    f.book?.bestAsk,
+    f.book?.requestStartedAt,
+    f.book?.responseReceivedAt,
+    f.book?.error,
   ];
 }
+
+export const FUTURES_CSV_HEADER = [
+  'futures_rules_version',
+  'futures_price_source',
+  'futures_status',
+  'futures_provisional',
+  'futures_reasons',
+  'futures_mapping',
+  'futures_contract',
+  'futures_reference_price',
+  // Legacy method (lbank-futures-sampled-1) only: the turnover-rise snapshot pair and its bounds.
+  'futures_reference_trade_after_utc',
+  'futures_reference_trade_before_utc',
+  'futures_highest_sampled_price',
+  'futures_highest_after_utc',
+  'futures_highest_before_utc',
+  'futures_highest_return_pct_lower_bound',
+  'futures_lowest_sampled_price',
+  'futures_lowest_after_utc',
+  'futures_lowest_before_utc',
+  'futures_lowest_return_pct_upper_bound',
+  'futures_samples_in_window',
+  'futures_bracketed_trades_in_window',
+  'futures_max_sampling_gap_ms',
+  'futures_sampled_through_utc',
+  'futures_flags',
+  'futures_finalized_at_utc',
+  // Observed-quote method (lbank-futures-quote-1): our request's times; LBank gives no trade time.
+  'futures_method',
+  'futures_first_observed_price',
+  'futures_first_observed_response_utc',
+  'futures_first_observed_request_queued_utc',
+  'futures_first_observed_request_started_utc',
+  'futures_first_observed_stored_utc',
+  'futures_first_observed_delay_ms',
+  'futures_publication_to_request_ms',
+  'futures_request_to_response_ms',
+  'futures_first_observed_request_source',
+  'futures_failed_attempts_before',
+  'futures_lbank_snapshot_time_utc_not_trade_time',
+  'futures_first_observed_request_id',
+  'futures_highest_observed_price',
+  'futures_highest_observed_response_utc',
+  'futures_highest_observed_return_pct',
+  'futures_lowest_observed_price',
+  'futures_lowest_observed_response_utc',
+  'futures_lowest_observed_return_pct',
+  // Legacy rows still open at the fix: first price observed after it (not an entry reference).
+  'futures_post_fix_observed_price',
+  'futures_post_fix_observed_response_utc',
+  'futures_post_fix_observed_delay_ms',
+  // Order-book context (indicative only; never a reference or a fill).
+  'futures_book_best_bid',
+  'futures_book_best_ask',
+  'futures_book_request_started_utc',
+  'futures_book_response_utc',
+  'futures_book_error',
+] as const;
 
 /** Exact decimal text without trailing zeros (display); null stays null. */
 const plainText = (v: string | null): string | null => (v === null ? null : dec(v)!.toFixed());
@@ -398,7 +614,19 @@ export class ObservationReadService {
                    f.lowest_before AS f_lowest_before, f.lowest_return_pct::text AS f_lowest_return_pct,
                    f.samples_in_window AS f_samples_in_window, f.bracketed_in_window AS f_bracketed_in_window,
                    f.max_gap_ms::text AS f_max_gap_ms, f.sampled_through AS f_sampled_through,
-                   f.last_update_at AS f_last_update_at, f.finalized_at AS f_finalized_at
+                   f.last_update_at AS f_last_update_at, f.finalized_at AS f_finalized_at,
+                   f.highest_observed_at AS f_highest_observed_at, f.lowest_observed_at AS f_lowest_observed_at,
+                   (SELECT row_to_json(q) FROM (SELECT r.last_price::text AS price, r.actionable_start, r.request_queued_at,
+                           r.request_started_at, r.response_received_at, r.stored_at, r.source, r.failed_attempts_before,
+                           r.quote_refreshed_at, r.endpoint, r.poll_id::text AS poll_id
+                      FROM lbank_futures_reference r WHERE r.futures_observation_id = f.id AND r.kind = 'ENTRY') q) AS fq_entry,
+                   (SELECT row_to_json(q) FROM (SELECT r.last_price::text AS price, r.actionable_start, r.request_queued_at,
+                           r.request_started_at, r.response_received_at, r.stored_at, r.source, r.failed_attempts_before,
+                           r.quote_refreshed_at, r.endpoint, r.poll_id::text AS poll_id
+                      FROM lbank_futures_reference r WHERE r.futures_observation_id = f.id AND r.kind = 'POST_FIX') q) AS fq_post_fix,
+                   (SELECT row_to_json(b) FROM (SELECT ok, error, best_bid::text AS best_bid, best_ask::text AS best_ask,
+                           request_started_at, response_received_at
+                      FROM lbank_futures_book WHERE futures_observation_id = f.id ORDER BY id LIMIT 1) b) AS fq_book
               FROM lbank_observation o JOIN lbank_obs_event e ON e.id = o.event_id
               LEFT JOIN lbank_futures_observation f ON f.observation_id = o.id
              WHERE ${where} ${tail}`;
@@ -556,6 +784,10 @@ export class ObservationReadService {
       rulesVersion: string;
       priceSource: string;
       byStatus: Record<string, number>;
+      byMethod: {
+        OBSERVED_QUOTE: Record<string, number>;
+        LEGACY_TURNOVER_BRACKET: Record<string, number>;
+      };
       lastPoll: {
         fetchedAt: string;
         serverAt: string | null;
@@ -566,11 +798,12 @@ export class ObservationReadService {
   }> {
     const w = this.where(q);
     const futRows = (await this.db.query(
-      `SELECT f.status, count(*)::int AS n
+      `SELECT f.rules_version, f.status, count(*)::int AS n
          FROM lbank_observation o JOIN lbank_obs_event e ON e.id = o.event_id
-         JOIN lbank_futures_observation f ON f.observation_id = o.id WHERE ${w.sql} GROUP BY f.status`,
+         JOIN lbank_futures_observation f ON f.observation_id = o.id WHERE ${w.sql}
+        GROUP BY f.rules_version, f.status`,
       w.params,
-    )) as Array<{ status: string; n: number }>;
+    )) as Array<{ rules_version: string; status: string; n: number }>;
     const [poll] = (await this.db.query(
       `SELECT fetched_at, server_at, ok, error FROM lbank_futures_poll ORDER BY fetched_at DESC LIMIT 1`,
     )) as Array<{ fetched_at: Date; server_at: Date | null; ok: boolean; error: string | null }>;
@@ -670,9 +903,25 @@ export class ObservationReadService {
       },
       summary: serializeSummary(s),
       futures: {
-        rulesVersion: FUTURES_RULES_VERSION,
-        priceSource: FUTURES_PRICE_SOURCE,
-        byStatus: Object.fromEntries(futRows.map((r) => [r.status, r.n])),
+        rulesVersion: FUTURES_QUOTE_RULES_VERSION,
+        priceSource: FUTURES_QUOTE_PRICE_SOURCE,
+        byStatus: futRows.reduce<Record<string, number>>(
+          (a, r) => ({ ...a, [r.status]: (a[r.status] ?? 0) + r.n }),
+          {},
+        ),
+        // Never pooled: observed-quote results and the older turnover-bracket results apart.
+        byMethod: {
+          OBSERVED_QUOTE: Object.fromEntries(
+            futRows
+              .filter((r) => r.rules_version === FUTURES_QUOTE_RULES_VERSION)
+              .map((r) => [r.status, r.n]),
+          ),
+          LEGACY_TURNOVER_BRACKET: Object.fromEntries(
+            futRows
+              .filter((r) => r.rules_version !== FUTURES_QUOTE_RULES_VERSION)
+              .map((r) => [r.status, r.n]),
+          ),
+        },
         lastPoll: poll
           ? {
               fetchedAt: poll.fetched_at.toISOString(),
@@ -762,9 +1011,13 @@ export class ObservationReadService {
         lbankPairs: e.lbank_pairs,
       },
       timeline,
+      futuresAudit: await this.futuresAudit(row),
       futuresEvidence: fut
         ? {
-            priceSource: FUTURES_PRICE_SOURCE,
+            priceSource:
+              row.futuresSampled?.method === 'OBSERVED_QUOTE'
+                ? FUTURES_QUOTE_PRICE_SOURCE
+                : FUTURES_PRICE_SOURCE,
             mappingEvidence: fut.mapping_evidence,
             fold: fut.fold,
             createdAt: fut.created_at.toISOString(),
@@ -938,6 +1191,84 @@ export class ObservationReadService {
     };
   }
 
+  /**
+   * Futures audit of one observation. Observed-quote rows: every failed request attempt between the
+   * start and the first observed quote. Legacy rows: what the retained records can prove about the
+   * first price our system observed after the signal (read only; nothing is rewritten): the first
+   * successful request provably sent after the start (its send time is recorded, or for minute ticks
+   * before the fix bounded by the tick's minute) and whether the contract's row from it was kept.
+   */
+  private async futuresAudit(row: ObservationRow) {
+    const f = row.futuresSampled;
+    if (!f || !row.window || !f.contract) return null;
+    const start = new Date(row.window.start);
+    if (f.method === 'OBSERVED_QUOTE') {
+      const failed = (await this.db.query(
+        `SELECT id::text, trigger, attempt, request_started_at, fetched_at, error FROM lbank_futures_poll
+          WHERE NOT ok AND coalesce(request_started_at, fetched_at) >= $1
+            AND ($2::timestamptz IS NULL OR coalesce(request_started_at, fetched_at) < $2)
+          ORDER BY fetched_at LIMIT 20`,
+        [start, f.quote ? new Date(f.quote.requestStartedAt) : null],
+      )) as Array<{
+        id: string;
+        trigger: string;
+        attempt: number;
+        request_started_at: Date | null;
+        fetched_at: Date;
+        error: string | null;
+      }>;
+      return {
+        failedAttempts: failed.map((x) => ({
+          requestId: x.id,
+          trigger: x.trigger,
+          attempt: x.attempt,
+          requestStartedAt: isoOf(x.request_started_at),
+          failedAt: x.fetched_at.toISOString(),
+          error: x.error,
+        })),
+      };
+    }
+    const [first] = (await this.db.query(
+      `SELECT p.id::text, p.request_started_at, p.fetched_at,
+              (SELECT s.last_price::text FROM lbank_futures_sample s
+                WHERE s.contract = $2 AND (s.poll_id = p.id OR (s.poll_id IS NULL AND s.fetched_at = p.fetched_at))
+                LIMIT 1) AS price
+         FROM lbank_futures_poll p
+        WHERE p.ok AND (p.request_started_at >= $1 OR (p.request_started_at IS NULL AND date_trunc('minute', p.fetched_at) >= $1))
+        ORDER BY p.fetched_at LIMIT 1`,
+      [start, f.contract],
+    )) as Array<{
+      id: string;
+      request_started_at: Date | null;
+      fetched_at: Date;
+      price: string | null;
+    }>;
+    const firstRetained = first?.price !== null && first?.price !== undefined;
+    return {
+      legacyReplay: first
+        ? {
+            firstEligibleRequestId: first.id,
+            firstEligibleRequestStartedAt: isoOf(first.request_started_at),
+            firstEligibleRequestSentNotBefore: first.request_started_at
+              ? first.request_started_at.toISOString()
+              : new Date(Math.floor(first.fetched_at.getTime() / 60_000) * 60_000).toISOString(),
+            firstEligibleResponseAt: first.fetched_at.toISOString(),
+            contractRowRetained: firstRetained,
+            retainedPrice: firstRetained ? plainText(first.price) : null,
+            // Every request is in the poll log, so a retained first eligible response proves the
+            // first observed price; its delay is exact (response receipt), its send time bounded.
+            correctedReferenceEstablished: firstRetained,
+            reconstructedDelayMs: firstRetained
+              ? first.fetched_at.getTime() - start.getTime()
+              : null,
+            note: firstRetained
+              ? 'Reconstructed under the corrected rule from retained records: the first response our sampler received after the signal (a minute tick, not an immediate request; its exact send time was not recorded before 2026-11-27, only bounded by the tick minute). Shown apart: the event keeps its original-method reference and is excluded from clean observed-quote comparisons.'
+              : 'The first response our sampler received after the signal was not retained for this contract (snapshot storage defect fixed 2026-11-27), so the first observed price after the signal cannot be established; the original-method result is kept with this limitation.',
+          }
+        : null,
+    };
+  }
+
   /** A cheap change token for the page's refresh: the latest run and the latest stored change. */
   async version(): Promise<{
     lastRunId: string | null;
@@ -1087,31 +1418,8 @@ export class ObservationReadService {
       'rules_version',
       'result_version',
       'data_label',
-      // The Futures side: its own rules, contract, reference and bounds (never Spot data).
-      'futures_rules_version',
-      'futures_price_source',
-      'futures_status',
-      'futures_provisional',
-      'futures_reasons',
-      'futures_mapping',
-      'futures_contract',
-      'futures_reference_price',
-      'futures_reference_trade_after_utc',
-      'futures_reference_trade_before_utc',
-      'futures_highest_sampled_price',
-      'futures_highest_after_utc',
-      'futures_highest_before_utc',
-      'futures_highest_return_pct_lower_bound',
-      'futures_lowest_sampled_price',
-      'futures_lowest_after_utc',
-      'futures_lowest_before_utc',
-      'futures_lowest_return_pct_upper_bound',
-      'futures_samples_in_window',
-      'futures_bracketed_trades_in_window',
-      'futures_max_sampling_gap_ms',
-      'futures_sampled_through_utc',
-      'futures_flags',
-      'futures_finalized_at_utc',
+      // The Futures side: its own rules, contract and values (never Spot data).
+      ...FUTURES_CSV_HEADER,
     ];
     // CSV cell: formula-like text is defused with a leading quote; numbers (also negative) stay as they are.
     const cell = (v: unknown) => {

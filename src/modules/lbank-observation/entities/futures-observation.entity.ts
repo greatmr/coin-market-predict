@@ -124,6 +124,13 @@ export class FuturesObservation {
   @DecimalColumn(65, 30, { name: 'lowest_return_pct', nullable: true })
   lowestReturnPct!: DValue | null;
 
+  /** Observed-quote method: when the highest / lowest observed price was received. */
+  @Column({ name: 'highest_observed_at', type: 'timestamptz', nullable: true })
+  highestObservedAt!: Date | null;
+
+  @Column({ name: 'lowest_observed_at', type: 'timestamptz', nullable: true })
+  lowestObservedAt!: Date | null;
+
   @Column({ name: 'samples_in_window', type: 'integer', default: 0 })
   samplesInWindow!: number;
 

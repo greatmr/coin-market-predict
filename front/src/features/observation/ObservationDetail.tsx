@@ -18,6 +18,8 @@ import {
   FUTURES_TEXT,
   FUT_STATUS,
   FUT_STATUS_TEXT,
+  FUTURES_QUOTE_LABEL,
+  QUOTE_SOURCE_TEXT,
   GAP_TEXT,
   LISTING_TEXT,
   MAPPING_TEXT,
@@ -189,7 +191,6 @@ function TimingChain({ d, loadedAt }: { d: ObservationDetail; loadedAt: number }
 
 function VenueCards({ d }: { d: ObservationDetail }) {
   const f = d.futuresSampled;
-  const s = d.window ? Date.parse(d.window.start) : null;
   return (
     <div className="obs-venues">
       <section className="obs-venue">
@@ -223,7 +224,7 @@ function VenueCards({ d }: { d: ObservationDetail }) {
       <section className="obs-venue">
         <header>
           <b>LBank Futures</b>
-          <span className="muted small">{`sampled snapshots · ${f?.rulesVersion ?? '—'}`}</span>
+          <span className="muted small">{`${f?.method === 'LEGACY_TURNOVER_BRACKET' ? 'old method' : 'observed quotes'} · ${f?.rulesVersion ?? '—'}`}</span>
         </header>
         {f ? (
           <>
@@ -231,22 +232,32 @@ function VenueCards({ d }: { d: ObservationDetail }) {
               <Lab map={FUT_STATUS} k={f.status} />{' '}
               <span className="muted small">{f.contract ?? humanize(f.mapping).toLowerCase()}</span>
             </p>
-            {f.reference && s !== null ? (
+            {f.method === 'OBSERVED_QUOTE' && f.quote ? (
               <Kv
                 pairs={[
-                  [
-                    'Reference (sampled)',
-                    `${fmtPrice(f.reference.price)} · trade between ${delayText(Date.parse(f.reference.after) - s)} and ${delayText(Date.parse(f.reference.before) - s)}`,
-                  ],
-                  ['Highest ≥', f.highest ? `${fmtPct(f.highest.pct)} · ${fmtPrice(f.highest.price)}` : '—'],
-                  ['Lowest ≤', f.lowest ? `${fmtPct(f.lowest.pct)} · ${fmtPrice(f.lowest.price)}` : '—'],
+                  [FUTURES_QUOTE_LABEL, `${fmtPrice(f.quote.price)} · observed ${delayText(f.quote.delayMs)} after signal`],
+                  ['Observed at (UTC)', utc(f.quote.observedAt)],
+                  ['Highest observed', f.highest ? `${fmtPct(f.highest.pct)} · ${fmtPrice(f.highest.price)}` : '—'],
+                  ['Lowest observed', f.lowest ? `${fmtPct(f.lowest.pct)} · ${fmtPrice(f.lowest.price)}` : '—'],
                   ['Sampled through', f.sampledThrough ? utc(f.sampledThrough) : '—'],
+                ]}
+              />
+            ) : f.method === 'LEGACY_TURNOVER_BRACKET' && f.reference ? (
+              <Kv
+                pairs={[
+                  ['Reference (old method)', `${fmtPrice(f.reference.price)} · turnover-rise snapshot pair`],
+                  ['Highest ≥ (old)', f.highest ? `${fmtPct(f.highest.pct)} · ${fmtPrice(f.highest.price)}` : '—'],
+                  ['Lowest ≤ (old)', f.lowest ? `${fmtPct(f.lowest.pct)} · ${fmtPrice(f.lowest.price)}` : '—'],
+                  f.postFixQuote && [
+                    'First price observed after the fix',
+                    `${fmtPrice(f.postFixQuote.price)} · ${delayText(f.postFixQuote.delayMs)} after signal (not an entry quote)`,
+                  ],
                 ]}
               />
             ) : (
               <p className="small">{FUT_STATUS_TEXT[f.status] ?? humanize(f.status)}</p>
             )}
-            {f.reference
+            {f.reference || f.quote
               ? f.reasons.filter((x) => x !== 'WINDOW_OPEN').length > 0 && (
                   <p className="muted small">
                     {f.reasons.filter((x) => x !== 'WINDOW_OPEN').map(obsReasonText).join(' · ')}
@@ -294,6 +305,8 @@ function Detail({ id }: { id: string }) {
   const fev = d.futuresEvidence;
   const fmap = obj(fev?.mappingEvidence);
   const last = obj(fev?.lastSample);
+  const legacy = d.futuresAudit?.legacyReplay ?? null;
+  const failed = d.futuresAudit?.failedAttempts ?? [];
   const flags = [...d.flags, ...(f?.flags ?? [])];
   return (
     <div className="fwd-explain obs-detail">
@@ -350,28 +363,52 @@ function Detail({ id }: { id: string }) {
         />
       </Section>
 
-      <Section title="Futures (sampled)" hint={f ? (FUT_STATUS[f.status]?.[1] ?? f.status) : 'not created'}>
-        <p className="small">
-          LBank publishes no Futures trade or candle history. Its official market-data snapshot is
-          read every minute; when a contract’s 24 h turnover rose between two snapshots, at least one
-          trade happened between them and the later last price is such a trade. So a Futures value
-          is a real trade price with a time range, the highest and lowest are bounds, and the
-          reference is the first such trade wholly inside the window — not necessarily the first
-          Futures trade. Spot data never fills a Futures gap.
-        </p>
+      <Section title="Futures" hint={f ? `${FUT_STATUS[f.status]?.[1] ?? f.status} · ${f.rulesVersion}` : 'not created'}>
+        {f?.method === 'LEGACY_TURNOVER_BRACKET' ? (
+          <p className="small">
+            Old method ({f.rulesVersion}), kept as recorded: the reference is the later of two minute
+            snapshots between which LBank’s 24 h turnover rose. That rule could miss trades (rolling
+            24 h turnover can fall while trades happen) and is not the first price observed after the
+            signal. Events detected after 2026-11-27 use observed quotes instead.
+          </p>
+        ) : (
+          <p className="small">
+            {FUTURES_QUOTE_LABEL}: our request is sent the moment the Review Queue is published; the
+            first valid LBank Futures <code>lastPrice</code> returned by a request sent at or after
+            that moment is the reference, timed by when its response arrived. LBank’s response has no
+            trade time, so that price may come from a trade before the signal. It is an observed API
+            quote — not the first Futures trade after the signal and not an order’s execution price.
+            Highest and lowest are the extreme prices our requests observed in the window (not
+            verified trades). Spot data never fills a Futures gap.
+          </p>
+        )}
         {f ? (
           <Kv
             pairs={[
               ['Contract', f.contract ?? '—'],
               ['Mapping', `${humanize(f.mapping)}${f.reasons.length ? ` · ${f.reasons.map(obsReasonText).join(' · ')}` : ''}`],
               ['CMC contracts for this CMC id', Array.isArray(fmap.cmcContracts) ? (fmap.cmcContracts as string[]).join(', ') || 'none' : '—'],
-              ['LBank list (ticker or CMC match)', Array.isArray(fmap.lbankRelevant) ? (fmap.lbankRelevant as string[]).join(', ') || 'none' : '—'],
-              f.reference && ['Reference trade', `${fmtPrice(f.reference.price)}, strictly between ${utc(f.reference.after)} and ${utc(f.reference.before)}`],
-              f.highest && ['Highest sampled (≥)', `${fmtPrice(f.highest.price)} (${fmtPct(f.highest.pct)}), between ${utc(f.highest.after)} and ${utc(f.highest.before)}`],
-              f.lowest && ['Lowest sampled (≤)', `${fmtPrice(f.lowest.price)} (${fmtPct(f.lowest.pct)}), between ${utc(f.lowest.after)} and ${utc(f.lowest.before)}`],
-              ['Snapshots in window', `${f.samplesInWindow} · ${f.bracketedInWindow} with a proven trade · longest gap ${spanText(f.maxGapMs)}`],
+              f.quote && ['Observed price', fmtPrice(f.quote.price)],
+              f.quote && ['Request queued (UTC)', utc(f.quote.requestQueuedAt)],
+              f.quote && ['Request sent (UTC)', `${utc(f.quote.requestStartedAt)} · ${delayText(f.quote.publicationToRequestMs)} after publication`],
+              f.quote && ['Response received (UTC)', `${utc(f.quote.observedAt)} · ${spanText(f.quote.requestToResponseMs)} after sending · ${delayText(f.quote.delayMs)} after publication (the displayed delay)`],
+              f.quote && ['Stored (UTC)', utc(f.quote.storedAt)],
+              f.quote && ['Sent by', `${QUOTE_SOURCE_TEXT[f.quote.source] ?? f.quote.source}${f.quote.failedAttemptsBefore ? ` · ${f.quote.failedAttemptsBefore} failed attempt(s) before` : ''}`],
+              f.quote && ['LBank snapshot time', `${utc(f.quote.lbankSnapshotAt)} (refresh time of LBank’s snapshot, not a trade time)`],
+              f.quote && ['Endpoint · request id', `${f.quote.endpoint} · ${f.quote.pollId}`],
+              f.method === 'OBSERVED_QUOTE' && f.highest && ['Highest observed', `${fmtPrice(f.highest.price)} (${fmtPct(f.highest.pct)}) at ${utc(f.highest.observedAt)}`],
+              f.method === 'OBSERVED_QUOTE' && f.lowest && ['Lowest observed', `${fmtPrice(f.lowest.price)} (${fmtPct(f.lowest.pct)}) at ${utc(f.lowest.observedAt)}`],
+              f.method === 'LEGACY_TURNOVER_BRACKET' && f.reference && ['Old-method reference', `${fmtPrice(f.reference.price)} (snapshot pair ${utc(f.reference.after)} – ${utc(f.reference.before)})`],
+              f.method === 'LEGACY_TURNOVER_BRACKET' && f.highest && ['Old-method highest (≥)', `${fmtPrice(f.highest.price)} (${fmtPct(f.highest.pct)})`],
+              f.method === 'LEGACY_TURNOVER_BRACKET' && f.lowest && ['Old-method lowest (≤)', `${fmtPrice(f.lowest.price)} (${fmtPct(f.lowest.pct)})`],
+              f.postFixQuote && ['First price observed after the fix', `${fmtPrice(f.postFixQuote.price)} at ${utc(f.postFixQuote.observedAt)} · ${delayText(f.postFixQuote.delayMs)} after the signal — shown apart, not an entry quote`],
+              !!legacy && ['Replay of retained records', legacy.correctedReferenceEstablished ? `first price observed after the signal: ${fmtPrice(legacy.retainedPrice)} at ${utc(legacy.firstEligibleResponseAt)} (${legacy.reconstructedDelayMs !== null ? delayText(legacy.reconstructedDelayMs) : '—'} after the signal; minute tick sent at or after ${utc(legacy.firstEligibleRequestSentNotBefore)})` : `not establishable — the first response after the signal (${utc(legacy.firstEligibleResponseAt)}) was not retained for this contract`],
+              !!legacy && ['Replay note', legacy.note],
+              failed.length > 0 && ['Failed attempts before the first price', failed.map((x) => `${x.trigger} #${x.attempt} sent ${utc(x.requestStartedAt)} failed ${utc(x.failedAt)}: ${x.error ?? ''}`).join(' · ')],
+              f.book && ['Order book (context only)', f.book.ok ? `bid ${f.book.bestBid ?? '—'} / ask ${f.book.bestAsk ?? '—'} · sent ${utc(f.book.requestStartedAt)} · received ${utc(f.book.responseReceivedAt)} — indicative, never the reference or a fill` : `failed: ${f.book.error ?? 'unknown'} (received ${utc(f.book.responseReceivedAt)})`],
+              ['Observations in window', `${f.samplesInWindow} · longest gap ${spanText(f.maxGapMs)}`],
               ['Sampled through', utc(f.sampledThrough)],
-              !!str(last.server_at) && ['LBank 24 h high / low at the last snapshot (context only)', `${String(last.high_24h ?? '—')} / ${String(last.low_24h ?? '—')} (${utc(str(last.server_at))}; not aligned to the window)`],
+              !!str(last.server_at) && ['LBank 24 h high / low at the last snapshot (context only)', `${String(last.high_24h ?? '—')} / ${String(last.low_24h ?? '—')} (${utc(str(last.server_at))}; not the window's extremes)`],
               ['Rules', f.rulesVersion],
             ]}
           />

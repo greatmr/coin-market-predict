@@ -22,7 +22,7 @@ import { LeaseService } from '../pipeline/lease.service.js';
 import { CutoverService } from '../star-events/cutover.service.js';
 
 import { FuturesObservation } from './entities/futures-observation.entity.js';
-import { FuturesPoll } from './entities/futures-poll.entity.js';
+import { FuturesQuoteService, type PolledResponse } from './futures-quote.service.js';
 import {
   FUTURES_RULES_VERSION,
   FUTURES_TERMINAL,
@@ -33,7 +33,6 @@ import {
   foldFutures,
   mapFuturesContract,
 } from './futures-rules.js';
-import type { FuturesMarketRow } from './kline.js';
 import { LBANK_MARKET_SOURCE, type LbankMarketSource } from './lbank-market.source.js';
 
 export const FUTURES_LEASE = 'lbank-futures-sampler';
@@ -82,11 +81,8 @@ export class FuturesSamplerService implements OnApplicationBootstrap, OnApplicat
   private readonly log = new Logger(FuturesSamplerService.name);
   clock: Clock = systemClock;
   private running = false;
-  private buffer: Array<{
-    fetchedMs: number;
-    sha256: string;
-    rows: Map<string, FuturesMarketRow>;
-  }> = [];
+  /** Recent stored responses (each with its request id), newest last. */
+  private buffer: PolledResponse[] = [];
 
   constructor(
     @InjectDataSource() private readonly db: DataSource,
@@ -95,6 +91,7 @@ export class FuturesSamplerService implements OnApplicationBootstrap, OnApplicat
     private readonly registry: SchedulerRegistry,
     private readonly leases: LeaseService,
     private readonly cutover: CutoverService,
+    private readonly quotes: FuturesQuoteService,
   ) {}
 
   get providerId() {
@@ -159,65 +156,58 @@ export class FuturesSamplerService implements OnApplicationBootstrap, OnApplicat
       evaluated: 0,
       finalized: 0,
     };
-    report.created = await this.ensureRows();
+    // New Futures rows use the observed-quote method; rows from before it keep theirs.
+    report.created = await this.quotes.ensureRows();
     report.mapped = await this.mapPending();
 
+    const queuedAt = this.clock.now();
     const fetch = await this.source.futuresMarketData();
-    const polls = this.db.getRepository(FuturesPoll);
     let serverMs: number | null = null;
     let inPoll = new Set<string>();
+    let current: PolledResponse | null = null;
     if (!fetch.ok) {
       report.poll.error = fetch.error.slice(0, 300);
-      await polls.insert({
-        fetchedAt: fetch.fetchedAt,
-        serverAt: null,
-        ok: false,
-        error: report.poll.error,
-        responseSha256: null,
+      await this.quotes.recordRequest(fetch, {
+        trigger: 'TICK',
+        queuedAt,
+        batchId: null,
+        keepBody: false,
       });
     } else {
       const rows = new Map(fetch.rows.map((r) => [r.symbol, r]));
       inPoll = new Set(rows.keys());
-      serverMs = Math.max(...fetch.rows.map((r) => r.serverMs));
-      this.buffer.push({ fetchedMs: fetch.fetchedAt.getTime(), sha256: fetch.sha256, rows });
-      if (this.buffer.length > BUFFER_POLLS) this.buffer.shift();
-      report.poll.stored = await this.storeNeeded();
+      serverMs = fetch.rows.length ? Math.max(...fetch.rows.map((r) => r.serverMs)) : null;
+      const plan = await this.planStore(rows);
+      current = await this.quotes.recordRequest(fetch, {
+        trigger: 'TICK',
+        queuedAt,
+        batchId: null,
+        keepBody: false,
+        stored: plan.count,
+      });
+      if (current) {
+        this.buffer.push(current);
+        if (this.buffer.length > BUFFER_POLLS) this.buffer.shift();
+        report.poll.stored = await this.storeNeeded(plan.lastStored);
+      }
       report.poll = {
         ok: true,
-        serverAt: new Date(serverMs).toISOString(),
+        serverAt: serverMs === null ? null : new Date(serverMs).toISOString(),
         contracts: rows.size,
         stored: report.poll.stored,
       };
-      await polls.insert({
-        fetchedAt: fetch.fetchedAt,
-        serverAt: new Date(serverMs),
-        ok: true,
-        contracts: rows.size,
-        stored: report.poll.stored,
-        invalid: fetch.invalid,
-        error: null,
-        responseSha256: fetch.sha256,
-      });
+    }
+    if (current) {
+      // Events already running when the observed-quote method arrived: their first post-fix quote.
+      await this.quotes.postFix(current);
+      // Observed-quote rows: map with this response, choose the first observed quote if still none.
+      await this.quotes.settle(await this.quotes.quoteRows(), current);
     }
     const ev = await this.evaluateOpen(serverMs, inPoll);
-    report.evaluated = ev.evaluated;
-    report.finalized = ev.finalized;
+    const q = await this.quotes.evaluate(await this.quotes.quoteRows());
+    report.evaluated = ev.evaluated + q.evaluated;
+    report.finalized = ev.finalized + q.finalized;
     return report;
-  }
-
-  /** Every Spot observation gets its Futures row (same event, same start), PENDING until mapped. */
-  private async ensureRows(): Promise<number> {
-    const r: Array<{ id: string }> = await this.db.query(
-      `INSERT INTO lbank_futures_observation (observation_id, provider_id, rules_version, mapping_status, status, reasons, last_update_at)
-       SELECT o.id, o.provider_id, $2, 'PENDING', 'PENDING', ARRAY['FUTURES_MAPPING_PENDING'], $3
-         FROM lbank_observation o
-        WHERE o.provider_id = $1
-          AND NOT EXISTS (SELECT 1 FROM lbank_futures_observation f WHERE f.observation_id = o.id)
-       ON CONFLICT (observation_id) DO NOTHING
-       RETURNING id`,
-      [this.providerId, FUTURES_RULES_VERSION, this.clock.now()],
-    );
-    return r.length;
   }
 
   /** Map the contract once the observation job has recorded the listing evidence. */
@@ -232,8 +222,9 @@ export class FuturesSamplerService implements OnApplicationBootstrap, OnApplicat
          FROM lbank_futures_observation f
          JOIN lbank_observation o ON o.id = f.observation_id
          JOIN lbank_obs_event e ON e.id = o.event_id
-        WHERE f.provider_id = $1 AND f.mapping_status = 'PENDING' AND f.finalized_at IS NULL`,
-      [this.providerId],
+        WHERE f.provider_id = $1 AND f.mapping_status = 'PENDING' AND f.finalized_at IS NULL
+          AND f.rules_version = $2`,
+      [this.providerId, FUTURES_RULES_VERSION],
     );
     let n = 0;
     for (const r of rows) {
@@ -254,57 +245,49 @@ export class FuturesSamplerService implements OnApplicationBootstrap, OnApplicat
     return n;
   }
 
-  /**
-   * Store the latest snapshot of every contract an open, mapped observation needs; a contract stored
-   * for the first time also gets the buffered snapshots (its pre-start anchor).
-   */
-  private async storeNeeded(): Promise<number> {
-    const needed: Array<{ contract: string; known: boolean }> = await this.db.query(
-      `SELECT DISTINCT f.contract,
-              EXISTS (SELECT 1 FROM lbank_futures_sample s WHERE s.contract = f.contract) AS known
-         FROM lbank_futures_observation f
-        WHERE f.provider_id = $1 AND f.finalized_at IS NULL AND f.mapping_status = 'OK'
-          AND f.contract IS NOT NULL`,
+  /** Contracts open, mapped observations need (either method), with their latest stored snapshot. */
+  private async needed(): Promise<Map<string, number | null>> {
+    const rows: Array<{ contract: string; last: Date | null }> = await this.db.query(
+      `SELECT c.contract, (SELECT max(s.server_at) FROM lbank_futures_sample s WHERE s.contract = c.contract) AS last
+         FROM (SELECT DISTINCT f.contract FROM lbank_futures_observation f
+                WHERE f.provider_id = $1 AND f.finalized_at IS NULL AND f.mapping_status = 'OK'
+                  AND f.contract IS NOT NULL) c`,
       [this.providerId],
     );
-    const values: unknown[][] = [];
-    for (const { contract, known } of needed) {
-      const polls = known ? this.buffer.slice(-1) : this.buffer;
-      for (const p of polls) {
+    return new Map(rows.map((r) => [r.contract, r.last ? new Date(r.last).getTime() : null]));
+  }
+
+  /** How many snapshots this tick will store (logged on the request row). */
+  private async planStore(
+    currentRows: ReadonlyMap<string, { serverMs: number }>,
+  ): Promise<{ count: number; lastStored: Map<string, number | null> }> {
+    const lastStored = await this.needed();
+    let count = 0;
+    for (const [contract, last] of lastStored) {
+      for (const p of this.buffer) {
         const r = p.rows.get(contract);
-        if (!r) continue;
-        values.push([
-          contract,
-          new Date(r.serverMs),
-          new Date(p.fetchedMs),
-          r.lastPrice,
-          r.turnover24h,
-          r.volume24h,
-          r.high24h,
-          r.low24h,
-          r.markPrice,
-          r.instrumentStatus,
-          p.sha256,
-        ]);
+        if (r && (last === null || r.serverMs > last)) count++;
       }
+      const r = currentRows.get(contract);
+      if (r && (last === null || r.serverMs > last)) count++;
     }
+    return { count, lastStored };
+  }
+
+  /**
+   * Store every buffered snapshot (this tick's included) newer than the contract's latest stored
+   * one, each with the request that returned it. Fixed 2026-11-27: an older snapshot of the contract
+   * (another event's) used to stop the buffered ones being stored (CFG, PONS, THETA at 09:07 and
+   * SOMI at 10:07 lost their 09:07 / 09:08 and 10:07 / 10:08 snapshots).
+   */
+  private async storeNeeded(lastStored: Map<string, number | null>): Promise<number> {
     let stored = 0;
-    for (let i = 0; i < values.length; i += 500) {
-      const chunk = values.slice(i, i + 500);
-      const params: unknown[] = [];
-      const tuples = chunk.map((v) => {
-        const base = params.length;
-        params.push(...v);
-        return `(${v.map((_, j) => `$${base + j + 1}`).join(', ')})`;
-      });
-      const r: unknown[] = await this.db.query(
-        `INSERT INTO lbank_futures_sample (contract, server_at, fetched_at, last_price, turnover_24h,
-                volume_24h, high_24h, low_24h, mark_price, instrument_status, response_sha256)
-         VALUES ${tuples.join(', ')} ON CONFLICT (contract, server_at) DO NOTHING RETURNING contract`,
-        params,
-      );
-      stored += r.length;
-    }
+    for (const [contract, last] of lastStored)
+      for (const p of this.buffer) {
+        const r = p.rows.get(contract);
+        if (r && (last === null || r.serverMs > last))
+          stored += await this.quotes.storeSamples(p, [contract]);
+      }
     return stored;
   }
 
@@ -320,8 +303,8 @@ export class FuturesSamplerService implements OnApplicationBootstrap, OnApplicat
          FROM lbank_futures_observation f
          JOIN lbank_observation o ON o.id = f.observation_id
          JOIN lbank_obs_event e ON e.id = o.event_id
-        WHERE f.provider_id = $1 AND f.finalized_at IS NULL`,
-      [this.providerId],
+        WHERE f.provider_id = $1 AND f.finalized_at IS NULL AND f.rules_version = $2`,
+      [this.providerId, FUTURES_RULES_VERSION],
     );
     const now = this.clock.now();
     let finalized = 0;

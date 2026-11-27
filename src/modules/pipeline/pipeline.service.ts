@@ -22,6 +22,7 @@ import {
 } from '../forward-test/forward-test.service.js';
 import { CrawlBatch } from '../ingestion/entities/crawl-batch.entity.js';
 import { type CoverageReport, IngestionService } from '../ingestion/ingestion.service.js';
+import { FuturesQuoteService } from '../lbank-observation/futures-quote.service.js';
 import { ObservationIntakeService } from '../lbank-observation/observation-intake.service.js';
 import { ObservationService } from '../lbank-observation/observation.service.js';
 import { type ScanOutcome, ScanService } from '../scan/scan.service.js';
@@ -118,6 +119,7 @@ export class PipelineService {
     private readonly retirement: ForwardRetirementService,
     private readonly observationIntake: ObservationIntakeService,
     private readonly observations: ObservationService,
+    private readonly futuresQuotes: FuturesQuoteService,
   ) {}
 
   get providerId() {
@@ -712,6 +714,10 @@ export class PipelineService {
       const scan = (await stage('scan', () => this.scanner.scan(batchId!, warnings), {
         skipIfDone: false,
       }))!;
+      // The Review Queue is published (scan committed and its stage recorded): ask LBank Futures for
+      // a fresh quote at once (rules lbank-futures-quote-1). Not awaited: publication and the rest
+      // of the run never wait for LBank; the request's own send / receive times are recorded.
+      this.futuresQuotes.onPublished(batchId!);
       metrics.scan = {
         queueStatus: scan.queueStatus,
         counts: scan.counts,
@@ -746,6 +752,9 @@ export class PipelineService {
                 ignored: observe.ignored.length,
                 rejected: observe.rejected.length,
               };
+      // Their Futures rows: mapped and given the first observed quote as soon as one is stored.
+      if (observe && !('skipped' in observe) && observe.created.length)
+        this.futuresQuotes.afterIntake(batchId!);
       // New observations: verify their references as soon as the start minute has closed, not at
       // the observation job's next cron tick (latency only; never changes which trade qualifies).
       if (observe && !('skipped' in observe) && observe.created.length)

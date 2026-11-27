@@ -1,8 +1,17 @@
-import { Column, Entity, PrimaryColumn } from 'typeorm';
+import {
+  Column,
+  Entity,
+  Index,
+  JoinColumn,
+  ManyToOne,
+  PrimaryColumn,
+  type Relation,
+} from 'typeorm';
 
 import type { DValue } from '../../../common/utils/decimal.js';
 
 import { ExactNumericColumn } from './exact-numeric.js';
+import { FuturesPoll } from './futures-poll.entity.js';
 
 /**
  * One contract in one LBank Futures `marketData` snapshot (Futures sampled observation, rules
@@ -10,6 +19,7 @@ import { ExactNumericColumn } from './exact-numeric.js';
  * snapshot's own refresh time (`lastTime`, whole seconds), not a trade time. Immutable (trigger).
  */
 @Entity({ name: 'lbank_futures_sample' })
+@Index('ix_lbank_futures_sample_poll', ['pollId'])
 export class FuturesSample {
   @PrimaryColumn({ type: 'text' })
   contract!: string;
@@ -43,4 +53,20 @@ export class FuturesSample {
 
   @Column({ name: 'response_sha256', type: 'text' })
   responseSha256!: string;
+
+  /** The request that returned this snapshot (since 2026-11-27; null on older rows). */
+  @Column({ name: 'poll_id', type: 'bigint', nullable: true })
+  pollId!: string | null;
+
+  @ManyToOne(() => FuturesPoll, { onDelete: 'RESTRICT' })
+  @JoinColumn({ name: 'poll_id' })
+  poll?: Relation<FuturesPoll>;
+
+  @Column({
+    name: 'stored_at',
+    type: 'timestamptz',
+    nullable: true,
+    default: () => 'clock_timestamp()',
+  })
+  storedAt!: Date | null;
 }

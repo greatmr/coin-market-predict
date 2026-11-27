@@ -9,11 +9,13 @@ import type { ProviderInfo } from '../sources/source.types.js';
 import { LBANK } from '../strategy/index.js';
 
 import {
+  type BookLevel,
   type FuturesContract,
   type FuturesMarketRow,
   type KlineResponse,
   type TradesResponse,
   parseFuturesMarketData,
+  parseFuturesOrderBook,
   parseFuturesResponses,
   parseKlineResponse,
   parsePairsResponse,
@@ -52,18 +54,47 @@ export interface LbankMarketSource {
    * official Futures price source; no history). Used by the Futures sampled observation.
    */
   futuresMarketData(): Promise<FuturesMarketFetch>;
+  /** `GET /cfd/openApi/v1/pub/marketOrder?symbol&depth`: one contract's current book (context only). */
+  futuresOrderBook(symbol: string, depth: number): Promise<FuturesBookFetch>;
 }
 
-export type FuturesMarketFetch =
-  | {
-      ok: true;
-      url: string;
-      fetchedAt: Date;
-      rows: FuturesMarketRow[];
-      invalid: number;
-      sha256: string;
-    }
-  | { ok: false; url: string; fetchedAt: Date; error: string };
+/** A failed attempt inside one request (it may have been retried by the HTTP client). */
+export interface FailedAttempt {
+  sentAt: Date | null;
+  failedAt: Date;
+  message: string;
+}
+
+/**
+ * One request's timing: `requestStartedAt` = when the successful (or last) attempt was actually
+ * sent; `fetchedAt` = when its response was received (or the request finally failed).
+ */
+interface RequestTiming {
+  url: string;
+  requestStartedAt: Date | null;
+  fetchedAt: Date;
+  failedAttempts: FailedAttempt[];
+}
+
+export type FuturesMarketFetch = RequestTiming &
+  (
+    | {
+        ok: true;
+        rows: FuturesMarketRow[];
+        invalid: number;
+        /** Every contract symbol in the response, also those whose row was invalid. */
+        symbols?: string[];
+        sha256: string;
+        body: string;
+      }
+    | { ok: false; error: string }
+  );
+
+export type FuturesBookFetch = RequestTiming &
+  (
+    | { ok: true; bids: BookLevel[]; asks: BookLevel[]; sha256: string }
+    | { ok: false; error: string }
+  );
 
 export interface KlineFetch {
   url: string;
@@ -175,29 +206,69 @@ export class LbankApiSource implements LbankMarketSource {
     }
   }
 
+  /** A GET with real send / receive times and every failed attempt (for the Futures quotes). */
+  private async timedGet(url: string): Promise<{
+    body: string | null;
+    error: string | null;
+    requestStartedAt: Date | null;
+    fetchedAt: Date;
+    failedAttempts: FailedAttempt[];
+  }> {
+    let requestStartedAt: Date | null = null;
+    const failedAttempts: FailedAttempt[] = [];
+    try {
+      const body = await this.http.getText(url, undefined, {
+        onSend: (_attempt, at) => {
+          requestStartedAt = at;
+        },
+        onAttemptError: (_attempt, sentAt, at, message) => {
+          failedAttempts.push({ sentAt, failedAt: at, message });
+        },
+      });
+      return { body, error: null, requestStartedAt, fetchedAt: this.clock.now(), failedAttempts };
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      return { body: null, error, requestStartedAt, fetchedAt: this.clock.now(), failedAttempts };
+    }
+  }
+
   async futuresMarketData(): Promise<FuturesMarketFetch> {
     const url = `${this.futuresBase}/cfd/openApi/v1/pub/marketData?productGroup=SwapU`;
-    try {
-      const body = await this.http.getText(url);
-      const fetchedAt = this.clock.now();
-      const r = parseFuturesMarketData(body);
-      if (r.kind === 'error') return { ok: false, url, fetchedAt, error: r.message };
-      return {
-        ok: true,
-        url,
-        fetchedAt,
-        rows: r.rows,
-        invalid: r.invalid,
-        sha256: r.responseSha256,
-      };
-    } catch (err) {
-      return {
-        ok: false,
-        url,
-        fetchedAt: this.clock.now(),
-        error: err instanceof Error ? err.message : String(err),
-      };
-    }
+    const r = await this.timedGet(url);
+    const timing = {
+      url,
+      requestStartedAt: r.requestStartedAt,
+      fetchedAt: r.fetchedAt,
+      failedAttempts: r.failedAttempts,
+    };
+    if (r.body === null) return { ...timing, ok: false, error: r.error ?? 'request failed' };
+    const p = parseFuturesMarketData(r.body);
+    if (p.kind === 'error') return { ...timing, ok: false, error: p.message };
+    return {
+      ...timing,
+      ok: true,
+      rows: p.rows,
+      invalid: p.invalid,
+      symbols: p.symbols,
+      sha256: p.responseSha256,
+      body: r.body,
+    };
+  }
+
+  async futuresOrderBook(symbol: string, depth: number): Promise<FuturesBookFetch> {
+    const q = new URLSearchParams({ symbol, depth: String(depth) });
+    const url = `${this.futuresBase}/cfd/openApi/v1/pub/marketOrder?${q.toString()}`;
+    const r = await this.timedGet(url);
+    const timing = {
+      url,
+      requestStartedAt: r.requestStartedAt,
+      fetchedAt: r.fetchedAt,
+      failedAttempts: r.failedAttempts,
+    };
+    if (r.body === null) return { ...timing, ok: false, error: r.error ?? 'request failed' };
+    const p = parseFuturesOrderBook(r.body);
+    if (p.kind === 'error') return { ...timing, ok: false, error: p.message };
+    return { ...timing, ok: true, bids: p.bids, asks: p.asks, sha256: p.responseSha256 };
   }
 }
 
@@ -424,8 +495,9 @@ export class FixtureLbankSource implements LbankMarketSource {
    */
   async futuresMarketData(): Promise<FuturesMarketFetch> {
     const fetchedAt = this.clock.now();
+    const timing = { requestStartedAt: fetchedAt, fetchedAt, failedAttempts: [] };
     const list = await this.futuresContracts();
-    if (!list.ok) return { ok: false, url: list.url, fetchedAt, error: list.error };
+    if (!list.ok) return { ...timing, ok: false, url: list.url, error: list.error };
     const nowMs = fetchedAt.getTime();
     const minute = Math.floor(nowMs / MINUTE_MS);
     const rows: FuturesMarketRow[] = list.items.map((c) => {
@@ -447,12 +519,28 @@ export class FixtureLbankSource implements LbankMarketSource {
       };
     });
     return {
+      ...timing,
       ok: true,
       url: 'fixture://lbank/cfd/openApi/v1/pub/marketData?productGroup=SwapU',
-      fetchedAt,
       rows,
       invalid: 0,
       sha256: digest(rows),
+      body: JSON.stringify({ data: rows, error_code: 0, msg: 'Success (fixture)' }),
+    };
+  }
+
+  async futuresOrderBook(symbol: string, depth: number): Promise<FuturesBookFetch> {
+    const fetchedAt = this.clock.now();
+    const level = (price: string): BookLevel => ({ price, volume: '1000', orders: '1' });
+    return {
+      url: `fixture://lbank/cfd/openApi/v1/pub/marketOrder?symbol=${symbol}&depth=${depth}`,
+      requestStartedAt: fetchedAt,
+      fetchedAt,
+      failedAttempts: [],
+      ok: true,
+      bids: [level('0.999')],
+      asks: [level('1.001')],
+      sha256: digest(symbol),
     };
   }
 }

@@ -140,13 +140,15 @@ export const GUIDES: Record<GuideKey, Guide> = {
         ],
       },
       {
-        h: 'Futures (sampled, weaker evidence)',
+        h: 'Futures: first price observed after the signal',
         items: [
-          'LBank publishes no Futures trade or candle history. Its official market snapshot (every contract’s last price and 24 h turnover) is read every minute. When a contract’s turnover rose between two snapshots, a trade happened between them, and the later last price is such a trade: a real Futures price whose time is only known to lie in that range.',
-          'Reference (sampled): the first such trade wholly inside the window — not necessarily the first Futures trade. Highest ≥ and lowest ≤ are bounds: the real Futures extremes are at least as far out. Percentages are against the Futures reference only.',
-          'Contract: the one LBank Futures contract CMC attributes to this coin’s CMC id (by its market link) and LBank lists; a ticker match alone never counts (Contract ambiguous).',
-          'Not sampled at start: the contract was not being sampled when the window began (every event before the Futures side was added), and no source can fill it. Futures values are never taken from Spot, a listing, or LBank’s 24 h high/low.',
-          'Never Final: a Futures window that ended is “Closed (sampled)”.',
+          'The moment the Review Queue is published, we ask LBank Futures for its current market data. The first valid lastPrice returned by a request sent at or after that moment is the Futures reference: “First Futures price observed after signal”. Its delay is measured to when the response arrived; Details also shows when the request was sent and stored, and any failed attempts before it.',
+          'This is the price LBank reported when we asked, not a trade we can time: LBank’s response has no trade time, so the price may come from a trade before the signal. It is not the first Futures trade after the signal and not the price an order of ours would have filled at (no order is placed).',
+          'Nothing waits for a minute tick or a change in 24 h turnover; if the first request fails, it is retried within seconds and the real delay of the first valid price is shown, with what sent it (publication, retry or minute tick).',
+          'Highest and lowest: the extreme prices our requests observed during the window (about once a minute), vs the first observed price. Observed quotes, not verified trades; LBank’s 24 h high/low is never used.',
+          'Order book (Details): best bid and ask read right after the first price, as context only — never the reference, never an entry or fill price.',
+          'Contract: the one LBank Futures contract CMC attributes to this coin’s CMC id (by its market link) that LBank lists; a ticker match alone never counts (Contract ambiguous).',
+          'Older events (before 2026-11-27) keep their original Futures method, labelled “old method”: a turnover-rise snapshot pair, or “Not sampled at start”. Their first price observed after the fix is shown apart and is never treated as their entry. Futures values are never taken from Spot or a listing. Never Final: an ended Futures window is “Closed (sampled)”.',
         ],
       },
       {

@@ -340,6 +340,7 @@ job catches up later — candles and trades are historical). Never `db:revert` o
 | `lbank-spot-obs-1` | 2026-11-24         | crawl time t0 … t0 + 168 h (bars only) | OPEN of the first bar at or after t0 (≤ 2 min, not stale)    | candle High / Low of traded bars |
 | `lbank-spot-obs-2` | 2026-11-25 (M016)  | proven start … start + 168 h, exact    | first verified trade at or after the start                  | verified trades                  |
 | `lbank-futures-sampled-1` (Futures, § 13) | 2026-11-27 (M017) | the same start and end as Spot | first bracketed Futures trade wholly in the window | bounds from bracketed trades |
+| `lbank-futures-quote-1` (Futures, § 13a) | 2026-11-27 (M018) | the same start and end as Spot | first valid `lastPrice` observed from a request sent at or after the start (response receipt) | highest / lowest observed `lastPrice` |
 
 Every v1 row moved to v2 with an `lbank_obs_rules_change` row holding the values it showed; its v1
 columns stay unchanged as an audit record; a v1 result row (none existed) would stay and the v2 result
@@ -399,3 +400,57 @@ card, the `futures_*` CSV columns (e.g. `futures_highest_return_pct_lower_bound`
 contract (BIGTIME → BIGTIMEUSDT, BABY → BABYUSDT) became `HISTORY_UNAVAILABLE` (their starts predate
 sampling), 35 `NO_CONTRACT`, 3 `MAPPING_AMBIGUOUS` (DYDX, MON: ticker only). Comparable Spot vs Futures
 results exist only for events detected after the deploy.
+
+## 13a. Futures observed quote (rules `lbank-futures-quote-1`, replaces § 13 for new events)
+
+Operator decision 2026-11-27, after the CFG / PONS / THETA timing investigation: the § 13 reference
+(first snapshot pair with rising 24 h turnover) showed 2–8 minute delays that came from our sampling,
+not the market — rolling 24 h turnover can fall while trades happen, and an old snapshot of a contract
+stopped the newest ones from being stored. The Futures reference is now the **first valid Futures
+price our system observes after the signal**:
+
+```
+request   fired the moment the Review Queue is published (scan stage committed): one marketData
+          request for every contract, not awaited by the pipeline; prompt retries (2, 5, 10, 20,
+          30 s) while it failed or lacked a mapped contract's price; then the minute sampler
+reference = the first successful response received (earliest receipt; ties: earlier send, request id)
+            whose request was SENT at or after observation_start and RECEIVED before observation_end,
+            carrying a positive lastPrice for the contract — whatever the 24 h turnover or price did
+delay     = response receipt − observation_start   (also stored: queue, send and storage times;
+            publication → request and request → response delays)
+highest / lowest = the highest / lowest lastPrice our requests observed in [start, end), the
+            reference included (observed quotes at our sampling times; never LBank's 24 h high/low)
+```
+
+- **What it is not.** LBank's `marketData` has no trade time (`lastTime` is the snapshot refresh time,
+  stored as `quote_refreshed_at` and labelled so), so the observed price may come from a trade before
+  the signal. It is labelled "First Futures price observed after signal": never "first Futures trade
+  after the signal", never an execution price; no order is placed.
+- **Eligibility.** A response to a request sent before the start, a stored snapshot from before the
+  signal, a snapshot of another event and a response received at or after the end never qualify. The
+  database enforces `request_started_at ≥ actionable_start` and the earliest receipt
+  (`lbank_futures_reference`: an update may only move to an earlier response; no delete), so
+  concurrent requests, retries and ticks cannot replace an earlier reference.
+- **Mapping at publication.** CMC's LBank Futures list as of the crawl (CMC id, URL-pinned contract)
+  and the contract's presence in the eligible response — no wait for the listing job. A contract
+  missing from a response keeps the mapping pending (retried; `MAPPING_UNKNOWN` if never present by
+  the end). Ticker-only matches never map.
+- **Evidence kept.** Every request attempt in `lbank_futures_poll` (trigger PUBLICATION / RETRY / TICK,
+  attempt, queue / send / receive / storage times, errors), the raw response of publication and retry
+  requests (gzip), each snapshot's request (`lbank_futures_sample.poll_id`), the chosen quote with its
+  times and failed attempts before it, and order-book context (`lbank_futures_book`: best bid / ask
+  and depth right after the first quote, our times only — never the reference or a fill).
+- **Statuses.** PENDING (no valid quote yet; retrying), ACTIVE, CLOSED (a request was sent at or after
+  the end), NO_REFERENCE, NO_CONTRACT, MAPPING_AMBIGUOUS, MAPPING_UNKNOWN. Never FINAL.
+- **Older events.** Rows of `lbank-futures-sampled-1` keep their method, reference, values and label
+  ("old method"). If their window was still open at the fix, the first price observed after the fix is
+  stored apart (`POST_FIX`) with its true delay — never as their entry. Details shows a read-only replay
+  of what retained records prove about their first observed price after the signal (established only
+  when the first eligible response was retained; the poll log lists every request).
+- **Snapshot storage fix.** The sampler stores every buffered snapshot newer than the contract's latest
+  stored one (before, an older snapshot of the contract stopped the buffered ones being stored).
+- **Statistics and exports.** Observed-quote results and older ones are counted apart (summary
+  `byMethod`); the CSV has the old-method columns (empty for new rows) and `futures_first_observed_*`,
+  `futures_*_observed_*`, `futures_post_fix_*` and `futures_book_*` columns.
+- **What these numbers measure.** Data collection only: publication → request and request → response.
+  They are not order submission, acknowledgement or fill latency.

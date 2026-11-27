@@ -357,10 +357,14 @@ export interface FuturesMarketRow {
  * snapshot. Rows without a symbol, a positive last price, a turnover or a `lastTime` are dropped
  * (counted), never guessed.
  */
-export function parseFuturesMarketData(
-  body: string,
-):
-  | { kind: 'ok'; rows: FuturesMarketRow[]; invalid: number; responseSha256: string }
+export function parseFuturesMarketData(body: string):
+  | {
+      kind: 'ok';
+      rows: FuturesMarketRow[];
+      invalid: number;
+      symbols: string[];
+      responseSha256: string;
+    }
   | { kind: 'error'; message: string; responseSha256: string } {
   const responseSha256 = sha256(body);
   const { env, code, message } = parseEnvelope(body);
@@ -371,10 +375,12 @@ export function parseFuturesMarketData(
       responseSha256,
     };
   const rows: FuturesMarketRow[] = [];
+  const symbols: string[] = [];
   let invalid = 0;
   const text = (v: unknown) => exactNumber(v)?.toFixed() ?? null;
   for (const r of env.data as Array<Record<string, unknown>>) {
     const symbol = r && typeof r.symbol === 'string' ? r.symbol.toUpperCase() : null;
+    if (symbol) symbols.push(symbol);
     const t = r ? intOf(r.lastTime) : null;
     const price = r ? exactNumber(r.lastPrice) : null;
     const turnover = r ? text(r.turnover) : null;
@@ -399,5 +405,49 @@ export function parseFuturesMarketData(
     });
   }
   if (!rows.length) return { kind: 'error', message: 'marketData: no usable row', responseSha256 };
-  return { kind: 'ok', rows, invalid, responseSha256 };
+  return { kind: 'ok', rows, invalid, symbols, responseSha256 };
+}
+
+export interface BookLevel {
+  price: string;
+  volume: string;
+  orders: string | null;
+}
+
+/**
+ * `GET lbkperp.lbank.com/cfd/openApi/v1/pub/marketOrder?symbol&depth`: the contract's current order
+ * book (no timestamp in the response). Indicative context only: never a price input.
+ */
+export function parseFuturesOrderBook(
+  body: string,
+):
+  | { kind: 'ok'; bids: BookLevel[]; asks: BookLevel[]; responseSha256: string }
+  | { kind: 'error'; message: string; responseSha256: string } {
+  const responseSha256 = sha256(body);
+  const { env, code, message } = parseEnvelope(body);
+  const data =
+    env && typeof env.data === 'object' && env.data ? (env.data as Record<string, unknown>) : null;
+  if (!env || code !== 0 || !data)
+    return {
+      kind: 'error',
+      message: `marketOrder: ${code ?? 'no code'} ${message}`,
+      responseSha256,
+    };
+  const side = (v: unknown): BookLevel[] =>
+    Array.isArray(v)
+      ? (v as Array<Record<string, unknown>>).flatMap((l) => {
+          const price = l ? exactNumber(l.price) : null;
+          const volume = l ? exactNumber(l.volume) : null;
+          return price && volume && price.gt(0)
+            ? [
+                {
+                  price: price.toFixed(),
+                  volume: volume.toFixed(),
+                  orders: exactNumber(l.orders)?.toFixed() ?? null,
+                },
+              ]
+            : [];
+        })
+      : [];
+  return { kind: 'ok', bids: side(data.bids), asks: side(data.asks), responseSha256 };
 }

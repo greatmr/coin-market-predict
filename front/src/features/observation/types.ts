@@ -51,18 +51,49 @@ export interface Bracketed {
   before: string;
 }
 
-/** The Futures side (rules lbank-futures-sampled-1): sampled, never the Spot method. */
+/** An observed Futures quote: our request's times and the price LBank returned (no trade time). */
+export interface ObservedQuote {
+  price: string;
+  /** Response received (the displayed delay ends here). */
+  observedAt: string;
+  requestQueuedAt: string | null;
+  requestStartedAt: string;
+  storedAt: string;
+  delayMs: number;
+  publicationToRequestMs: number;
+  requestToResponseMs: number;
+  source: 'PUBLICATION' | 'RETRY' | 'TICK' | string;
+  failedAttemptsBefore: number;
+  /** LBank's snapshot refresh time: NOT the time of the underlying trade. */
+  lbankSnapshotAt: string | null;
+  endpoint: string;
+  pollId: string;
+}
+
+/** The Futures side: observed quotes (lbank-futures-quote-1) or the older turnover-bracket method. */
 export interface FuturesSampled {
   rulesVersion: string;
+  method: 'OBSERVED_QUOTE' | 'LEGACY_TURNOVER_BRACKET';
   status: FuturesStatus;
   provisional: boolean;
   mapping: 'PENDING' | 'OK' | 'AMBIGUOUS' | 'NONE' | 'UNKNOWN' | string;
   contract: string | null;
   reasons: string[];
   flags: string[];
+  quote: ObservedQuote | null;
+  /** Legacy method only. */
   reference: Bracketed | null;
-  highest: (Bracketed & { pct: string | null }) | null;
-  lowest: (Bracketed & { pct: string | null }) | null;
+  highest: { price: string; pct: string | null; observedAt?: string; after?: string; before?: string } | null;
+  lowest: { price: string; pct: string | null; observedAt?: string; after?: string; before?: string } | null;
+  postFixQuote: ObservedQuote | null;
+  book: {
+    ok: boolean;
+    error: string | null;
+    bestBid: string | null;
+    bestAsk: string | null;
+    requestStartedAt: string | null;
+    responseReceivedAt: string;
+  } | null;
   samplesInWindow: number;
   bracketedInWindow: number;
   maxGapMs: number;
@@ -199,6 +230,27 @@ export interface ObservationDetail extends ObservationRow {
     rulesetVersion: string;
   };
   timeline: Timeline;
+  futuresAudit: {
+    failedAttempts?: Array<{
+      requestId: string;
+      trigger: string;
+      attempt: number;
+      requestStartedAt: string | null;
+      failedAt: string;
+      error: string | null;
+    }>;
+    legacyReplay?: {
+      firstEligibleRequestId: string;
+      firstEligibleRequestStartedAt: string | null;
+      firstEligibleRequestSentNotBefore: string;
+      firstEligibleResponseAt: string;
+      contractRowRetained: boolean;
+      retainedPrice: string | null;
+      correctedReferenceEstablished: boolean;
+      reconstructedDelayMs: number | null;
+      note: string;
+    } | null;
+  } | null;
   futuresEvidence: {
     priceSource: string;
     mappingEvidence: Record<string, unknown>;
@@ -357,6 +409,10 @@ export interface ObservationSummary {
     rulesVersion: string;
     priceSource: string;
     byStatus: Partial<Record<FuturesStatus, number>>;
+    byMethod: {
+      OBSERVED_QUOTE: Partial<Record<FuturesStatus, number>>;
+      LEGACY_TURNOVER_BRACKET: Partial<Record<FuturesStatus, number>>;
+    };
     lastPoll: { fetchedAt: string; serverAt: string | null; ok: boolean; error: string | null } | null;
   };
 }

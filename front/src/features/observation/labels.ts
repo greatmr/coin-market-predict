@@ -112,12 +112,21 @@ export const FLAG: Record<string, [string, string]> = {
   ],
 };
 
-/** The Futures side (rules lbank-futures-sampled-1): sampled snapshots, weaker than Spot. */
+/** The Futures side: observed quotes (lbank-futures-quote-1); older rows lbank-futures-sampled-1. */
+export const FUTURES_QUOTE_LABEL = 'First Futures price observed after signal';
+
+/** What sent the request behind an observed quote. */
+export const QUOTE_SOURCE_TEXT: Record<string, string> = {
+  PUBLICATION: 'the request fired when the Review Queue was published',
+  RETRY: 'a prompt retry after the publication request failed or lacked the contract',
+  TICK: 'the minute sampler (no earlier request returned a valid price)',
+};
+
 export const FUT_STATUS: StatusMap = {
   PENDING: ['', 'Pending'],
   ACTIVE: ['accent', 'Sampling'],
   CLOSED: ['good', 'Closed (sampled)'],
-  NO_REFERENCE: ['warning', 'No sampled trade'],
+  NO_REFERENCE: ['warning', 'No observed price'],
   HISTORY_UNAVAILABLE: ['', 'Not sampled at start'],
   NO_CONTRACT: ['', 'No Futures contract'],
   MAPPING_AMBIGUOUS: ['serious', 'Contract ambiguous'],
@@ -126,11 +135,10 @@ export const FUT_STATUS: StatusMap = {
 
 /** Why a Futures value is missing, in words (the exact limitation, never a guess). */
 export const FUT_STATUS_TEXT: Record<string, string> = {
-  PENDING: 'waiting for the window start or the contract mapping',
-  ACTIVE: 'window running: sampled values are provisional',
-  CLOSED: 'window over: values as sampled (bounds, never FINAL)',
-  NO_REFERENCE:
-    'window over without a provable Futures trade inside it (no snapshot pair with rising turnover)',
+  PENDING: 'waiting for the first valid Futures price, the window start or the contract mapping',
+  ACTIVE: 'window running: observed values are provisional',
+  CLOSED: 'window over: values as observed (never FINAL)',
+  NO_REFERENCE: 'window over without any valid Futures price observed inside it',
   HISTORY_UNAVAILABLE:
     'the contract was not being sampled at the window start, and LBank publishes no Futures trade or candle history to fill it',
   NO_FUTURES_CONTRACT: 'no LBank Futures contract for this coin',
@@ -146,12 +154,14 @@ const REASON: Record<string, string> = {
   NO_FUTURES_CONTRACT: 'no LBank Futures contract for this coin',
   FUTURES_TICKER_ONLY:
     'LBank lists a contract with this ticker, but CMC does not attribute it to this coin',
-  FUTURES_NOT_IN_LBANK_LIST: 'CMC lists a contract that LBank’s own list does not have',
+  FUTURES_NOT_IN_LBANK_LIST: 'the contract CMC attributes to this coin is not in LBank’s latest market data (checked again with each response)',
   MULTIPLE_FUTURES_CONTRACTS: 'several Futures contracts are attributed to this coin',
   FUTURES_NOT_SAMPLED_AT_START:
     'the contract was not sampled at the window start (LBank serves no Futures history)',
-  FUTURES_REFERENCE_PENDING: 'no Futures trade proven inside the window yet',
-  NO_BRACKETED_FUTURES_TRADE: 'no Futures trade proven inside the window',
+  FUTURES_REFERENCE_PENDING: 'old method: no turnover-rise snapshot pair inside the window yet',
+  NO_BRACKETED_FUTURES_TRADE: 'old method: no turnover-rise snapshot pair inside the window',
+  FUTURES_QUOTE_PENDING: 'no valid Futures price observed after the signal yet (retrying)',
+  NO_FUTURES_QUOTE_IN_WINDOW: 'no valid Futures price observed inside the window',
   CONTRACT_MISSING_FROM_MARKET_DATA: 'the contract disappeared from LBank’s market data',
   MAPPING_PENDING: 'LBank pair not decided yet',
   NO_USDT_PAIR: 'no LBank USDT pair for this coin',

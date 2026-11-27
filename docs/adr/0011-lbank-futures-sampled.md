@@ -56,3 +56,20 @@ references shown minutes late; slow 00:07 UTC publications).
   evidence).
 - A process restart loses the in-memory snapshots that anchor a contract mapped just after its start;
   that event's Futures result is then `HISTORY_UNAVAILABLE` (stated, never filled).
+
+## Addendum 2026-11-27 (later): observed quote replaces the turnover-bracket reference
+
+Investigation (CFG, PONS, THETA, 09:07 UTC batch): the 2–8 minute "trade between" intervals came
+from our sampling — (1) the sampler skipped storing fetched snapshots when an older snapshot of the
+contract existed (first stored post-start snapshot ≈ +1 min 52 s), and (2) the rising-24 h-turnover
+rule ignored minutes in which the price moved (trades) while rolling turnover fell (CFG 2, THETA 4
+such minutes). Inventory before the change (production, 10:27 UTC): 280 Futures rows, all
+`lbank-futures-sampled-1` — 232 not sampled at start, 39 no contract, 3 ambiguous, 6 open with a
+reference: 2 with the first eligible response retained (CFG and REZ, 10:07), 4 missing it because of
+the storage defect (CFG, PONS, THETA 09:07; SOMI 10:07); the turnover rule demonstrably delayed 2
+(CFG and THETA, 09:07).
+
+Decision (operator): rules `lbank-futures-quote-1` (M018; docs § 13a) — the first valid `lastPrice`
+observed from a request sent at or after the publication, timed by its response; requested at
+publication; turnover is context only; storage defect fixed. Older rows keep their method and label;
+their post-fix quote is kept apart; nothing historical is rewritten or invented.

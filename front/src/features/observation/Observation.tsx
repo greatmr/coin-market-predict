@@ -32,6 +32,8 @@ import {
   FLAG,
   FUT_STATUS,
   FUT_STATUS_TEXT,
+  FUTURES_QUOTE_LABEL,
+  QUOTE_SOURCE_TEXT,
   STATUS,
   TIMING_TEXT,
   delayText,
@@ -40,6 +42,7 @@ import {
 } from './labels';
 import type {
   FuturesSampled,
+  ObservedQuote,
   ObsSort,
   ObservationPage,
   ObservationRow,
@@ -279,20 +282,50 @@ function SpotExtreme({ r, kind }: { r: ObservationRow; kind: 'highest' | 'lowest
 const futMissing = (f: FuturesSampled | null): string =>
   !f ? 'not created yet' : (FUT_STATUS_TEXT[f.status] ?? humanize(f.status).toLowerCase());
 
+/** Times of an observed quote, for tooltips (our request's times; LBank gives no trade time). */
+const quoteTimes = (q: ObservedQuote, start: string) =>
+  [
+    `Observed (response received) ${utc(q.observedAt)}: ${delayText(q.delayMs)} after the signal was published (${utc(start)}).`,
+    `Request sent ${utc(q.requestStartedAt)} (${delayText(q.publicationToRequestMs)} after publication), answered in ${spanText(q.requestToResponseMs)}; stored ${utc(q.storedAt)}.`,
+    `Sent by: ${QUOTE_SOURCE_TEXT[q.source] ?? q.source}${q.failedAttemptsBefore ? `; ${q.failedAttemptsBefore} failed attempt(s) before` : ''}.`,
+    'LBank’s lastPrice may come from a trade before the signal; its response has no trade time. Not an order fill.',
+  ].join('\n');
+
 function FuturesReference({ r }: { r: ObservationRow }) {
   const f = r.futuresSampled;
-  if (!f?.reference || !r.window)
+  if (!f || !r.window)
     return (
       <span className="muted" title={futMissing(f)}>
         —
       </span>
     );
-  const s = Date.parse(r.window.start);
+  if (f.method === 'OBSERVED_QUOTE') {
+    if (!f.quote)
+      return (
+        <span className="muted" title={futMissing(f)}>
+          —
+        </span>
+      );
+    return (
+      <Two
+        v={fmtPrice(f.quote.price)}
+        s={`observed ${delayText(f.quote.delayMs)} after signal`}
+        title={`${FUTURES_QUOTE_LABEL}.\n${quoteTimes(f.quote, r.window.start)}`}
+      />
+    );
+  }
+  if (!f.reference)
+    return (
+      <span className="muted" title={futMissing(f)}>
+        —
+      </span>
+    );
   return (
     <Two
       v={fmtPrice(f.reference.price)}
-      s={`${delayText(Date.parse(f.reference.after) - s)} … ${delayText(Date.parse(f.reference.before) - s)} after start`}
-      title={`A Futures trade proven by two marketData snapshots (24 h turnover rose between them): price ${f.reference.price}, time strictly between ${utc(f.reference.after)} and ${utc(f.reference.before)}.\nNot necessarily the first Futures trade after the start: LBank publishes no Futures trade list.`}
+      s="old method"
+      tone="muted"
+      title={`Old method (${f.rulesVersion}): the later of two minute snapshots between which LBank’s 24 h turnover rose (snapshots at ${utc(f.reference.after)} and before ${utc(f.reference.before)}). Not the first Futures price observed after the signal and not a trade time; kept as recorded.${f.postFixQuote ? `\nFirst price observed after the fix: ${f.postFixQuote.price} at ${utc(f.postFixQuote.observedAt)} (${delayText(f.postFixQuote.delayMs)} after the signal) — not an entry quote.` : ''}`}
     />
   );
 }
@@ -301,12 +334,17 @@ function FuturesExtreme({ r, kind }: { r: ObservationRow; kind: 'highest' | 'low
   const f = r.futuresSampled;
   const v = f?.[kind];
   if (!f || !v) return <span className="muted" title={futMissing(f)}>—</span>;
+  const observed = f.method === 'OBSERVED_QUOTE';
   return (
     <Two
-      v={`${kind === 'highest' ? '≥ ' : '≤ '}${pctText(v.pct)}`}
+      v={`${observed ? '' : kind === 'highest' ? '≥ ' : '≤ '}${pctText(v.pct)}`}
       s={fmtPrice(v.price)}
       tone={f.provisional ? 'prov' : undefined}
-      title={`${kind === 'highest' ? 'Highest' : 'Lowest'} sampled Futures trade ${v.price}, between ${utc(v.after)} and ${utc(v.before)}.\nA bound: the true Futures ${kind} is at least this extreme (snapshots miss trades between them). Relative to the Futures reference, never Spot.`}
+      title={
+        observed
+          ? `${kind === 'highest' ? 'Highest' : 'Lowest'} Futures price our requests observed in the window: ${v.price} at ${utc(v.observedAt)}, vs the first observed Futures price. Observed quotes at our sampling times, not verified trades; LBank’s 24 h high/low is not used.`
+          : `Old method: ${kind === 'highest' ? 'highest' : 'lowest'} price from turnover-rise snapshot pairs (${utc(v.after)} – ${utc(v.before)}); a bound, vs the old-method reference.`
+      }
     />
   );
 }
@@ -676,33 +714,33 @@ export default function Observation() {
             ),
         },
         {
-          label: 'Reference (sampled)',
-          title: 'A Futures trade proven between two snapshots; its time is a range',
+          label: 'First price observed',
+          title: 'The first Futures price our requests observed after the signal (response receipt), and its real delay. Old-method rows are labelled “old method”.',
           render: (r) => <FuturesReference r={r} />,
         },
         {
-          label: head('futuresHighest', 'Highest ≥'),
+          label: head('futuresHighest', 'Highest'),
           num: true,
-          title: 'Lower bound of the Futures maximum rise vs the Futures reference',
+          title: 'Highest Futures price our requests observed in the window, vs the first observed price (old method: a bound, marked ≥)',
           render: (r) => <FuturesExtreme r={r} kind="highest" />,
         },
         {
-          label: head('futuresLowest', 'Lowest ≤'),
+          label: head('futuresLowest', 'Lowest'),
           num: true,
-          title: 'Upper bound of the Futures maximum decline vs the Futures reference',
+          title: 'Lowest Futures price our requests observed in the window, vs the first observed price (old method: a bound, marked ≤)',
           render: (r) => <FuturesExtreme r={r} kind="lowest" />,
         },
         { label: 'Futures status', render: (r) => <FuturesStatusCell r={r} /> },
         {
           label: 'Sampling',
-          title: 'Snapshots in the window, proven trades among them, the longest gap between snapshots, and how far sampled',
+          title: 'Observations in the window, the longest gap between them, and how far sampled',
           render: (r) => {
             const f = r.futuresSampled;
             if (!f || f.mapping !== 'OK') return <span className="muted">—</span>;
             return (
               <Two
                 v={f.sampledThrough ? `through ${fmtShort(f.sampledThrough)}` : 'not sampled'}
-                s={`${fmtInt(f.samplesInWindow)} snapshots · ${fmtInt(f.bracketedInWindow)} trades · max gap ${spanText(f.maxGapMs)}`}
+                s={`${fmtInt(f.samplesInWindow)} observations · max gap ${spanText(f.maxGapMs)}${f.method === 'OBSERVED_QUOTE' ? '' : ' · old method'}`}
               />
             );
           },

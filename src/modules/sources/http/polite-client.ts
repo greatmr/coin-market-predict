@@ -54,6 +54,14 @@ interface CacheEntry {
  * Retry-After handling, conditional requests (ETag), and a persisted circuit breaker that
  * suspends collection on persistent access denial. It never rotates identities or proxies.
  */
+/** Per-request timing callbacks (times from the client's clock). */
+export interface RequestHooks {
+  /** An attempt is about to be sent (after queueing and rate limiting). */
+  onSend?: (attempt: number, at: Date) => void;
+  /** An attempt failed (network error, timeout, or a retryable HTTP status); it may be retried. */
+  onAttemptError?: (attempt: number, sentAt: Date | null, at: Date, message: string) => void;
+}
+
 export class PoliteHttpClient {
   private readonly o: Required<
     Omit<PoliteClientOptions, 'headers' | 'fetchImpl' | 'clock' | 'sleep' | 'responseStatus'>
@@ -93,12 +101,17 @@ export class PoliteHttpClient {
     return JSON.parse(await this.getText(url)) as T;
   }
 
-  /** Keep the original digits for Decimal parsing and raw-response auditing. */
+  /**
+   * Keep the original digits for Decimal parsing and raw-response auditing. `hooks` report when each
+   * attempt is actually sent (after the queue and the rate-limit wait) and when an attempt fails,
+   * for callers that must record real request timing.
+   */
   getText(
     url: string,
     onResponse?: (res: Response, body: string) => Promise<void>,
+    hooks?: RequestHooks,
   ): Promise<string> {
-    const run = this.queue.then(() => this.doGet(url, onResponse));
+    const run = this.queue.then(() => this.doGet(url, onResponse, hooks));
     this.queue = run.catch(() => undefined);
     return run;
   }
@@ -106,6 +119,7 @@ export class PoliteHttpClient {
   private async doGet(
     url: string,
     onResponse?: (res: Response, body: string) => Promise<void>,
+    hooks?: RequestHooks,
   ): Promise<string> {
     let attempt = 0;
     for (;;) {
@@ -118,6 +132,7 @@ export class PoliteHttpClient {
 
       let res: Response;
       let body: string;
+      let sentAt: Date | null = null;
       try {
         const headers: Record<string, string> = {
           accept: 'application/json',
@@ -126,10 +141,13 @@ export class PoliteHttpClient {
         };
         const cached = this.etagCache.get(url);
         if (cached) headers['if-none-match'] = cached.etag;
+        sentAt = this.clock.now();
+        hooks?.onSend?.(attempt, sentAt);
         res = await this.fetchImpl(url, { headers, signal: AbortSignal.timeout(this.o.timeoutMs) });
         this.requestsMade++;
         body = await res.text();
       } catch (err) {
+        hooks?.onAttemptError?.(attempt, sentAt, this.clock.now(), redact(err).slice(0, 300));
         await this.recordFailure(null);
         if (attempt >= this.o.maxAttempts) {
           throw new SourceUnavailableError(
@@ -170,6 +188,7 @@ export class PoliteHttpClient {
       }
 
       const retryable = status === 429 || status >= 500;
+      hooks?.onAttemptError?.(attempt, sentAt, this.clock.now(), `HTTP ${status}`);
       await this.recordFailure(status);
       if (!retryable) {
         throw new SourceUnavailableError(
