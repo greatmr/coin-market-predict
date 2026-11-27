@@ -10,7 +10,7 @@ import { Kv, Lab, Stars } from '../../components/ui';
 import { api, errorMessage } from '../../lib/api';
 import { humanize } from '../../lib/constants';
 import { infoDialog } from '../../lib/feedback';
-import { fmtPct, fmtPrice, fmtTime, tz, utc } from '../../lib/format';
+import { fmtClock, fmtExact, fmtPct, fmtPrice, fmtTime, tz } from '../../lib/format';
 
 import {
   ELIGIBILITY,
@@ -74,7 +74,7 @@ function provenText(ev: ExtremeEvidence): string {
   if (gaps) parts.push('gaps being retried (see Coverage)');
   if (open.length) {
     // The window's last (boundary) minute is listed first: name the earliest open minute.
-    const from = utc(open.map((b) => b.from).sort((a, b) => Date.parse(a) - Date.parse(b))[0]!);
+    const from = fmtExact(open.map((b) => b.from).sort((a, b) => Date.parse(a) - Date.parse(b))[0]!);
     parts.push(
       checks || gaps
         ? `minutes from ${from} on are not fetched yet`
@@ -91,7 +91,7 @@ function Extreme({ label, ev, pct }: { label: string; ev: ExtremeEvidence | null
       <Kv
         pairs={[
           [label, `${fmtPrice(ev.best.price)} (${pct === null ? '—' : fmtPct(pct)} vs reference)`],
-          ['Trade time (UTC, ms)', utc(ev.best.time)],
+          ['Trade time', fmtExact(ev.best.time)],
           ['Trade id', <code key="i">{ev.best.id}</code>],
           ['Quantity', ev.best.qty],
           ['Proven for the whole window', provenText(ev)],
@@ -100,7 +100,7 @@ function Extreme({ label, ev, pct }: { label: string; ev: ExtremeEvidence | null
       {ev.checked.length ? (
         <p className="muted small">
           {`Candidate minutes checked trade by trade (candle bound → real trade): ${ev.checked
-            .map((c) => `${utc(c.minute).slice(11, 16)} ${c.candle}→${c.traded ?? c.check.toLowerCase()}`)
+            .map((c) => `${fmtExact(c.minute).slice(11, 16)} ${c.candle}→${c.traded ?? c.check.toLowerCase()}`)
             .join(', ')}`}
         </p>
       ) : null}
@@ -108,7 +108,7 @@ function Extreme({ label, ev, pct }: { label: string; ev: ExtremeEvidence | null
         <p className="muted small">
           {`Still open: ${ev.blocking
             .slice(0, 6)
-            .map((b) => `${utc(b.from)}–${utc(b.to)} ${humanize(b.state).toLowerCase()}`)
+            .map((b) => `${fmtExact(b.from)}–${fmtExact(b.to)} ${humanize(b.state).toLowerCase()}`)
             .join('; ')}`}
         </p>
       ) : null}
@@ -147,7 +147,7 @@ function TimingChain({ d, loadedAt }: { d: ObservationDetail; loadedAt: number }
       'Verified by the observation job',
       c?.checkedAt ?? null,
       c
-        ? `${t.processingDelayMs !== null ? `processing delay ${spanText(t.processingDelayMs)} after the trade` : ''}${c.run ? ` · ${c.run.trigger} run started ${utc(c.run.startedAt)}` : ''}${c.stampedWithRunStart ? ' · recorded with the run’s start (before 2026-11-27): the actual read was between that and the run’s end' : ''}`
+        ? `${t.processingDelayMs !== null ? `processing delay ${spanText(t.processingDelayMs)} after the trade` : ''}${c.run ? ` · ${c.run.trigger} run started ${fmtExact(c.run.startedAt)}` : ''}${c.stampedWithRunStart ? ' · recorded with the run’s start (before 2026-11-27): the actual read was between that and the run’s end' : ''}`
         : 'not verified yet',
     ],
     [
@@ -165,12 +165,12 @@ function TimingChain({ d, loadedAt }: { d: ObservationDetail; loadedAt: number }
   ];
   return (
     <>
-      <p className="muted small">All times UTC with milliseconds.</p>
+      <p className="muted small">{`All times in ${tz()}, with milliseconds and the UTC offset.`}</p>
       <ol className="obs-chain">
         {steps.map(([label, at, note]) => (
           <li key={label} className={at ? undefined : 'pending'}>
             <b>{label}</b>
-            <span className="mono">{at ? utc(at) : '—'}</span>
+            <span className="mono">{at ? fmtExact(at) : '—'}</span>
             {note ? <span className="muted small">{note}</span> : null}
           </li>
         ))}
@@ -181,7 +181,7 @@ function TimingChain({ d, loadedAt }: { d: ObservationDetail; loadedAt: number }
             .map((s) => `${s.stage} ${spanText(s.durationMs!)}${s.attempts > 1 ? ` (×${s.attempts})` : ''}`)
             .join(' · ')}.`}
           {slowest && slowest.stage === 'daily' && (slowest.durationMs ?? 0) > 60_000
-            ? ' The 00:07 UTC run refreshes every candidate’s newly completed UTC daily row from CoinMarketCap (one request each, rate-limited) before the scan can publish; other hours skip that.'
+            ? ` The 00:07 UTC run (${fmtClock('2026-01-01T00:07:00Z')} ${tz()}) refreshes every candidate’s newly completed UTC daily row from CoinMarketCap (one request each, rate-limited) before the scan can publish; other hours skip that.`
             : ''}
         </p>
       ) : null}
@@ -214,7 +214,7 @@ function VenueCards({ d }: { d: ObservationDetail }) {
             ],
             ['Highest', d.highest ? `${fmtPct(d.highest.pct)} · ${fmtPrice(d.highest.price)}` : '—'],
             ['Lowest', d.lowest ? `${fmtPct(d.lowest.pct)} · ${fmtPrice(d.lowest.price)}` : '—'],
-            ['Data through (UTC)', d.freshness.dataThrough ? utc(d.freshness.dataThrough) : 'not fetched'],
+            ['Data through', d.freshness.dataThrough ? fmtExact(d.freshness.dataThrough) : 'not fetched'],
           ]}
         />
         {d.reasons.length ? (
@@ -236,10 +236,10 @@ function VenueCards({ d }: { d: ObservationDetail }) {
               <Kv
                 pairs={[
                   [FUTURES_QUOTE_LABEL, `${fmtPrice(f.quote.price)} · observed ${delayText(f.quote.delayMs)} after signal`],
-                  ['Observed at (UTC)', utc(f.quote.observedAt)],
+                  ['Observed at', fmtExact(f.quote.observedAt)],
                   ['Highest observed', f.highest ? `${fmtPct(f.highest.pct)} · ${fmtPrice(f.highest.price)}` : '—'],
                   ['Lowest observed', f.lowest ? `${fmtPct(f.lowest.pct)} · ${fmtPrice(f.lowest.price)}` : '—'],
-                  ['Sampled through', f.sampledThrough ? utc(f.sampledThrough) : '—'],
+                  ['Sampled through', f.sampledThrough ? fmtExact(f.sampledThrough) : '—'],
                 ]}
               />
             ) : f.method === 'LEGACY_TURNOVER_BRACKET' && f.reference ? (
@@ -313,7 +313,7 @@ function Detail({ id }: { id: string }) {
       <p className="obs-ident">
         <Stars n={d.stars} />{' '}
         <b>{`${d.symbol} · ${d.name}`}</b>
-        <span className="muted small">{` CMC id ${d.cmcId} · event ${d.event.detectedUtcDate} · window ${d.window ? `${fmtTime(d.window.start)} – ${fmtTime(d.window.end)} (${tz()})` : 'start pending'} · exact times below are UTC`}</span>
+        <span className="muted small">{` CMC id ${d.cmcId} · event UTC date ${d.event.detectedUtcDate} · window ${d.window ? `${fmtTime(d.window.start)} – ${fmtTime(d.window.end)} (${tz()})` : 'start pending'} · exact times below in ${tz()}`}</span>
       </p>
       <VenueCards d={d} />
       <p className="muted small">
@@ -326,10 +326,10 @@ function Detail({ id }: { id: string }) {
         <Kv
           pairs={[
             d.window && ['Start proven by', `${TIMING_TEXT[d.window.source] ?? d.window.source}${d.window.uncertain ? ' (later than the earliest usable moment)' : ''}`],
-            !!str(ae.lowerBound) && ['Usable between', `${utc(str(ae.lowerBound))} and ${d.window ? utc(d.window.start) : '—'}`],
-            ['Window end (exclusive)', d.window ? `${utc(d.window.end)} = start + 168 h` : '—'],
-            ['CMC quote time', utc(d.cmcQuoteAt)],
-            ['Retries until', utc(d.freshness.retryUntil)],
+            !!str(ae.lowerBound) && ['Usable between', `${fmtExact(str(ae.lowerBound))} and ${d.window ? fmtExact(d.window.start) : '—'}`],
+            ['Window end (exclusive)', d.window ? `${fmtExact(d.window.end)} = start + 168 h` : '—'],
+            ['CMC quote time', fmtExact(d.cmcQuoteAt)],
+            ['Retries until', fmtExact(d.freshness.retryUntil)],
           ]}
         />
       </Section>
@@ -339,7 +339,7 @@ function Detail({ id }: { id: string }) {
           pairs={[
             ['Status', humanize(d.reference.status)],
             d.reference.price !== null && ['Price', fmtPrice(d.reference.price)],
-            d.reference.at !== null && ['Trade time (UTC, ms)', utc(d.reference.at)],
+            d.reference.at !== null && ['Trade time', fmtExact(d.reference.at)],
             d.reference.tradeId !== null && ['Trade id', <code key="t">{d.reference.tradeId}</code>],
             d.reference.qty !== null && ['Quantity', d.reference.qty],
             d.reference.delayMs !== null && ['Start → trade (market delay)', `${delayText(d.reference.delayMs)}${d.reference.delayed ? ' · Delayed: a whole minute without trades first' : ''}`],
@@ -357,7 +357,7 @@ function Detail({ id }: { id: string }) {
         <Extreme label="Lowest" ev={xe.lowest ?? null} pct={d.lowest?.pct ?? null} />
         <Kv
           pairs={[
-            d.lowBeforeHighest && ['Lowest up to the highest', `${fmtPrice(d.lowBeforeHighest.price)} at ${utc(d.lowBeforeHighest.at)}`],
+            d.lowBeforeHighest && ['Lowest up to the highest', `${fmtPrice(d.lowBeforeHighest.price)} at ${fmtExact(d.lowBeforeHighest.at)}`],
             ['Order', d.order ? (ORDER[d.order] ?? d.order) : '—'],
           ]}
         />
@@ -389,26 +389,26 @@ function Detail({ id }: { id: string }) {
               ['Mapping', `${humanize(f.mapping)}${f.reasons.length ? ` · ${f.reasons.map(obsReasonText).join(' · ')}` : ''}`],
               ['CMC contracts for this CMC id', Array.isArray(fmap.cmcContracts) ? (fmap.cmcContracts as string[]).join(', ') || 'none' : '—'],
               f.quote && ['Observed price', fmtPrice(f.quote.price)],
-              f.quote && ['Request queued (UTC)', utc(f.quote.requestQueuedAt)],
-              f.quote && ['Request sent (UTC)', `${utc(f.quote.requestStartedAt)} · ${delayText(f.quote.publicationToRequestMs)} after publication`],
-              f.quote && ['Response received (UTC)', `${utc(f.quote.observedAt)} · ${spanText(f.quote.requestToResponseMs)} after sending · ${delayText(f.quote.delayMs)} after publication (the displayed delay)`],
-              f.quote && ['Stored (UTC)', utc(f.quote.storedAt)],
+              f.quote && ['Request queued', fmtExact(f.quote.requestQueuedAt)],
+              f.quote && ['Request sent', `${fmtExact(f.quote.requestStartedAt)} · ${delayText(f.quote.publicationToRequestMs)} after publication`],
+              f.quote && ['Response received', `${fmtExact(f.quote.observedAt)} · ${spanText(f.quote.requestToResponseMs)} after sending · ${delayText(f.quote.delayMs)} after publication (the displayed delay)`],
+              f.quote && ['Stored', fmtExact(f.quote.storedAt)],
               f.quote && ['Sent by', `${QUOTE_SOURCE_TEXT[f.quote.source] ?? f.quote.source}${f.quote.failedAttemptsBefore ? ` · ${f.quote.failedAttemptsBefore} failed attempt(s) before` : ''}`],
-              f.quote && ['LBank snapshot time', `${utc(f.quote.lbankSnapshotAt)} (refresh time of LBank’s snapshot, not a trade time)`],
+              f.quote && ['LBank snapshot time', `${fmtExact(f.quote.lbankSnapshotAt)} (refresh time of LBank’s snapshot, not a trade time)`],
               f.quote && ['Endpoint · request id', `${f.quote.endpoint} · ${f.quote.pollId}`],
-              f.method === 'OBSERVED_QUOTE' && f.highest && ['Highest observed', `${fmtPrice(f.highest.price)} (${fmtPct(f.highest.pct)}) at ${utc(f.highest.observedAt)}`],
-              f.method === 'OBSERVED_QUOTE' && f.lowest && ['Lowest observed', `${fmtPrice(f.lowest.price)} (${fmtPct(f.lowest.pct)}) at ${utc(f.lowest.observedAt)}`],
-              f.method === 'LEGACY_TURNOVER_BRACKET' && f.reference && ['Old-method reference', `${fmtPrice(f.reference.price)} (snapshot pair ${utc(f.reference.after)} – ${utc(f.reference.before)})`],
+              f.method === 'OBSERVED_QUOTE' && f.highest && ['Highest observed', `${fmtPrice(f.highest.price)} (${fmtPct(f.highest.pct)}) at ${fmtExact(f.highest.observedAt)}`],
+              f.method === 'OBSERVED_QUOTE' && f.lowest && ['Lowest observed', `${fmtPrice(f.lowest.price)} (${fmtPct(f.lowest.pct)}) at ${fmtExact(f.lowest.observedAt)}`],
+              f.method === 'LEGACY_TURNOVER_BRACKET' && f.reference && ['Old-method reference', `${fmtPrice(f.reference.price)} (snapshot pair ${fmtExact(f.reference.after)} – ${fmtExact(f.reference.before)})`],
               f.method === 'LEGACY_TURNOVER_BRACKET' && f.highest && ['Old-method highest (≥)', `${fmtPrice(f.highest.price)} (${fmtPct(f.highest.pct)})`],
               f.method === 'LEGACY_TURNOVER_BRACKET' && f.lowest && ['Old-method lowest (≤)', `${fmtPrice(f.lowest.price)} (${fmtPct(f.lowest.pct)})`],
-              f.postFixQuote && ['First price observed after the fix', `${fmtPrice(f.postFixQuote.price)} at ${utc(f.postFixQuote.observedAt)} · ${delayText(f.postFixQuote.delayMs)} after the signal — shown apart, not an entry quote`],
-              !!legacy && ['Replay of retained records', legacy.correctedReferenceEstablished ? `first price observed after the signal: ${fmtPrice(legacy.retainedPrice)} at ${utc(legacy.firstEligibleResponseAt)} (${legacy.reconstructedDelayMs !== null ? delayText(legacy.reconstructedDelayMs) : '—'} after the signal; minute tick sent at or after ${utc(legacy.firstEligibleRequestSentNotBefore)})` : `not establishable — the first response after the signal (${utc(legacy.firstEligibleResponseAt)}) was not retained for this contract`],
+              f.postFixQuote && ['First price observed after the fix', `${fmtPrice(f.postFixQuote.price)} at ${fmtExact(f.postFixQuote.observedAt)} · ${delayText(f.postFixQuote.delayMs)} after the signal — shown apart, not an entry quote`],
+              !!legacy && ['Replay of retained records', legacy.correctedReferenceEstablished ? `first price observed after the signal: ${fmtPrice(legacy.retainedPrice)} at ${fmtExact(legacy.firstEligibleResponseAt)} (${legacy.reconstructedDelayMs !== null ? delayText(legacy.reconstructedDelayMs) : '—'} after the signal; minute tick sent at or after ${fmtExact(legacy.firstEligibleRequestSentNotBefore)})` : `not establishable — the first response after the signal (${fmtExact(legacy.firstEligibleResponseAt)}) was not retained for this contract`],
               !!legacy && ['Replay note', legacy.note],
-              failed.length > 0 && ['Failed attempts before the first price', failed.map((x) => `${x.trigger} #${x.attempt} sent ${utc(x.requestStartedAt)} failed ${utc(x.failedAt)}: ${x.error ?? ''}`).join(' · ')],
-              f.book && ['Order book (context only)', f.book.ok ? `bid ${f.book.bestBid ?? '—'} / ask ${f.book.bestAsk ?? '—'} · sent ${utc(f.book.requestStartedAt)} · received ${utc(f.book.responseReceivedAt)} — indicative, never the reference or a fill` : `failed: ${f.book.error ?? 'unknown'} (received ${utc(f.book.responseReceivedAt)})`],
+              failed.length > 0 && ['Failed attempts before the first price', failed.map((x) => `${x.trigger} #${x.attempt} sent ${fmtExact(x.requestStartedAt)} failed ${fmtExact(x.failedAt)}: ${x.error ?? ''}`).join(' · ')],
+              f.book && ['Order book (context only)', f.book.ok ? `bid ${f.book.bestBid ?? '—'} / ask ${f.book.bestAsk ?? '—'} · sent ${fmtExact(f.book.requestStartedAt)} · received ${fmtExact(f.book.responseReceivedAt)} — indicative, never the reference or a fill` : `failed: ${f.book.error ?? 'unknown'} (received ${fmtExact(f.book.responseReceivedAt)})`],
               ['Observations in window', `${f.samplesInWindow} · longest gap ${spanText(f.maxGapMs)}`],
-              ['Sampled through', utc(f.sampledThrough)],
-              !!str(last.server_at) && ['LBank 24 h high / low at the last snapshot (context only)', `${String(last.high_24h ?? '—')} / ${String(last.low_24h ?? '—')} (${utc(str(last.server_at))}; not the window's extremes)`],
+              ['Sampled through', fmtExact(f.sampledThrough)],
+              !!str(last.server_at) && ['LBank 24 h high / low at the last snapshot (context only)', `${String(last.high_24h ?? '—')} / ${String(last.low_24h ?? '—')} (${fmtExact(str(last.server_at))}; not the window's extremes)`],
               ['Rules', f.rulesVersion],
             ]}
           />
@@ -419,18 +419,18 @@ function Detail({ id }: { id: string }) {
         <Kv
           pairs={[
             ['Minutes', `${d.coverage.minutesPresent} of ${d.coverage.minutesExpected ?? '—'} with a candle · ${d.coverage.minutesTraded} traded · ${d.coverage.minutesMissing} answered without one`],
-            ['Data through', utc(d.freshness.dataThrough)],
-            ['Last successful LBank fetch', utc(d.freshness.lastSourceFetchAt)],
-            ['Last attempt', utc(d.freshness.lastFetchAttemptAt)],
+            ['Data through', fmtExact(d.freshness.dataThrough)],
+            ['Last successful LBank fetch', fmtExact(d.freshness.lastSourceFetchAt)],
+            ['Last attempt', fmtExact(d.freshness.lastFetchAttemptAt)],
             d.freshness.lastFetchError !== null && ['Last error', d.freshness.lastFetchError],
-            ['Last recomputed (not fresh data)', utc(d.freshness.lastRecomputedAt)],
+            ['Last recomputed (not fresh data)', fmtExact(d.freshness.lastRecomputedAt)],
           ]}
         />
         {d.coverage.gaps.length ? (
           <ul className="small">
             {d.coverage.gaps.map((g) => (
               <li key={`${g.from}${g.state}${g.detail ?? ''}`}>
-                {`${utc(g.from)} – ${utc(g.to)}: ${GAP_TEXT[g.state] ?? humanize(g.state)}${g.detail ? ` (${humanize(g.detail).toLowerCase()})` : ''}`}
+                {`${fmtExact(g.from)} – ${fmtExact(g.to)}: ${GAP_TEXT[g.state] ?? humanize(g.state)}${g.detail ? ` (${humanize(g.detail).toLowerCase()})` : ''}`}
               </li>
             ))}
           </ul>
@@ -442,12 +442,12 @@ function Detail({ id }: { id: string }) {
           pairs={[
             ['LBank Spot pair', `${d.pair.symbol ?? '—'} (${MAPPING_TEXT[d.pair.mapping] ?? humanize(d.pair.mapping)})`],
             ['Mapping rule', str(mapping.rule) ?? '—'],
-            !!str(snap.cmcLbankSpotListFetchedAt) && ['CMC LBank list used', `${utc(str(snap.cmcLbankSpotListFetchedAt))} (${String(snap.ageAtSignalHours)} h before the signal)`],
-            ['Spot at the signal', `${LISTING_TEXT[d.spot] ?? d.spot}${d.spotTrading ? ` · ${TRADING_TEXT[d.spotTrading] ?? d.spotTrading}` : ''}${spotList.fetchedAt ? ` · LBank list read ${utc(str(spotList.fetchedAt))}` : ''}`],
+            !!str(snap.cmcLbankSpotListFetchedAt) && ['CMC LBank list used', `${fmtExact(str(snap.cmcLbankSpotListFetchedAt))} (${String(snap.ageAtSignalHours)} h before the signal)`],
+            ['Spot at the signal', `${LISTING_TEXT[d.spot] ?? d.spot}${d.spotTrading ? ` · ${TRADING_TEXT[d.spotTrading] ?? d.spotTrading}` : ''}${spotList.fetchedAt ? ` · LBank list read ${fmtExact(str(spotList.fetchedAt))}` : ''}`],
             ['Listing class', <Lab key="e" map={ELIGIBILITY} k={d.eligibility} />],
             ['Futures listing (snapshots)', FUTURES_TEXT[d.futures] ?? d.futures],
-            ['Snapshot before', futuresBefore.fetchedAt ? `CMC LBank Futures list ${utc(str(futuresBefore.fetchedAt))}` : 'none'],
-            ['Snapshot after', futuresAfter.fetchedAt ? `LBank contract list ${utc(str(futuresAfter.fetchedAt))}` : 'none'],
+            ['Snapshot before', futuresBefore.fetchedAt ? `CMC LBank Futures list ${fmtExact(str(futuresBefore.fetchedAt))}` : 'none'],
+            ['Snapshot after', futuresAfter.fetchedAt ? `LBank contract list ${fmtExact(str(futuresAfter.fetchedAt))}` : 'none'],
           ]}
         />
       </Section>
@@ -463,7 +463,7 @@ function Detail({ id }: { id: string }) {
                 <li key={x}>
                   {`${FLAG[x]?.[0] ?? humanize(x)}: ${FLAG[x]?.[1] ?? ''}`}
                   {ev.tradeId
-                    ? ` Trade ${String(ev.price)} × ${String(ev.qty)} (${String(ev.quoteValueUsdt)} USDT) at ${utc(str(ev.time))}, minute volume ${String(ev.minuteVolume)}; previous trade ${prev.price ? `${String(prev.price)} at ${utc(str(prev.time))}` : 'unknown'}; next ${next.price ? `${String(next.price)} at ${utc(str(next.time))}` : 'unknown'}.`
+                    ? ` Trade ${String(ev.price)} × ${String(ev.qty)} (${String(ev.quoteValueUsdt)} USDT) at ${fmtExact(str(ev.time))}, minute volume ${String(ev.minuteVolume)}; previous trade ${prev.price ? `${String(prev.price)} at ${fmtExact(str(prev.time))}` : 'unknown'}; next ${next.price ? `${String(next.price)} at ${fmtExact(str(next.time))}` : 'unknown'}.`
                     : ''}
                 </li>
               );
@@ -480,7 +480,7 @@ function Detail({ id }: { id: string }) {
           <ul className="small">
             {d.results.map((r) => (
               <li key={r.version}>
-                {`Spot result v${r.version} (${r.rulesVersion}): ${r.status}${r.highestReturnPct !== null ? `, highest ${fmtPct(r.highestReturnPct)}, lowest ${fmtPct(r.lowestReturnPct)}` : ''}${r.v1MaxRisePct !== null ? `, v1 max rise ${fmtPct(r.v1MaxRisePct)}, max drop ${fmtPct(r.v1MaxDropPct)}` : ''} · ${utc(r.computedAt)}`}
+                {`Spot result v${r.version} (${r.rulesVersion}): ${r.status}${r.highestReturnPct !== null ? `, highest ${fmtPct(r.highestReturnPct)}, lowest ${fmtPct(r.lowestReturnPct)}` : ''}${r.v1MaxRisePct !== null ? `, v1 max rise ${fmtPct(r.v1MaxRisePct)}, max drop ${fmtPct(r.v1MaxDropPct)}` : ''} · ${fmtExact(r.computedAt)}`}
               </li>
             ))}
           </ul>
@@ -489,7 +489,7 @@ function Detail({ id }: { id: string }) {
         )}
         {d.rulesChanges.map((c) => (
           <p key={c.changedAt} className="muted small">
-            {`Recalculated under ${c.to} on ${utc(c.changedAt)} (was ${c.from}, ${c.fromStatus}${c.fromResultVersion ? `, result v${c.fromResultVersion}` : ''}). ${c.reason}`}
+            {`Recalculated under ${c.to} on ${fmtExact(c.changedAt)} (was ${c.from}, ${c.fromStatus}${c.fromResultVersion ? `, result v${c.fromResultVersion}` : ''}). ${c.reason}`}
           </p>
         ))}
         {d.legacyV1 ? (

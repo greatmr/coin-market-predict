@@ -7,7 +7,7 @@ import { useEffect, useState } from 'react';
 import { Lab, Stars } from '../../components/ui';
 import { api, errorMessage } from '../../lib/api';
 import { infoDialog } from '../../lib/feedback';
-import { fmtPct, fmtPrice, fmtTime, utc } from '../../lib/format';
+import { fmtPct, fmtPrice, fmtTime, fmtExact } from '../../lib/format';
 
 import { FUT_STATUS, STATUS, spanText } from './labels';
 import type { ObservationOverlaps, ObservationRow } from './types';
@@ -100,7 +100,7 @@ function OverlapList({ id }: { id: string }) {
                     <Stars n={x.stars} />
                     <div className="muted small">{`CMC ${x.crawlAt.slice(0, 10)}`}</div>
                   </td>
-                  <td title={`${utc(x.window?.start)} – ${utc(x.window?.end)}`}>
+                  <td title={`${fmtExact(x.window?.start)} – ${fmtExact(x.window?.end)}`}>
                     {x.window ? fmtTime(x.window.start) : '—'}
                     <div className="muted small">{`shares ${fmtTime(x.overlapStart)} – ${fmtTime(x.overlapEnd)} (${Math.round(Number(x.overlapHours))} h)`}</div>
                   </td>

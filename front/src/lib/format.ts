@@ -119,6 +119,44 @@ export function fmtBytes(n: Maybe<number>): string {
   return `${v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
 }
 export const utc = (iso: Maybe<string>): string => (iso ? String(iso).replace('.000Z', 'Z') : '—');
+
+const exactParts = new Map<string, Intl.DateTimeFormat>();
+/**
+ * An exact instant in the API's own ISO 8601 shape (date, time, milliseconds), expressed in the
+ * display time zone with that instant's UTC offset: `2026-11-25T16:07:06.894Z` →
+ * `2026-11-25T19:37:06.894+03:30` (Asia/Tehran). Display only: the API keeps sending UTC.
+ */
+export function fmtExact(iso: Maybe<string>, timeZone: string = tz()): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  const t = d.getTime();
+  if (Number.isNaN(t)) return String(iso);
+  let f = exactParts.get(timeZone);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    });
+    exactParts.set(timeZone, f);
+  }
+  const p: Record<string, string> = {};
+  for (const x of f.formatToParts(d)) p[x.type] = x.value;
+  const wallMs = Date.UTC(+p.year!, +p.month! - 1, +p.day!, +p.hour!, +p.minute!, +p.second!);
+  const offMin = Math.round((wallMs - Math.floor(t / 1000) * 1000) / 60_000);
+  const abs = Math.abs(offMin);
+  const offset =
+    offMin === 0
+      ? 'Z'
+      : `${offMin < 0 ? '-' : '+'}${String(Math.floor(abs / 60)).padStart(2, '0')}:${String(abs % 60).padStart(2, '0')}`;
+  const ms = String(((t % 1000) + 1000) % 1000).padStart(3, '0');
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}.${ms}${offset}`;
+}
 export const shortId = (id: Maybe<string>): string => String(id || '').slice(0, 8);
 
 /** Countdown to an ISO time: "4:07", "1 h 05 min", or "starting…" once it has passed. */

@@ -10,7 +10,7 @@ import { api, apiPost, errorMessage } from '../../lib/api';
 import { apiUrl } from '../../lib/config';
 import { type StatusMap, humanize, triggerText } from '../../lib/constants';
 import { toast } from '../../lib/feedback';
-import { fmtAgo, fmtInt, fmtPct, fmtSpan, fmtTime, utc } from '../../lib/format';
+import { fmtAgo, fmtInt, fmtPct, fmtSpan, fmtTime, fmtExact } from '../../lib/format';
 import { useApp } from '../../state/app';
 
 import type { LegacyStatus, ObservationSummary, StatsJson } from './types';
@@ -88,8 +88,8 @@ function Tiles({ s }: { s: ObservationSummary }) {
   return (
     <div className="tiles">
       <div className="tile">
-        <span className="tile-label">Cutover (UTC)</span>
-        <b>{s.cutover.cutoverAt ? utc(s.cutover.cutoverAt) : 'Not set'}</b>
+        <span className="tile-label">Cutover</span>
+        <b>{s.cutover.cutoverAt ? fmtExact(s.cutover.cutoverAt) : 'Not set'}</b>
         <span className="muted small">
           {s.cutover.cutoverAt
             ? s.cutover.passed

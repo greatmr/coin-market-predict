@@ -21,7 +21,7 @@ import {
 } from '../../components/ui';
 import { api, errorMessage } from '../../lib/api';
 import { humanize, triggerText } from '../../lib/constants';
-import { fmtAgo, fmtClock, fmtInt, fmtPct, fmtPrice, fmtTime, tz, utc } from '../../lib/format';
+import { fmtAgo, fmtClock, fmtInt, fmtPct, fmtPrice, fmtTime, tz, fmtExact } from '../../lib/format';
 import { useQueryState } from '../../lib/routes';
 import { useApp, useNow } from '../../state/app';
 
@@ -256,7 +256,7 @@ function SpotReference({ r, now }: { r: ObservationRow; now: number }) {
           </>
         }
         s={`${delayText(ref.delayMs)} after start`}
-        title={`First verified LBank Spot trade at or after the window start.\ntrade ${ref.tradeId} at ${utc(ref.at)}, qty ${ref.qty}\nThe delay is market time (start → trade), not how long the page took to update.`}
+        title={`First verified LBank Spot trade at or after the window start.\ntrade ${ref.tradeId} at ${fmtExact(ref.at)}, qty ${ref.qty}\nThe delay is market time (start → trade), not how long the page took to update.`}
       />
     );
   if (r.status === 'NO_TRADES') return <Two v="no trade" s="none in the whole window" />;
@@ -272,7 +272,7 @@ function SpotExtreme({ r, kind }: { r: ObservationRow; kind: 'highest' | 'lowest
       v={pctText(v.pct)}
       s={fmtPrice(v.price)}
       tone={r.provisional ? 'prov' : undefined}
-      title={`${kind === 'highest' ? 'Highest' : 'Lowest'} verified LBank Spot trade ${v.price} at ${utc(v.at)} (trade ${v.tradeId})\n${pctText(v.pct)} vs the Spot reference trade. An observed price, not profit${kind === 'lowest' ? ', not a stop' : ''}.${r.provisional ? '\nProvisional: the window is running or data is still being verified.' : ''}`}
+      title={`${kind === 'highest' ? 'Highest' : 'Lowest'} verified LBank Spot trade ${v.price} at ${fmtExact(v.at)} (trade ${v.tradeId})\n${pctText(v.pct)} vs the Spot reference trade. An observed price, not profit${kind === 'lowest' ? ', not a stop' : ''}.${r.provisional ? '\nProvisional: the window is running or data is still being verified.' : ''}`}
     />
   );
 }
@@ -285,8 +285,8 @@ const futMissing = (f: FuturesSampled | null): string =>
 /** Times of an observed quote, for tooltips (our request's times; LBank gives no trade time). */
 const quoteTimes = (q: ObservedQuote, start: string) =>
   [
-    `Observed (response received) ${utc(q.observedAt)}: ${delayText(q.delayMs)} after the signal was published (${utc(start)}).`,
-    `Request sent ${utc(q.requestStartedAt)} (${delayText(q.publicationToRequestMs)} after publication), answered in ${spanText(q.requestToResponseMs)}; stored ${utc(q.storedAt)}.`,
+    `Observed (response received) ${fmtExact(q.observedAt)}: ${delayText(q.delayMs)} after the signal was published (${fmtExact(start)}).`,
+    `Request sent ${fmtExact(q.requestStartedAt)} (${delayText(q.publicationToRequestMs)} after publication), answered in ${spanText(q.requestToResponseMs)}; stored ${fmtExact(q.storedAt)}.`,
     `Sent by: ${QUOTE_SOURCE_TEXT[q.source] ?? q.source}${q.failedAttemptsBefore ? `; ${q.failedAttemptsBefore} failed attempt(s) before` : ''}.`,
     'LBank’s lastPrice may come from a trade before the signal; its response has no trade time. Not an order fill.',
   ].join('\n');
@@ -325,7 +325,7 @@ function FuturesReference({ r }: { r: ObservationRow }) {
       v={fmtPrice(f.reference.price)}
       s="old method"
       tone="muted"
-      title={`Old method (${f.rulesVersion}): the later of two minute snapshots between which LBank’s 24 h turnover rose (snapshots at ${utc(f.reference.after)} and before ${utc(f.reference.before)}). Not the first Futures price observed after the signal and not a trade time; kept as recorded.${f.postFixQuote ? `\nFirst price observed after the fix: ${f.postFixQuote.price} at ${utc(f.postFixQuote.observedAt)} (${delayText(f.postFixQuote.delayMs)} after the signal) — not an entry quote.` : ''}`}
+      title={`Old method (${f.rulesVersion}): the later of two minute snapshots between which LBank’s 24 h turnover rose (snapshots at ${fmtExact(f.reference.after)} and before ${fmtExact(f.reference.before)}). Not the first Futures price observed after the signal and not a trade time; kept as recorded.${f.postFixQuote ? `\nFirst price observed after the fix: ${f.postFixQuote.price} at ${fmtExact(f.postFixQuote.observedAt)} (${delayText(f.postFixQuote.delayMs)} after the signal) — not an entry quote.` : ''}`}
     />
   );
 }
@@ -342,8 +342,8 @@ function FuturesExtreme({ r, kind }: { r: ObservationRow; kind: 'highest' | 'low
       tone={f.provisional ? 'prov' : undefined}
       title={
         observed
-          ? `${kind === 'highest' ? 'Highest' : 'Lowest'} Futures price our requests observed in the window: ${v.price} at ${utc(v.observedAt)}, vs the first observed Futures price. Observed quotes at our sampling times, not verified trades; LBank’s 24 h high/low is not used.`
-          : `Old method: ${kind === 'highest' ? 'highest' : 'lowest'} price from turnover-rise snapshot pairs (${utc(v.after)} – ${utc(v.before)}); a bound, vs the old-method reference.`
+          ? `${kind === 'highest' ? 'Highest' : 'Lowest'} Futures price our requests observed in the window: ${v.price} at ${fmtExact(v.observedAt)}, vs the first observed Futures price. Observed quotes at our sampling times, not verified trades; LBank’s 24 h high/low is not used.`
+          : `Old method: ${kind === 'highest' ? 'highest' : 'lowest'} price from turnover-rise snapshot pairs (${fmtExact(v.after)} – ${fmtExact(v.before)}); a bound, vs the old-method reference.`
       }
     />
   );
@@ -645,7 +645,7 @@ export default function Observation() {
           <Two
             v={fmtShort(r.window.start)}
             s={`${delayText(r.window.afterCrawlMs)} after crawl`}
-            title={`Window ${utc(r.window.start)} – ${utc(r.window.end)}\nCMC crawl ${utc(r.crawlAt)} (names the event)\nproven by: ${TIMING_TEXT[r.window.source] ?? r.window.source}${r.window.uncertain ? ' (later than the earliest usable moment)' : ''}`}
+            title={`Window ${fmtExact(r.window.start)} – ${fmtExact(r.window.end)}\nCMC crawl ${fmtExact(r.crawlAt)} (names the event)\nproven by: ${TIMING_TEXT[r.window.source] ?? r.window.source}${r.window.uncertain ? ' (later than the earliest usable moment)' : ''}`}
           />
         ) : (
           <Two v="Pending" s={`CMC crawl ${fmtTime(r.crawlAt)}`} tone="muted" />
@@ -686,7 +686,7 @@ export default function Observation() {
             ) : null}
             <span
               className="muted small"
-              title={`Data through ${utc(r.freshness.dataThrough)} (${fmtAgo(r.freshness.dataThrough, now)})\n${fmtInt(r.coverage.minutesPresent)} of ${fmtInt(r.coverage.minutesExpected)} minutes with a candle, ${fmtInt(r.coverage.minutesTraded)} traded\nlast LBank fetch ${utc(r.freshness.lastSourceFetchAt)}\nlast recomputed ${utc(r.freshness.lastRecomputedAt)} (recomputing is not fresh data)${r.freshness.lastFetchError ? `\nlast error: ${r.freshness.lastFetchError}` : ''}`}
+              title={`Data through ${fmtExact(r.freshness.dataThrough)} (${fmtAgo(r.freshness.dataThrough, now)})\n${fmtInt(r.coverage.minutesPresent)} of ${fmtInt(r.coverage.minutesExpected)} minutes with a candle, ${fmtInt(r.coverage.minutesTraded)} traded\nlast LBank fetch ${fmtExact(r.freshness.lastSourceFetchAt)}\nlast recomputed ${fmtExact(r.freshness.lastRecomputedAt)} (recomputing is not fresh data)${r.freshness.lastFetchError ? `\nlast error: ${r.freshness.lastFetchError}` : ''}`}
             >
               {r.freshness.dataThrough ? `data through ${fmtShort(r.freshness.dataThrough)}` : 'no data fetched yet'}
               {gaps ? ` · ${gaps} gap${gaps > 1 ? 's' : ''}` : ''}
@@ -858,11 +858,11 @@ export default function Observation() {
           <Select label="Coverage" items={COVERAGE_FILTERS} value={cov} onPick={pick('cov')} />
           <Select label="Flags" items={FLAG_FILTERS} value={flags} onPick={pick('flags')} title="Review flags stay in every count; this only filters the table" />
           <label className="select-field" title="UTC date of the CMC crawl (the event's date), from">
-            <span>Crawl from (UTC)</span>
+            <span>Crawl from (UTC date)</span>
             <input type="date" value={from} onChange={(e) => pick('from')(e.target.value)} />
           </label>
           <label className="select-field" title="UTC date of the CMC crawl, to (inclusive)">
-            <span>Crawl to (UTC)</span>
+            <span>Crawl to (UTC date)</span>
             <input type="date" value={to} onChange={(e) => pick('to')(e.target.value)} />
           </label>
         </MoreFilters>
